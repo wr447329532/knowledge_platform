@@ -65,7 +65,13 @@
         </div>
       </header>
 
-      <p v-if="successMessage" class="success-msg">{{ successMessage }}</p>
+      <!-- 成功/失败提示框：固定定位，删除后自动刷新 -->
+      <Transition name="toast">
+        <div v-if="successMessage" class="success-toast">{{ successMessage }}</div>
+      </Transition>
+      <Transition name="toast">
+        <div v-if="errorMessage" class="error-toast">{{ errorMessage }}</div>
+      </Transition>
 
       <!-- 资料库：库列表 或 文件列表 -->
       <div v-if="tab === 'lib'" class="app-content">
@@ -371,7 +377,7 @@
           <input v-model="oldPassword" type="password" placeholder="原密码" style="width:100%;" />
         </div>
         <div style="margin-bottom: 8px;">
-          <input v-model="newPassword" type="password" placeholder="新密码（至少6位）" style="width:100%;" />
+          <input v-model="newPassword" type="password" placeholder="新密码（8位以上，含大小写、数字、特殊字符）" style="width:100%;" />
         </div>
         <div style="margin-bottom: 8px;">
           <input v-model="newPassword2" type="password" placeholder="再次输入新密码" style="width:100%;" />
@@ -389,12 +395,16 @@
       <div class="card">
         <h3>创建用户</h3>
         <div class="form-group">
-          <label>用户名 <span class="label-opt">必填</span></label>
-          <input v-model="newUserUsername" placeholder="请输入用户名" />
+          <label>邮箱（用于登录） <span class="label-opt">必填</span></label>
+          <input v-model="newUserEmail" type="email" placeholder="如 user@example.com" />
         </div>
         <div class="form-group">
-          <label>密码（至少6位） <span class="label-opt">必填</span></label>
-          <input v-model="newUserPassword" type="password" placeholder="请输入密码" />
+          <label>用户名（仅用于显示） <span class="label-opt">必填</span></label>
+          <input v-model="newUserUsername" placeholder="如 张三" />
+        </div>
+        <div class="form-group">
+          <label>密码（8位以上，含大小写、数字、特殊字符） <span class="label-opt">必填</span></label>
+          <input v-model="newUserPassword" type="password" placeholder="请输入强密码" />
         </div>
         <label class="form-check">
           <input type="checkbox" v-model="newUserIsSuperuser" /> 设为管理员 <span class="label-opt">选填</span>
@@ -489,6 +499,7 @@ const pathPrefix = ref('')
 const files = ref([])
 const filesLoading = ref(false)
 const successMessage = ref('')
+const errorMessage = ref('')
 const showNewLib = ref(false)
 const newLibName = ref('')
 const newLibDesc = ref('')
@@ -507,6 +518,7 @@ const showVersions = ref(false)
 const versions = ref([])
 const versionEntryId = ref(null)
 const fileInput = ref(null)
+const newUserEmail = ref('')
 const newUserUsername = ref('')
 const newUserPassword = ref('')
 const showCreateUser = ref(false)
@@ -575,8 +587,13 @@ function formatSize(bytes) {
 
 function showSuccess(msg) {
   successMessage.value = msg
+  errorMessage.value = ''
   err.value = ''
   setTimeout(() => { successMessage.value = '' }, 3000)
+}
+function showError(msg) {
+  errorMessage.value = msg
+  setTimeout(() => { errorMessage.value = '' }, 4000)
 }
 
 onMounted(async () => {
@@ -802,10 +819,11 @@ async function toggleUserActive(u) {
 }
 
 async function resetUserPassword(u) {
-  const newPw = prompt('请输入新密码（至少6位）：', '')
-  if (newPw == null) return
-  if (newPw.length < 6) {
-    err.value = '密码至少6位'
+  const newPw = prompt('请输入新密码（8位以上，含大小写、数字、特殊字符）：', '')
+  if (newPw == null || newPw === '') return
+  const pwdErr = _checkStrongPassword(newPw)
+  if (pwdErr) {
+    err.value = pwdErr
     return
   }
   err.value = ''
@@ -839,22 +857,30 @@ async function saveEditLib() {
 }
 
 async function delLib(lib) {
-  if (!confirm('确定删除资料库「' + lib.name + '」？需先清空库内文件。')) return
+  if (!confirm('确定删除资料库「' + lib.name + '」？将同时删除库内所有文件（含回收站），不可恢复。')) return
   err.value = ''
+  errorMessage.value = ''
   try {
     await api.deleteLibrary(lib.id)
     libraries.value = await api.listLibraries()
     if (currentLib.value?.id === lib.id) currentLib.value = null
-    showSuccess('资料库已删除')
+    loadStorageStats()
+    showSuccess('删除成功')
   } catch (e) {
     err.value = e.message
+    showError(e.message)
   }
 }
 
 async function doChangePassword() {
   err.value = ''
-  if (!newPassword.value || newPassword.value.length < 6) {
-    err.value = '新密码至少6位'
+  if (!newPassword.value) {
+    err.value = '请输入新密码'
+    return
+  }
+  const pwdErr = _checkStrongPassword(newPassword.value)
+  if (pwdErr) {
+    err.value = pwdErr
     return
   }
   if (newPassword.value !== newPassword2.value) {
@@ -875,23 +901,41 @@ async function doChangePassword() {
 
 function closeCreateUser() {
   showCreateUser.value = false
+  newUserEmail.value = ''
   newUserUsername.value = ''
   newUserPassword.value = ''
   newUserIsSuperuser.value = false
   err.value = ''
 }
+function _checkStrongPassword(pwd) {
+  if (pwd.length < 8) return '密码至少8位'
+  if (!/[A-Z]/.test(pwd)) return '密码须包含至少1个大写字母'
+  if (!/[a-z]/.test(pwd)) return '密码须包含至少1个小写字母'
+  if (!/\d/.test(pwd)) return '密码须包含至少1个数字'
+  if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/.test(pwd)) return '密码须包含至少1个特殊字符'
+  return ''
+}
 async function doCreateUserModal() {
   err.value = ''
-  if (!newUserUsername.value.trim() || !newUserPassword.value) {
-    err.value = '请填写用户名和密码'
+  if (!newUserEmail.value.trim()) {
+    err.value = '请填写邮箱（用于登录）'
     return
   }
-  if (newUserPassword.value.length < 6) {
-    err.value = '密码至少6位'
+  if (!newUserUsername.value.trim()) {
+    err.value = '请填写用户名（用于显示）'
+    return
+  }
+  if (!newUserPassword.value) {
+    err.value = '请填写密码'
+    return
+  }
+  const pwdErr = _checkStrongPassword(newUserPassword.value)
+  if (pwdErr) {
+    err.value = pwdErr
     return
   }
   try {
-    await api.createUser(newUserUsername.value.trim(), newUserPassword.value, '', newUserIsSuperuser.value)
+    await api.createUser(newUserEmail.value.trim(), newUserUsername.value.trim(), newUserPassword.value, newUserIsSuperuser.value)
     showSuccess('用户已创建：' + newUserUsername.value)
     closeCreateUser()
     loadUsers()
@@ -966,7 +1010,7 @@ async function delFile(f) {
     await api.deleteFile(f.id)
     loadFiles()
     loadStorageStats()
-    showSuccess('已移到回收站')
+    showSuccess('删除成功')
   } catch (e) {
     err.value = e.message
   }
@@ -1053,7 +1097,7 @@ async function permDelete(entryId) {
   try {
     await api.permanentDelete(entryId)
     loadTrash()
-    showSuccess('已彻底删除')
+    showSuccess('删除成功')
   } catch (e) {
     err.value = e.message
   }
@@ -1232,13 +1276,41 @@ async function permDelete(entryId) {
 .btn-primary:hover { background: var(--primary-dark); }
 .btn-outline { margin-right: 8px; }
 
-.success-msg {
-  margin: 16px 24px 0;
-  background: var(--success-bg);
-  color: var(--success);
-  padding: 10px 14px;
-  border-radius: var(--radius);
+.success-toast {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  background: var(--success-bg, #e8f5e9);
+  color: var(--success, #2e7d32);
+  padding: 12px 24px;
+  border-radius: var(--radius, 8px);
   font-size: 14px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+.toast-enter-active { animation: toast-in 0.3s ease-out; }
+.toast-leave-active { animation: toast-out 0.3s ease-in; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, -20px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes toast-out {
+  from { opacity: 1; transform: translate(-50%, 0); }
+  to { opacity: 0; transform: translate(-50%, -20px); }
+}
+.error-toast {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  background: #ffebee;
+  color: #c62828;
+  padding: 12px 24px;
+  border-radius: var(--radius, 8px);
+  font-size: 14px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
 .text-danger { color: var(--danger); font-size: 14px; margin: 0 0 8px 0; }
 .text-success { color: var(--success); font-size: 14px; margin: 0 0 8px 0; }

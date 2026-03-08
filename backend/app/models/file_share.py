@@ -2,7 +2,7 @@
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref, relationship
 
 from backend.app.db.base import Base
 
@@ -22,5 +22,5 @@ class FileShare(Base):
 
     __table_args__ = (UniqueConstraint("file_entry_id", "user_id", name="uq_file_share"),)
 
-    file_entry = relationship("FileEntry", backref="shares")
+    file_entry = relationship("FileEntry", backref=backref("shares", cascade="all, delete-orphan"))
     user = relationship("User", backref="file_shares")

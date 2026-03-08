@@ -64,7 +64,7 @@ def register(
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="用户名或邮箱已存在",
+            detail="用户名或邮箱已被使用",
         )
     user = User(
         username=user_in.username,
@@ -86,11 +86,12 @@ def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
-    user = db.query(User).filter(User.username == form_data.username).first()
+    # 使用邮箱登录（OAuth2 的 username 字段用于填写邮箱）
+    user = db.query(User).filter(User.email == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="用户名或密码错误",
+            detail="邮箱或密码错误",
         )
     log_audit(db, user.id, user.username, "login", "user", user.id, None)
     db.commit()

@@ -19,6 +19,8 @@ export async function api(url, options = {}) {
     const msg = Array.isArray(err.detail) ? err.detail.map((e) => e.msg || JSON.stringify(e)).join('；') : (err.detail || res.statusText)
     throw new Error(msg)
   }
+  // 204 No Content 无响应体，不解析 JSON
+  if (res.status === 204) return null
   const type = res.headers.get('content-type')
   if (type && type.includes('application/json')) return res.json()
   return res
@@ -43,12 +45,12 @@ export async function login(username, password) {
   return data
 }
 
-/** 仅管理员可调用：创建新用户（平台不支持开放注册） */
-export async function createUser(username, password, email = '', is_superuser = false) {
+/** 仅管理员可调用：创建新用户（平台不支持开放注册）。邮箱必填用于登录，用户名仅用于显示。 */
+export async function createUser(email, username, password, is_superuser = false) {
   const data = await api('/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password, email: email || null, is_superuser }),
+    body: JSON.stringify({ email, username, password, is_superuser }),
   })
   return data
 }

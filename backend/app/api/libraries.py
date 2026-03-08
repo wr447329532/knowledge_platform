@@ -137,16 +137,24 @@ def delete_library(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    from sqlalchemy import func
+
+    from backend.app.api.files import _permanent_delete_entry
     from backend.app.models.file import FileEntry
 
     lib, _ = has_library_access(db, library_id, current_user)
     check_can_manage_library(lib, current_user, db)
-    count = db.query(FileEntry).filter(FileEntry.library_id == library_id).count()
-    if count > 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="资料库内仍有文件或目录，请先清空或移入回收站后再删除资料库",
-        )
+
+    # 级联删除：先彻底删除库内所有文件/目录（含回收站），再删资料库
+    entries = (
+        db.query(FileEntry)
+        .filter(FileEntry.library_id == library_id)
+        .order_by(func.length(FileEntry.path).desc())
+        .all()
+    )
+    for entry in entries:
+        _permanent_delete_entry(db, entry)
+
     log_audit(db, current_user.id, current_user.username, "delete_library", "library", lib.id, f"name={lib.name}")
     db.delete(lib)
     db.commit()

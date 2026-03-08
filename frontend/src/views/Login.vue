@@ -17,10 +17,10 @@
         <p class="form-subtitle">请输入您的账号信息</p>
         <form @submit.prevent="submit" class="login-form">
           <div class="form-field">
-            <label>用户名</label>
+            <label>邮箱</label>
             <div class="input-wrap">
-              <Icons name="user" class="input-icon" />
-              <input v-model="username" placeholder="请输入用户名" required />
+              <Icons name="mail" class="input-icon" />
+              <input v-model="email" type="email" placeholder="请输入邮箱" required />
             </div>
           </div>
           <div class="form-field">
@@ -50,7 +50,7 @@ import { login } from '../api/client'
 import Icons from '../components/Icons.vue'
 
 const router = useRouter()
-const username = ref('')
+const email = ref('')
 const password = ref('')
 const error = ref('')
 const showPwd = ref(false)
@@ -59,7 +59,7 @@ const rememberMe = ref(false)
 async function submit() {
   error.value = ''
   try {
-    await login(username.value, password.value)
+    await login(email.value, password.value)
     router.push('/')
   } catch (e) {
     error.value = e.message || '登录失败'
