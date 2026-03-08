@@ -1,0 +1,901 @@
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import List, Optional
+
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, Query, status
+from fastapi.responses import FileResponse
+from jose import JWTError, jwt
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from backend.app.api.deps import get_current_user
+from backend.app.core.audit import log_audit
+from backend.app.core.config import get_settings
+from backend.app.core.library_access import (
+    can_download_file,
+    can_access_file,
+    get_accessible_library_ids,
+    has_library_access,
+)
+from backend.app.db.session import get_db
+from backend.app.models.file import FileEntry, FileVersion
+from backend.app.models.file_share import FileShare
+from backend.app.models.library import Library
+from backend.app.models.user import User
+
+
+settings = get_settings()
+router = APIRouter(prefix="/files", tags=["files"])
+
+
+class FileRead(BaseModel):
+    id: int
+    library_id: int
+    path: str
+    is_dir: bool
+    size: Optional[int] = None  # 文件最新版本大小（字节），目录为 None
+    updated_at: Optional[datetime] = None
+    can_download: Optional[bool] = None  # 当前用户是否可下载（拥有者或被分享且权限为 download）
+
+    class Config:
+        from_attributes = True
+
+
+class FileTrashRead(FileRead):
+    deleted_at: datetime
+
+
+class FileVersionRead(BaseModel):
+    id: int
+    version_no: int
+    size: int
+    uploaded_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FileShareRead(BaseModel):
+    id: int
+    file_entry_id: int
+    user_id: int
+    username: str
+    permission: str  # read | download
+    created_at: str | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class FileShareAdd(BaseModel):
+    user_id: int
+    permission: str = "read"  # 仅支持只读/预览，不支持下载
+
+
+def _ensure_storage_root() -> Path:
+    root: Path = settings.STORAGE_ROOT
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _get_library_and_check(db: Session, library_id: int, user: User, require_write: bool = False) -> Library:
+    """获取资料库并校验访问权限。require_write=True 时需读写权限。"""
+    lib, _ = has_library_access(db, library_id, user, require_write=require_write)
+    return lib
+
+
+@router.post("/upload", response_model=FileRead)
+async def upload_file(
+    library_id: int,
+    relative_path: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    lib = _get_library_and_check(db, library_id, current_user, require_write=True)
+
+    # 规范化相对路径，例如 docs/readme.md
+    relative_path = relative_path.lstrip("/").replace("\\", "/")
+    if not relative_path:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="路径不能为空")
+
+    # 查找或创建 FileEntry（含回收站内同路径的，找到则恢复并追加版本）
+    entry: FileEntry | None = (
+        db.query(FileEntry)
+        .filter(FileEntry.library_id == library_id, FileEntry.path == relative_path)
+        .first()
+    )
+    if entry and entry.deleted_at:
+        entry.deleted_at = None  # 从回收站恢复
+    if not entry:
+        entry = FileEntry(
+            library_id=library_id,
+            path=relative_path,
+            is_dir=False,
+            created_by_id=current_user.id,
+        )
+        db.add(entry)
+        db.flush()  # 先拿到 entry.id
+
+    # 计算下一个版本号
+    last_version: FileVersion | None = (
+        db.query(FileVersion)
+        .filter(FileVersion.file_entry_id == entry.id)
+        .order_by(FileVersion.version_no.desc())
+        .first()
+    )
+    next_version_no = 1 if not last_version else last_version.version_no + 1
+
+    # 磁盘存储路径: <STORAGE_ROOT>/<library_id>/<entry_id>/<version_no>/<filename>
+    root = _ensure_storage_root()
+    dest_dir = root / str(library_id) / str(entry.id) / str(next_version_no)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / file.filename
+
+    size = 0
+    with open(dest_path, "wb") as f:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            f.write(chunk)
+
+    version = FileVersion(
+        file_entry_id=entry.id,
+        version_no=next_version_no,
+        storage_path=str(dest_path),
+        size=size,
+        uploaded_by_id=current_user.id,
+    )
+    db.add(version)
+    log_audit(db, current_user.id, current_user.username, "upload", "file", entry.id, f"library_id={library_id} path={relative_path}")
+    db.commit()
+    db.refresh(entry)
+
+    return entry
+
+
+def _is_library_owner(db: Session, library_id: int, user: User) -> bool:
+    lib = db.query(Library).filter(Library.id == library_id).first()
+    return lib and lib.owner_id == user.id
+
+
+@router.get("/list", response_model=List[FileRead])
+def list_files(
+    library_id: int,
+    path_prefix: Optional[str] = Query(None, description="目录前缀，如 docs/ 只列出 docs/ 下的文件"),
+    include_dirs: bool = Query(True, description="是否包含目录"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    lib, is_owner = has_library_access(db, library_id, current_user)
+    q = db.query(FileEntry).filter(
+        FileEntry.library_id == library_id,
+        FileEntry.deleted_at.is_(None),
+    )
+    if not include_dirs:
+        q = q.filter(FileEntry.is_dir.is_(False))
+    prefix = ""
+    if path_prefix:
+        prefix = path_prefix.strip("/").replace("\\", "/")
+        if prefix and not prefix.endswith("/"):
+            prefix += "/"
+        if prefix:
+            q = q.filter(FileEntry.path.startswith(prefix))
+    entries = q.order_by(FileEntry.path.asc()).all()
+    # 只返回直接子级：根目录时 path 无 "/"；子目录时 path 在 prefix 后无 "/"
+    if prefix:
+        entries = [e for e in entries if "/" not in e.path[len(prefix):]]
+    else:
+        entries = [e for e in entries if "/" not in e.path]
+    # 被分享者：仅显示分享给自己的文件，及为导航所需的父目录
+    if not is_owner:
+        from backend.app.models.file_share import FileShare
+
+        shared_ids = {
+            r[0]
+            for r in db.query(FileShare.file_entry_id)
+            .join(FileEntry, FileShare.file_entry_id == FileEntry.id)
+            .filter(FileEntry.library_id == library_id, FileShare.user_id == current_user.id)
+            .all()
+        }
+        shared_paths = {e.path for e in entries if e.id in shared_ids}
+        entries = [
+            e
+            for e in entries
+            if e.id in shared_ids
+            or (e.is_dir and any(p.startswith(e.path.rstrip("/") + "/") for p in shared_paths))
+        ]
+    # 文件取最新版本大小；目录无 size
+    file_entry_ids = [e.id for e in entries if not e.is_dir]
+    latest_size: dict[int, int] = {}
+    if file_entry_ids:
+        from sqlalchemy import func
+
+        subq = (
+            db.query(FileVersion.file_entry_id, func.max(FileVersion.version_no).label("max_ver"))
+            .filter(FileVersion.file_entry_id.in_(file_entry_ids))
+            .group_by(FileVersion.file_entry_id)
+            .subquery()
+        )
+        rows = (
+            db.query(FileVersion.file_entry_id, FileVersion.size)
+            .join(subq, (FileVersion.file_entry_id == subq.c.file_entry_id) & (FileVersion.version_no == subq.c.max_ver))
+            .all()
+        )
+        latest_size = {r[0]: r[1] for r in rows}
+    result = []
+    for e in entries:
+        can_dl = can_download_file(db, e, current_user) if not e.is_dir else None
+        result.append(
+            FileRead(
+                id=e.id,
+                library_id=e.library_id,
+                path=e.path,
+                is_dir=e.is_dir,
+                size=latest_size.get(e.id) if not e.is_dir else None,
+                updated_at=e.updated_at,
+                can_download=can_dl,
+            )
+        )
+    return result
+
+
+@router.post("/mkdir", response_model=FileRead)
+def create_directory(
+    library_id: int,
+    path: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """创建目录（如 docs/reports）"""
+    lib = _get_library_and_check(db, library_id, current_user, require_write=True)
+    path = path.strip("/").replace("\\", "/")
+    if not path:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="路径不能为空")
+    existing = (
+        db.query(FileEntry)
+        .filter(
+            FileEntry.library_id == library_id,
+            FileEntry.path == path,
+            FileEntry.deleted_at.is_(None),
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该路径已存在")
+    entry = FileEntry(
+        library_id=library_id,
+        path=path,
+        is_dir=True,
+        created_by_id=current_user.id,
+    )
+    db.add(entry)
+    log_audit(db, current_user.id, current_user.username, "mkdir", "file", entry.id, f"library_id={library_id} path={path}")
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+@router.patch("/{entry_id}/rename", response_model=FileRead)
+def rename_file(
+    entry_id: int,
+    new_path: str = Query(..., description="新路径，如 docs/readme.txt"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """重命名文件或目录（通过修改 path）"""
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件或目录不存在")
+    _get_library_and_check(db, entry.library_id, current_user, require_write=True)
+
+    new_path = new_path.strip("/").replace("\\", "/")
+    if not new_path:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="路径不能为空")
+    if new_path == entry.path:
+        db.refresh(entry)
+        return entry
+
+    # 检查新路径是否已存在
+    existing = (
+        db.query(FileEntry)
+        .filter(
+            FileEntry.library_id == entry.library_id,
+            FileEntry.path == new_path,
+            FileEntry.deleted_at.is_(None),
+            FileEntry.id != entry_id,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该路径已存在")
+
+    old_path = entry.path
+    if entry.is_dir:
+        # 目录：需同时更新所有子项路径
+        prefix = old_path.rstrip("/") + "/"
+        new_prefix = new_path.rstrip("/") + "/"
+        children = (
+            db.query(FileEntry)
+            .filter(
+                FileEntry.library_id == entry.library_id,
+                FileEntry.path.startswith(prefix),
+                FileEntry.deleted_at.is_(None),
+            )
+            .all()
+        )
+        entry.path = new_path
+        for c in children:
+            c.path = new_prefix + c.path[len(prefix) :]
+    else:
+        entry.path = new_path
+
+    log_audit(db, current_user.id, current_user.username, "rename", "file", entry.id, f"{old_path} -> {new_path}")
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+@router.delete("/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_file(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """删除文件或目录到回收站（目录会连同其下所有项一起进入回收站）"""
+    from datetime import datetime as dt
+
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件或目录不存在")
+    _get_library_and_check(db, entry.library_id, current_user, require_write=True)
+    if entry.is_dir:
+        # 仅统计未删除的子项
+        children = db.query(FileEntry).filter(
+            FileEntry.library_id == entry.library_id,
+            FileEntry.path.startswith(entry.path.rstrip("/") + "/"),
+            FileEntry.deleted_at.is_(None),
+        ).count()
+        if children > 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="目录非空，无法删除")
+    now = dt.utcnow()
+    entry.deleted_at = now
+    if entry.is_dir:
+        # 目录下所有未删除项一并进回收站
+        db.query(FileEntry).filter(
+            FileEntry.library_id == entry.library_id,
+            FileEntry.path.startswith(entry.path.rstrip("/") + "/"),
+            FileEntry.deleted_at.is_(None),
+        ).update({FileEntry.deleted_at: now}, synchronize_session=False)
+    log_audit(db, current_user.id, current_user.username, "delete", "file", entry.id, f"path={entry.path} -> recycle")
+    db.commit()
+
+
+@router.get("/trash", response_model=List[FileTrashRead])
+def list_trash(
+    library_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出回收站中的文件/目录"""
+    _get_library_and_check(db, library_id, current_user)
+    entries = (
+        db.query(FileEntry)
+        .filter(
+            FileEntry.library_id == library_id,
+            FileEntry.deleted_at != None,  # noqa: E711
+        )
+        .order_by(FileEntry.deleted_at.desc())
+        .all()
+    )
+    return entries
+
+
+@router.post("/{entry_id}/restore", response_model=FileRead)
+def restore_file(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """从回收站恢复"""
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or not entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="回收站中无此项")
+    _get_library_and_check(db, entry.library_id, current_user, require_write=True)
+    entry.deleted_at = None
+    log_audit(db, current_user.id, current_user.username, "restore", "file", entry.id, f"path={entry.path}")
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+def _permanent_delete_entry(db: Session, entry: FileEntry) -> None:
+    """彻底删除一条记录及其磁盘文件（不删子项）"""
+    versions = db.query(FileVersion).filter(FileVersion.file_entry_id == entry.id).all()
+    for v in versions:
+        p = Path(v.storage_path)
+        if p.is_file():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    db.query(FileVersion).filter(FileVersion.file_entry_id == entry.id).delete()
+    db.delete(entry)
+
+
+@router.delete("/trash/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
+def permanent_delete(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """从回收站彻底删除（不可恢复）；若为目录则递归删除其下所有已在回收站中的项"""
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or not entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="回收站中无此项")
+    _get_library_and_check(db, entry.library_id, current_user, require_write=True)
+    if entry.is_dir:
+        # 先彻底删除所有在回收站中的子项（同库、路径在其下）
+        prefix = entry.path.rstrip("/") + "/"
+        children = (
+            db.query(FileEntry)
+            .filter(
+                FileEntry.library_id == entry.library_id,
+                FileEntry.path.startswith(prefix),
+                FileEntry.deleted_at != None,  # noqa: E711
+            )
+            .all()
+        )
+        for c in children:
+            _permanent_delete_entry(db, c)
+    path_before_delete = entry.path
+    _permanent_delete_entry(db, entry)
+    log_audit(db, current_user.id, current_user.username, "permanent_delete", "file", entry_id, f"path={path_before_delete}")
+    db.commit()
+
+
+@router.get("/search", response_model=List[FileRead])
+def search_files(
+    library_id: int,
+    keyword: str = Query(..., min_length=1, description="搜索关键词，匹配路径中的文件名"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """按关键词搜索文件（匹配路径）"""
+    _get_library_and_check(db, library_id, current_user)
+    kw = keyword.strip()
+    if not kw:
+        return []
+    entries = (
+        db.query(FileEntry)
+        .filter(
+            FileEntry.library_id == library_id,
+            FileEntry.deleted_at.is_(None),
+            FileEntry.path.ilike(f"%{kw}%"),
+        )
+        .order_by(FileEntry.path.asc())
+        .limit(100)
+        .all()
+    )
+    file_entry_ids = [e.id for e in entries if not e.is_dir]
+    latest_size: dict[int, int] = {}
+    if file_entry_ids:
+        from sqlalchemy import func
+
+        subq = (
+            db.query(FileVersion.file_entry_id, func.max(FileVersion.version_no).label("max_ver"))
+            .filter(FileVersion.file_entry_id.in_(file_entry_ids))
+            .group_by(FileVersion.file_entry_id)
+            .subquery()
+        )
+        rows = (
+            db.query(FileVersion.file_entry_id, FileVersion.size)
+            .join(subq, (FileVersion.file_entry_id == subq.c.file_entry_id) & (FileVersion.version_no == subq.c.max_ver))
+            .all()
+        )
+        latest_size = {r[0]: r[1] for r in rows}
+    result = []
+    for e in entries:
+        can_dl = can_download_file(db, e, current_user) if not e.is_dir else None
+        result.append(
+            FileRead(
+                id=e.id,
+                library_id=e.library_id,
+                path=e.path,
+                is_dir=e.is_dir,
+                size=latest_size.get(e.id) if not e.is_dir else None,
+                updated_at=e.updated_at,
+                can_download=can_dl,
+            )
+        )
+    return result
+
+
+class StorageStats(BaseModel):
+    used_bytes: int
+    used_display: str
+    total_bytes: int = 500 * 1024 * 1024 * 1024  # 500GB 默认
+    total_display: str = "500 GB"
+    percent: float
+
+
+@router.get("/storage", response_model=StorageStats)
+def get_storage_stats(
+    library_id: Optional[int] = Query(None, description="指定资料库，不填则统计当前用户可访问的汇总"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取存储空间使用量"""
+    from sqlalchemy import func
+
+    q = (
+        db.query(func.sum(FileVersion.size).label("total"))
+        .join(FileEntry, FileVersion.file_entry_id == FileEntry.id)
+        .filter(FileEntry.deleted_at.is_(None))
+    )
+    if library_id is not None:
+        lib = _get_library_and_check(db, library_id, current_user)
+        q = q.filter(FileEntry.library_id == lib.id)
+    else:
+        # 汇总当前用户可访问的库（拥有者 + 成员）
+        lib_ids = get_accessible_library_ids(db, current_user)
+        if lib_ids:
+            q = q.filter(FileEntry.library_id.in_(lib_ids))
+        else:
+            q = q.filter(FileEntry.library_id == -1)
+    row = q.first()
+    used = int(row[0]) if row and row[0] else 0
+    total = 500 * 1024 * 1024 * 1024
+    pct = (used / total * 100) if total > 0 else 0
+
+    def _fmt(b: int) -> str:
+        if b < 1024:
+            return f"{b} B"
+        if b < 1024 * 1024:
+            return f"{b / 1024:.1f} KB"
+        if b < 1024 * 1024 * 1024:
+            return f"{b / (1024 * 1024):.1f} MB"
+        return f"{b / (1024 * 1024 * 1024):.1f} GB"
+
+    return StorageStats(
+        used_bytes=used,
+        used_display=_fmt(used),
+        total_bytes=total,
+        total_display="500 GB",
+        percent=round(pct, 1),
+    )
+
+
+@router.get("/versions", response_model=List[FileVersionRead])
+def list_versions(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出某文件的所有版本（从新到旧）"""
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.is_dir or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    if not can_access_file(db, entry, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该文件")
+    versions = (
+        db.query(FileVersion)
+        .filter(FileVersion.file_entry_id == entry.id)
+        .order_by(FileVersion.version_no.desc())
+        .all()
+    )
+    return versions
+
+
+@router.get("/download")
+def download_file(
+    entry_id: int,
+    version_no: Optional[int] = Query(None, description="指定版本号，不填则下载最新版本"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.is_dir or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    if not can_download_file(db, entry, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无下载权限（需被分享且权限为「下载」）")
+
+    q = db.query(FileVersion).filter(FileVersion.file_entry_id == entry.id)
+    if version_no is not None:
+        q = q.filter(FileVersion.version_no == version_no)
+    else:
+        q = q.order_by(FileVersion.version_no.desc())
+    version: FileVersion | None = q.first()
+    if not version:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件版本不存在")
+
+    storage_path = Path(version.storage_path)
+    if not storage_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件物理数据缺失")
+
+    log_audit(db, current_user.id, current_user.username, "下载文件", "file", entry.id, f"path={entry.path} version={version.version_no}")
+    db.commit()
+
+    filename = storage_path.name
+    return FileResponse(
+        path=str(storage_path),
+        filename=filename,
+        media_type="application/octet-stream",
+    )
+
+
+def _media_type_by_ext(path: str) -> str:
+    """根据扩展名返回合适的 media_type，用于预览"""
+    ext = Path(path).suffix.lower()
+    _map = {
+        ".pdf": "application/pdf",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".bmp": "image/bmp",
+        ".txt": "text/plain; charset=utf-8",
+        ".md": "text/markdown; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".xml": "application/xml; charset=utf-8",
+        ".html": "text/html; charset=utf-8",
+        ".htm": "text/html; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".js": "text/javascript; charset=utf-8",
+        ".yaml": "text/yaml; charset=utf-8",
+        ".yml": "text/yaml; charset=utf-8",
+    }
+    return _map.get(ext, "application/octet-stream")
+
+
+def _create_preview_token(entry_id: int, user_id: int) -> str:
+    """生成短期预览 token，10 分钟有效（含 user_id 用于审计）"""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=10)
+    payload = {"entry_id": entry_id, "user_id": user_id, "exp": expire}
+    return jwt.encode(
+        payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM
+    )
+
+
+def _verify_preview_token(token: str) -> Optional[tuple[int, Optional[int]]]:
+    """验证预览 token，返回 (entry_id, user_id)"""
+    try:
+        payload = jwt.decode(
+            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+        )
+        eid = payload.get("entry_id")
+        uid = payload.get("user_id")
+        return (eid, uid) if eid is not None else None
+    except JWTError:
+        return None
+
+
+class PreviewTokenRead(BaseModel):
+    token: str
+
+
+@router.get("/preview-token", response_model=PreviewTokenRead)
+def get_preview_token(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取预览用短期 token（用于 iframe/img 直接加载，无需 Authorization）"""
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.is_dir or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    if not can_access_file(db, entry, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问")
+    log_audit(db, current_user.id, current_user.username, "预览文件", "file", entry.id, f"path={entry.path}")
+    db.commit()
+    return PreviewTokenRead(token=_create_preview_token(entry_id, current_user.id))
+
+
+def _serve_preview_file(version_no: Optional[int], db: Session, entry: FileEntry):
+    """共用：根据 entry 读取并返回文件内容"""
+    q = db.query(FileVersion).filter(FileVersion.file_entry_id == entry.id)
+    if version_no is not None:
+        q = q.filter(FileVersion.version_no == version_no)
+    else:
+        q = q.order_by(FileVersion.version_no.desc())
+    version: FileVersion | None = q.first()
+    if not version:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件版本不存在")
+
+    storage_path = Path(version.storage_path)
+    if not storage_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件物理数据缺失")
+
+    filename = storage_path.name
+    media_type = _media_type_by_ext(filename)
+    return FileResponse(
+        path=str(storage_path),
+        filename=filename,
+        media_type=media_type,
+        content_disposition_type="inline",
+    )
+
+
+@router.get("/preview-by-token")
+def preview_by_token(
+    entry_id: int,
+    token: str = Query(..., description="预览 token"),
+    version_no: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """通过 token 预览文件（用于 iframe/img 直接加载，无需 Bearer）"""
+    verified = _verify_preview_token(token)
+    if verified is None or verified[0] != entry_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="token 无效或已过期")
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.is_dir or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    uid = verified[1]
+    if uid is not None:
+        u = db.query(User).filter(User.id == uid).first()
+        if u:
+            log_audit(db, uid, u.username, "下载文件", "file", entry.id, f"path={entry.path} (通过预览)")
+            db.commit()
+    return _serve_preview_file(version_no, db, entry)
+
+
+@router.get("/preview")
+def preview_file(
+    entry_id: int,
+    version_no: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """在线预览文件（需 Bearer 认证，用于 fetch 获取内容）"""
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.is_dir or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    if not can_access_file(db, entry, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问")
+    log_audit(db, current_user.id, current_user.username, "预览文件", "file", entry.id, f"path={entry.path}")
+    db.commit()
+    return _serve_preview_file(version_no, db, entry)
+
+
+# ---------- 文件分享 ----------
+
+
+class AddableUserRead(BaseModel):
+    id: int
+    username: str
+
+
+@router.get("/shares/addable-users", response_model=List[AddableUserRead])
+def list_file_share_addable_users(
+    entry_id: int = Query(..., description="文件 ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出可分享的用户（排除自己和已分享的）"""
+    entry = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    lib = db.query(Library).filter(Library.id == entry.library_id).first()
+    if not lib or lib.owner_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅文件拥有者可管理分享")
+    shared_user_ids = {r[0] for r in db.query(FileShare.user_id).filter(FileShare.file_entry_id == entry_id).all()}
+    exclude = {current_user.id} | shared_user_ids
+    users = (
+        db.query(User.id, User.username)
+        .filter(User.is_active == True, ~User.id.in_(exclude) if exclude else True)
+        .order_by(User.username.asc())
+        .all()
+    )
+    return [AddableUserRead(id=u[0], username=u[1]) for u in users]
+
+
+@router.get("/shares", response_model=List[FileShareRead])
+def list_file_shares(
+    entry_id: int = Query(..., description="文件 ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出某文件的分享列表（仅拥有者可查看）"""
+    entry = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    lib = db.query(Library).filter(Library.id == entry.library_id).first()
+    if not lib or lib.owner_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅文件拥有者可管理分享")
+    rows = (
+        db.query(FileShare, User)
+        .join(User, FileShare.user_id == User.id)
+        .filter(FileShare.file_entry_id == entry_id)
+        .order_by(FileShare.created_at.asc())
+        .all()
+    )
+    return [
+        FileShareRead(
+            id=s.id,
+            file_entry_id=s.file_entry_id,
+            user_id=s.user_id,
+            username=u.username,
+            permission=s.permission,
+            created_at=s.created_at.isoformat() if s.created_at else None,
+        )
+        for s, u in rows
+    ]
+
+
+@router.post("/shares", response_model=FileShareRead)
+def add_file_share(
+    entry_id: int = Query(..., description="文件 ID"),
+    body: FileShareAdd = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """分享文件给用户（仅拥有者，仅文件非目录）"""
+    entry = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    if entry.is_dir:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="仅支持文件分享，目录暂不支持")
+    lib = db.query(Library).filter(Library.id == entry.library_id).first()
+    if not lib or lib.owner_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅文件拥有者可分享")
+    if body.permission != "read":
+        body.permission = "read"
+    if body.user_id == current_user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能分享给自己")
+    user = db.query(User).filter(User.id == body.user_id, User.is_active == True).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在或已禁用")
+    existing = db.query(FileShare).filter(FileShare.file_entry_id == entry_id, FileShare.user_id == body.user_id).first()
+    if existing:
+        existing.permission = "read"
+        db.commit()
+        db.refresh(existing)
+        log_audit(db, current_user.id, current_user.username, "分享文件", "file_share", existing.id, f"分享给 {user.username} 文件 path={entry.path}")
+        return FileShareRead(
+            id=existing.id,
+            file_entry_id=existing.file_entry_id,
+            user_id=existing.user_id,
+            username=user.username,
+            permission=existing.permission,
+            created_at=existing.created_at.isoformat() if existing.created_at else None,
+        )
+    share = FileShare(file_entry_id=entry_id, user_id=body.user_id, permission="read")
+    db.add(share)
+    db.flush()
+    log_audit(db, current_user.id, current_user.username, "分享文件", "file_share", share.id, f"分享给 {user.username} 文件 path={entry.path}")
+    db.commit()
+    db.refresh(share)
+    return FileShareRead(
+        id=share.id,
+        file_entry_id=share.file_entry_id,
+        user_id=share.user_id,
+        username=user.username,
+        permission=share.permission,
+        created_at=share.created_at.isoformat() if share.created_at else None,
+    )
+
+
+@router.delete("/shares", status_code=status.HTTP_204_NO_CONTENT)
+def remove_file_share(
+    entry_id: int = Query(..., description="文件 ID"),
+    user_id: int = Query(..., description="用户 ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """取消文件分享（仅拥有者）"""
+    entry = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    lib = db.query(Library).filter(Library.id == entry.library_id).first()
+    if not lib or lib.owner_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅文件拥有者可管理分享")
+    share = db.query(FileShare).filter(FileShare.file_entry_id == entry_id, FileShare.user_id == user_id).first()
+    if not share:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="该用户未被分享")
+    target = db.query(User).filter(User.id == user_id).first()
+    target_name = target.username if target else str(user_id)
+    log_audit(db, current_user.id, current_user.username, "取消分享", "file_share", share.id, f"取消分享给 {target_name} 文件 path={entry.path}")
+    db.delete(share)
+    db.commit()
+
