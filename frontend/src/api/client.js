@@ -46,11 +46,11 @@ export async function login(username, password) {
 }
 
 /** 仅管理员可调用：创建新用户（平台不支持开放注册）。邮箱必填用于登录，用户名仅用于显示。 */
-export async function createUser(email, username, password, is_superuser = false) {
+export async function createUser(email, username, password, is_superuser = false, department_id = null) {
   const data = await api('/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, username, password, is_superuser }),
+    body: JSON.stringify({ email, username, password, is_superuser, department_id }),
   })
   return data
 }
@@ -72,9 +72,14 @@ export async function changePassword(oldPassword, newPassword) {
   })
 }
 
-/** 仅管理员：用户列表 */
-export async function listUsers() {
-  return api('/auth/users')
+/** 仅管理员：用户列表，可选 search（用户名/邮箱）、is_active（true/false） */
+export async function listUsers(params = {}) {
+  const q = new URLSearchParams()
+  if (params.search != null && params.search !== '') q.set('search', params.search)
+  if (params.is_active === true) q.set('is_active', 'true')
+  if (params.is_active === false) q.set('is_active', 'false')
+  const query = q.toString()
+  return api(`/auth/users${query ? '?' + query : ''}`)
 }
 
 /** 仅管理员：更新用户（禁用/启用、重置密码） */
@@ -97,11 +102,13 @@ export async function getLibrary(id) {
   return api(`/libraries/${id}`)
 }
 
-export async function createLibrary(name, description = '') {
+export async function createLibrary(name, description = '', departmentId = null) {
+  const body = { name, description }
+  if (departmentId != null) body.department_id = departmentId
   return api('/libraries/', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description }),
+    body: JSON.stringify(body),
   })
 }
 
@@ -120,7 +127,49 @@ export async function deleteLibrary(id) {
   return api(`/libraries/${id}`, { method: 'DELETE' })
 }
 
+/** 部门树 */
+export async function getDepartmentTree() {
+  return api('/departments/tree')
+}
+export async function getDepartmentInfo(id) {
+  return api(`/departments/${id}/info`)
+}
+export async function listDepartmentFiles(id) {
+  return api(`/departments/${id}/files`)
+}
+export async function listDepartmentLibraries(id) {
+  return api(`/departments/${id}/libraries`)
+}
+export async function createDepartment(name, parentId = null, sortOrder = 0) {
+  return api('/departments/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, parent_id: parentId, sort_order: sortOrder }),
+  })
+}
+export async function updateDepartment(id, { name, parent_id, sort_order }) {
+  const body = {}
+  if (name !== undefined) body.name = name
+  if (parent_id !== undefined) body.parent_id = parent_id
+  if (sort_order !== undefined) body.sort_order = sort_order
+  return api(`/departments/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+export async function deleteDepartment(id) {
+  return api(`/departments/${id}`, { method: 'DELETE' })
+}
+
 /** 文件分享：仅拥有者可管理 */
+export async function listMyShares() {
+  return api('/files/shares/mine')
+}
+/** 分享给我的文件列表 */
+export async function listSharesToMe() {
+  return api('/files/shares/to-me')
+}
 export async function listFileShareAddableUsers(entryId) {
   return api(`/files/shares/addable-users?entry_id=${entryId}`)
 }

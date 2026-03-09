@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api import audit, auth, files, libraries
+from backend.app.api import audit, auth, departments, files, libraries
 from backend.app.core.config import get_settings
 from backend.app.core.security import get_password_hash
 from backend.app.db.base import Base
@@ -25,6 +25,36 @@ def _ensure_file_entries_has_deleted_at() -> None:
         return
     with engine.connect() as conn:
         conn.execute(text("ALTER TABLE file_entries ADD COLUMN deleted_at DATETIME"))
+        conn.commit()
+
+
+def _ensure_users_has_department_id() -> None:
+    """兼容旧库：若 users 表缺少 department_id 列则自动添加"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "users" not in insp.get_table_names():
+        return
+    cols = [c["name"] for c in insp.get_columns("users")]
+    if "department_id" in cols:
+        return
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN department_id INTEGER REFERENCES departments(id)"))
+        conn.commit()
+
+
+def _ensure_libraries_has_department_id() -> None:
+    """兼容旧库：若 libraries 表缺少 department_id 列则自动添加"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "libraries" not in insp.get_table_names():
+        return
+    cols = [c["name"] for c in insp.get_columns("libraries")]
+    if "department_id" in cols:
+        return
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE libraries ADD COLUMN department_id INTEGER REFERENCES departments(id)"))
         conn.commit()
 
 
@@ -66,6 +96,8 @@ def create_app() -> FastAPI:
     # 初始化数据库表（开发期使用，生产建议使用迁移工具）
     Base.metadata.create_all(bind=engine)
     _ensure_file_entries_has_deleted_at()
+    _ensure_users_has_department_id()
+    _ensure_libraries_has_department_id()
     _ensure_default_admin()
 
     app = FastAPI(
@@ -91,6 +123,7 @@ def create_app() -> FastAPI:
     app.include_router(libraries.router)
     app.include_router(files.router)
     app.include_router(audit.router)
+    app.include_router(departments.router)
 
     return app
 

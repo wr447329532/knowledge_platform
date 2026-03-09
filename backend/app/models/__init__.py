@@ -5,4 +5,5 @@ from backend.app.models.library_member import LibraryMember  # noqa (保留表�
 from backend.app.models.file_share import FileShare  # noqa
 from backend.app.models.file import FileEntry, FileVersion  # noqa
 from backend.app.models.audit import AuditLog  # noqa
+from backend.app.models.department import Department  # noqa
 

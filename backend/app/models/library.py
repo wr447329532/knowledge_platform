@@ -16,6 +16,12 @@ class Library(Base):
     description = Column(Text, nullable=True)
 
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    department_id = Column(
+        Integer,
+        ForeignKey("departments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
@@ -23,4 +29,5 @@ class Library(Base):
     )
 
     owner = relationship("User")
+    department = relationship("Department", backref="libraries")
 

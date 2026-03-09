@@ -1,13 +1,15 @@
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
+from sqlalchemy import or_
+from sqlalchemy.orm import Session, joinedload
 
 from backend.app.api.deps import get_current_user, get_current_active_superuser
 from backend.app.core.audit import log_audit
 from backend.app.core.security import create_access_token, get_password_hash, verify_password
 from backend.app.db.session import get_db
+from backend.app.models.department import Department
 from backend.app.models.user import User
 from backend.app.schemas.auth import ChangePassword, Token, UserCreate, UserRead, UserUpdate
 
@@ -15,21 +17,27 @@ from backend.app.schemas.auth import ChangePassword, Token, UserCreate, UserRead
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _user_to_read(user: User, is_superuser_override: bool | None = None) -> UserRead:
+    """将 User ORM 转为 UserRead，兼容邮箱与部门。"""
+    is_superuser = is_superuser_override if is_superuser_override is not None else (user.username == "admin" or user.is_superuser)
+    email = user.email if user.email and user.email not in ("admin@local", "admin@localhost") else "admin@example.com"
+    dept_name = user.department.name if getattr(user, "department", None) and user.department else None
+    return UserRead(
+        id=user.id,
+        username=user.username,
+        email=email,
+        is_active=user.is_active,
+        is_superuser=is_superuser,
+        created_at=user.created_at,
+        department_id=user.department_id,
+        department_name=dept_name,
+    )
+
+
 @router.get("/me", response_model=UserRead)
 def get_me(current_user: User = Depends(get_current_user)):
     """获取当前登录用户信息。用户名 admin 的账号始终视为管理员（与权限校验一致）。"""
-    # 保证前端拿到的 is_superuser 与后端权限一致，写死的 admin 账号恒为管理员
-    is_superuser = current_user.username == "admin" or current_user.is_superuser
-    # 兼容旧数据：admin@local 不符合 EmailStr，统一返回合法邮箱
-    email = current_user.email if current_user.email not in ("admin@local", "admin@localhost") else "admin@example.com"
-    return UserRead(
-        id=current_user.id,
-        username=current_user.username,
-        email=email,
-        is_active=current_user.is_active,
-        is_superuser=is_superuser,
-        created_at=current_user.created_at,
-    )
+    return _user_to_read(current_user, is_superuser_override=(current_user.username == "admin" or current_user.is_superuser))
 
 
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
@@ -66,19 +74,24 @@ def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="用户名或邮箱已被使用",
         )
+    if user_in.department_id is not None:
+        dept = db.query(Department).filter(Department.id == user_in.department_id).first()
+        if not dept:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="所选部门不存在")
     user = User(
         username=user_in.username,
         email=user_in.email,
         hashed_password=get_password_hash(user_in.password),
         is_active=True,
         is_superuser=user_in.is_superuser,
+        department_id=user_in.department_id,
     )
     db.add(user)
     db.flush()
     log_audit(db, current_user.id, current_user.username, "create_user", "user", user.id, f"created={user_in.username}")
     db.commit()
     db.refresh(user)
-    return user
+    return _user_to_read(user)
 
 
 @router.post("/login", response_model=Token)
@@ -101,12 +114,20 @@ def login(
 
 @router.get("/users", response_model=List[UserRead])
 def list_users(
+    search: Optional[str] = Query(None, description="按用户名或邮箱模糊搜索"),
+    is_active: Optional[bool] = Query(None, description="按状态筛选：true=活跃，false=停用"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_superuser),
 ):
-    """仅管理员：列出所有用户"""
-    users = db.query(User).order_by(User.id.asc()).all()
-    return users
+    """仅管理员：列出用户，支持按关键词、状态筛选"""
+    q = db.query(User).options(joinedload(User.department)).order_by(User.id.asc())
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        q = q.filter(or_(User.username.ilike(term), User.email.ilike(term)))
+    if is_active is not None:
+        q = q.filter(User.is_active == is_active)
+    users = q.all()
+    return [_user_to_read(u) for u in users]
 
 
 @router.patch("/users/{user_id}", response_model=UserRead)
@@ -116,8 +137,8 @@ def update_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_superuser),
 ):
-    """仅管理员：禁用/启用用户、重置密码。不能禁用自己。"""
-    user = db.query(User).filter(User.id == user_id).first()
+    """仅管理员：禁用/启用用户、重置密码、修改所属部门。不能禁用自己。"""
+    user = db.query(User).options(joinedload(User.department)).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
     if body.is_active is False and user.id == current_user.id:
@@ -128,7 +149,16 @@ def update_user(
     if body.new_password is not None:
         user.hashed_password = get_password_hash(body.new_password)
         log_audit(db, current_user.id, current_user.username, "reset_password", "user", user.id, f"target={user.username}")
+    if body.department_id is not None:
+        if body.department_id == 0:
+            user.department_id = None
+        else:
+            dept = db.query(Department).filter(Department.id == body.department_id).first()
+            if not dept:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="所选部门不存在")
+            user.department_id = body.department_id
+        log_audit(db, current_user.id, current_user.username, "update_user", "user", user.id, f"department_id={user.department_id}")
     db.commit()
     db.refresh(user)
-    return user
+    return _user_to_read(user)
 

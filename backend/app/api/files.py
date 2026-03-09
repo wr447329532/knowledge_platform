@@ -1,11 +1,11 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, Query, status
 from fastapi.responses import FileResponse
 from jose import JWTError, jwt
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_user
@@ -18,6 +18,7 @@ from backend.app.core.library_access import (
     has_library_access,
 )
 from backend.app.db.session import get_db
+from backend.app.models.department import Department
 from backend.app.models.file import FileEntry, FileVersion
 from backend.app.models.file_share import FileShare
 from backend.app.models.library import Library
@@ -67,9 +68,38 @@ class FileShareRead(BaseModel):
         from_attributes = True
 
 
+SharePermission = Literal["read", "download"]
+
+
 class FileShareAdd(BaseModel):
+    user_id: int = Field(..., description="被分享用户 ID")
+    permission: SharePermission = Field("read", description="read=只读/预览，download=可下载")
+
+
+class MyShareRow(BaseModel):
+    """我发出的分享：文件路径、共享给谁（用户/部门）、权限"""
+    id: int
+    file_entry_id: int
+    file_path: str
+    library_id: int
+    library_name: str
     user_id: int
-    permission: str = "read"  # 仅支持只读/预览，不支持下载
+    username: str
+    department_name: Optional[str] = None
+    permission: str  # read | download
+    created_at: Optional[str] = None
+
+
+class SharedToMeRow(BaseModel):
+    """分享给我的：文件路径、所属库、分享者、权限"""
+    id: int
+    file_entry_id: int
+    file_path: str
+    library_id: int
+    library_name: str
+    owner_username: str
+    permission: str  # read | download
+    created_at: Optional[str] = None
 
 
 def _ensure_storage_root() -> Path:
@@ -790,6 +820,96 @@ def list_file_share_addable_users(
     return [AddableUserRead(id=u[0], username=u[1]) for u in users]
 
 
+def _normalize_permission(p: str) -> str:
+    """统一为 read 或 download"""
+    if p and p.strip().lower() == "download":
+        return "download"
+    return "read"
+
+
+@router.get("/shares/mine", response_model=List[MyShareRow])
+def list_my_shares(
+    library_id: Optional[int] = Query(None, description="按资料库 ID 筛选"),
+    limit: int = Query(500, ge=1, le=2000, description="返回条数"),
+    offset: int = Query(0, ge=0, description="偏移"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出当前用户发出的所有分享：文件路径、共享给谁（用户及部门）、权限"""
+    q = (
+        db.query(FileShare, FileEntry, Library, User)
+        .join(FileEntry, FileShare.file_entry_id == FileEntry.id)
+        .join(Library, FileEntry.library_id == Library.id)
+        .join(User, FileShare.user_id == User.id)
+        .filter(
+            FileEntry.deleted_at.is_(None),
+            Library.owner_id == current_user.id,
+        )
+    )
+    if library_id is not None:
+        q = q.filter(Library.id == library_id)
+    rows = q.order_by(FileShare.id.desc()).offset(offset).limit(limit).all()
+    out = []
+    for share, entry, lib, user in rows:
+        dept_name = None
+        if user.department_id:
+            dept = db.query(Department).filter(Department.id == user.department_id).first()
+            if dept:
+                dept_name = dept.name
+        out.append(
+            MyShareRow(
+                id=share.id,
+                file_entry_id=share.file_entry_id,
+                file_path=entry.path,
+                library_id=lib.id,
+                library_name=lib.name,
+                user_id=user.id,
+                username=user.username,
+                department_name=dept_name,
+                permission=_normalize_permission(share.permission),
+                created_at=share.created_at.isoformat() if share.created_at else None,
+            )
+        )
+    return out
+
+
+@router.get("/shares/to-me", response_model=List[SharedToMeRow])
+def list_shares_to_me(
+    library_id: Optional[int] = Query(None, description="按资料库 ID 筛选"),
+    limit: int = Query(500, ge=1, le=2000, description="返回条数"),
+    offset: int = Query(0, ge=0, description="偏移"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出分享给当前用户的所有文件：文件路径、所属库、分享者、权限"""
+    q = (
+        db.query(FileShare, FileEntry, Library, User)
+        .join(FileEntry, FileShare.file_entry_id == FileEntry.id)
+        .join(Library, FileEntry.library_id == Library.id)
+        .join(User, Library.owner_id == User.id)
+        .filter(
+            FileShare.user_id == current_user.id,
+            FileEntry.deleted_at.is_(None),
+        )
+    )
+    if library_id is not None:
+        q = q.filter(Library.id == library_id)
+    rows = q.order_by(FileShare.id.desc()).offset(offset).limit(limit).all()
+    return [
+        SharedToMeRow(
+            id=share.id,
+            file_entry_id=share.file_entry_id,
+            file_path=entry.path,
+            library_id=lib.id,
+            library_name=lib.name,
+            owner_username=owner.username,
+            permission=_normalize_permission(share.permission),
+            created_at=share.created_at.isoformat() if share.created_at else None,
+        )
+        for share, entry, lib, owner in rows
+    ]
+
+
 @router.get("/shares", response_model=List[FileShareRead])
 def list_file_shares(
     entry_id: int = Query(..., description="文件 ID"),
@@ -816,7 +936,7 @@ def list_file_shares(
             file_entry_id=s.file_entry_id,
             user_id=s.user_id,
             username=u.username,
-            permission=s.permission,
+            permission=_normalize_permission(s.permission),
             created_at=s.created_at.isoformat() if s.created_at else None,
         )
         for s, u in rows
@@ -830,7 +950,7 @@ def add_file_share(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """分享文件给用户（仅拥有者，仅文件非目录）"""
+    """分享文件给用户（仅拥有者，仅文件非目录）。权限：read=只读/预览，download=可下载。"""
     entry = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
     if not entry or entry.deleted_at:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
@@ -839,8 +959,7 @@ def add_file_share(
     lib = db.query(Library).filter(Library.id == entry.library_id).first()
     if not lib or lib.owner_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅文件拥有者可分享")
-    if body.permission != "read":
-        body.permission = "read"
+    perm = body.permission if body.permission in ("read", "download") else "read"
     if body.user_id == current_user.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能分享给自己")
     user = db.query(User).filter(User.id == body.user_id, User.is_active == True).first()
@@ -848,22 +967,22 @@ def add_file_share(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在或已禁用")
     existing = db.query(FileShare).filter(FileShare.file_entry_id == entry_id, FileShare.user_id == body.user_id).first()
     if existing:
-        existing.permission = "read"
+        existing.permission = perm
         db.commit()
         db.refresh(existing)
-        log_audit(db, current_user.id, current_user.username, "分享文件", "file_share", existing.id, f"分享给 {user.username} 文件 path={entry.path}")
+        log_audit(db, current_user.id, current_user.username, "分享文件", "file_share", existing.id, f"分享给 {user.username} 文件 path={entry.path} perm={perm}")
         return FileShareRead(
             id=existing.id,
             file_entry_id=existing.file_entry_id,
             user_id=existing.user_id,
             username=user.username,
-            permission=existing.permission,
+            permission=_normalize_permission(existing.permission),
             created_at=existing.created_at.isoformat() if existing.created_at else None,
         )
-    share = FileShare(file_entry_id=entry_id, user_id=body.user_id, permission="read")
+    share = FileShare(file_entry_id=entry_id, user_id=body.user_id, permission=perm)
     db.add(share)
     db.flush()
-    log_audit(db, current_user.id, current_user.username, "分享文件", "file_share", share.id, f"分享给 {user.username} 文件 path={entry.path}")
+    log_audit(db, current_user.id, current_user.username, "分享文件", "file_share", share.id, f"分享给 {user.username} 文件 path={entry.path} perm={perm}")
     db.commit()
     db.refresh(share)
     return FileShareRead(
@@ -871,7 +990,47 @@ def add_file_share(
         file_entry_id=share.file_entry_id,
         user_id=share.user_id,
         username=user.username,
-        permission=share.permission,
+        permission=_normalize_permission(share.permission),
+        created_at=share.created_at.isoformat() if share.created_at else None,
+    )
+
+
+class FileShareUpdate(BaseModel):
+    """仅更新分享权限"""
+    permission: SharePermission = Field(..., description="read=只读/预览，download=可下载")
+
+
+@router.patch("/shares", response_model=FileShareRead)
+def update_file_share(
+    entry_id: int = Query(..., description="文件 ID"),
+    user_id: int = Query(..., description="被分享用户 ID"),
+    body: FileShareUpdate = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """修改已有分享的权限（仅拥有者）"""
+    entry = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    lib = db.query(Library).filter(Library.id == entry.library_id).first()
+    if not lib or lib.owner_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅文件拥有者可管理分享")
+    share = db.query(FileShare).filter(FileShare.file_entry_id == entry_id, FileShare.user_id == user_id).first()
+    if not share:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="该用户未被分享")
+    perm = body.permission if body.permission in ("read", "download") else share.permission
+    share.permission = perm
+    db.commit()
+    db.refresh(share)
+    user = db.query(User).filter(User.id == user_id).first()
+    username = user.username if user else str(user_id)
+    log_audit(db, current_user.id, current_user.username, "修改分享权限", "file_share", share.id, f"对 {username} 文件 path={entry.path} 设为 {perm}")
+    return FileShareRead(
+        id=share.id,
+        file_entry_id=share.file_entry_id,
+        user_id=share.user_id,
+        username=username,
+        permission=_normalize_permission(share.permission),
         created_at=share.created_at.isoformat() if share.created_at else None,
     )
 
