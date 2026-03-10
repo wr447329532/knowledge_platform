@@ -2,7 +2,7 @@
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 
 from backend.app.db.base import Base
 
@@ -22,5 +22,8 @@ class LibraryMember(Base):
 
     __table_args__ = (UniqueConstraint("library_id", "user_id", name="uq_library_member"),)
 
-    library = relationship("Library", backref="members")
+    library = relationship(
+        "Library",
+        backref=backref("members", cascade="all, delete-orphan"),
+    )
     user = relationship("User", backref="library_memberships")

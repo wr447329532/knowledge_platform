@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 
 from backend.app.models.department import Department
 from backend.app.models.file import FileEntry
-from backend.app.models.file_share import FileShare
 from backend.app.models.library import Library
+from backend.app.models.library_member import LibraryMember
 from backend.app.models.user import User
 
 
@@ -33,20 +33,64 @@ def _get_accessible_department_ids(db: Session, user: User) -> Set[int]:
     return accessible
 
 
+def _get_library_member(db: Session, library_id: int, user_id: int) -> LibraryMember | None:
+    """查询用户是否为库成员"""
+    return (
+        db.query(LibraryMember)
+        .filter(
+            LibraryMember.library_id == library_id,
+            LibraryMember.user_id == user_id,
+        )
+        .first()
+    )
+
+
 def has_library_access(db: Session, library_id: int, user: User, require_write: bool = False) -> Tuple[Library, bool]:
     """
     检查用户是否有权访问资料库。
     返回 (library, is_writeable)。
-    - 拥有者：读写
-    - 被分享者（有 FileShare）：只读，require_write=True 时拒绝
+    权限优先级从高到低：
+    1. 超级管理员：完全权限
+    2. 拥有者：完全权限
+    3. 库成员（LibraryMember）：role=read/write 决定读/写，不受 visibility 限制
+    4. public 库：所有人可读
+    5. 部门库：部门及子部门成员可读写
+    6. 指定成员库（members）：除 Owner/库成员外无访问权限
+    7. 文件级分享：只读，require_write=True 时拒绝
     """
     lib = db.query(Library).filter(Library.id == library_id).first()
     if not lib:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料库不存在")
 
+    # 超级管理员：完全权限
+    if user.is_superuser:
+        return lib, True
+
     # 拥有者：完全权限
     if lib.owner_id == user.id:
         return lib, True
+
+    visibility = getattr(lib, "visibility", "private") or "private"
+
+    # 库成员：始终优先于 visibility
+    member = _get_library_member(db, library_id, user.id)
+    if member:
+        can_write = member.role == "write"
+        if require_write and not can_write:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="该资料库为只读",
+            )
+        return lib, can_write
+
+    # 全员可见库：所有登录用户可读
+    if visibility == "public":
+        if require_write:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="该资料库为只读",
+            )
+        return lib, False
 
     # 部门库：用户所在部门或其子部门的成员可读写
     if getattr(lib, "department_id", None) is not None:
@@ -54,38 +98,42 @@ def has_library_access(db: Session, library_id: int, user: User, require_write: 
         if lib.department_id in acc_dept_ids:
             return lib, True
 
-    # 被分享者：该库中至少有被分享的文件
-    has_share = (
-        db.query(FileShare.id)
-        .join(FileEntry, FileShare.file_entry_id == FileEntry.id)
-        .filter(FileEntry.library_id == library_id, FileShare.user_id == user.id)
-        .first()
-    )
-    if has_share:
-        if require_write:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="该资料库为只读，仅可访问分享给您的文件")
-        return lib, False
+    # 指定成员库：除 Owner/库成员外无访问权限（库成员已在上方返回）
+    if visibility == "members":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该资料库")
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该资料库")
 
 
 def get_accessible_library_ids(db: Session, user: User) -> list[int]:
-    """获取用户可访问的资料库 ID：拥有 + 有文件被分享给自己 + 所属部门库"""
+    """获取用户可访问的资料库 ID：拥有 + 部门库 + 库成员 + public 库"""
+    # 拥有的资料库
     owned = [r[0] for r in db.query(Library.id).filter(Library.owner_id == user.id).all()]
-    shared_lib_ids = (
-        db.query(FileEntry.library_id)
-        .join(FileShare, FileShare.file_entry_id == FileEntry.id)
-        .filter(FileShare.user_id == user.id)
-        .distinct()
-        .all()
-    )
-    shared = [r[0] for r in shared_lib_ids]
+
+    # 部门库
     acc_dept_ids = _get_accessible_department_ids(db, user)
     dept_lib_ids = [
         r[0]
         for r in db.query(Library.id).filter(Library.department_id.in_(acc_dept_ids)).all()
     ]
-    return list(set(owned) | set(shared) | set(dept_lib_ids))
+
+    # 库成员
+    member_lib_ids = [
+        r[0]
+        for r in db.query(LibraryMember.library_id)
+        .filter(LibraryMember.user_id == user.id)
+        .all()
+    ]
+
+    # public 库（所有登录用户可见）
+    public_lib_ids = [
+        r[0]
+        for r in db.query(Library.id)
+        .filter(Library.visibility == "public")
+        .all()
+    ]
+
+    return list(set(owned) | set(dept_lib_ids) | set(member_lib_ids) | set(public_lib_ids))
 
 
 def check_can_manage_library(lib: Library, user: User, db: Session) -> None:
@@ -97,41 +145,70 @@ def check_can_manage_library(lib: Library, user: User, db: Session) -> None:
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅资料库拥有者可删除资料库")
 
 
-def get_file_share_permission(db: Session, file_entry_id: int, user_id: int) -> str | None:
-    """获取用户对某文件的分享权限。返回 'read'|'download'|None"""
-    share = (
-        db.query(FileShare)
-        .filter(FileShare.file_entry_id == file_entry_id, FileShare.user_id == user_id)
-        .first()
-    )
-    return share.permission if share else None
-
-
 def can_access_file(db: Session, entry: FileEntry, user: User) -> bool:
-    """用户是否可访问该文件（拥有者、部门库成员或被分享）"""
+    """
+    用户是否可访问该文件（预览 / 查看）。
+    继承与库级 ACL 一致的优先级：
+    1. 超级管理员 / 拥有者
+    2. public 库
+    3. 部门库成员
+    4. LibraryMember 成员（read / write）
+    """
     lib = db.query(Library).filter(Library.id == entry.library_id).first()
     if not lib:
         return False
-    if lib.owner_id == user.id:
+
+    # 超级管理员 / 拥有者
+    if user.is_superuser or lib.owner_id == user.id:
         return True
+
+    visibility = getattr(lib, "visibility", "private") or "private"
+
+    # public 库：所有登录用户可访问
+    if visibility == "public":
+        return True
+
+    # 部门库成员
     if getattr(lib, "department_id", None) is not None:
         acc = _get_accessible_department_ids(db, user)
         if lib.department_id in acc:
             return True
-    perm = get_file_share_permission(db, entry.id, user.id)
-    return perm is not None
+
+    # 指定成员库 / 其他 visibility：库成员可访问
+    member = _get_library_member(db, lib.id, user.id)
+    if member is not None:
+        return True
+
+    return False
 
 
 def can_download_file(db: Session, entry: FileEntry, user: User) -> bool:
-    """用户是否可下载该文件（拥有者、部门库成员可下载，被分享者需 permission=download）"""
+    """
+    用户是否可下载该文件。
+    规则：
+    - 超级管理员 / 拥有者：始终可下载
+    - 其他用户：需先通过库级访问控制，且库 allow_download=True
+    """
     lib = db.query(Library).filter(Library.id == entry.library_id).first()
     if not lib:
         return False
-    if lib.owner_id == user.id:
+
+    # 超级管理员 / 拥有者
+    if user.is_superuser or lib.owner_id == user.id:
         return True
+
+    visibility = getattr(lib, "visibility", "private") or "private"
+
+    # 部门库成员
     if getattr(lib, "department_id", None) is not None:
         acc = _get_accessible_department_ids(db, user)
         if lib.department_id in acc:
             return True
-    perm = get_file_share_permission(db, entry.id, user.id)
-    return perm == "download"
+
+    # 指定成员库 / public / private / department：只要是库成员、部门成员或 public 访问者且库允许下载，即可下载
+    # 复用 can_access_file 进行访问判断
+    if not can_access_file(db, entry, user):
+        return False
+
+    # 库级访问通过后，再看库是否允许下载
+    return getattr(lib, "allow_download", True)

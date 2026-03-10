@@ -130,6 +130,29 @@ def list_users(
     return [_user_to_read(u) for u in users]
 
 
+@router.get("/users/active", response_model=List[UserRead])
+def list_active_users_for_library(
+    search: Optional[str] = Query(None, description="按用户名或邮箱模糊搜索"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    列出当前系统中的活跃用户，用于资料库成员选择。
+    所有登录用户均可调用，仅返回活跃账号的基础信息。
+    """
+    q = (
+        db.query(User)
+        .options(joinedload(User.department))
+        .filter(User.is_active == True)  # noqa: E712
+        .order_by(User.id.asc())
+    )
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        q = q.filter(or_(User.username.ilike(term), User.email.ilike(term)))
+    users = q.all()
+    return [_user_to_read(u) for u in users]
+
+
 @router.patch("/users/{user_id}", response_model=UserRead)
 def update_user(
     user_id: int,

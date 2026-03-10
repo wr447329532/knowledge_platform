@@ -58,6 +58,38 @@ def _ensure_libraries_has_department_id() -> None:
         conn.commit()
 
 
+def _ensure_libraries_has_visibility() -> None:
+    """兼容旧库：若 libraries 表缺少 visibility 列则自动添加，默认 private"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "libraries" not in insp.get_table_names():
+        return
+    cols = [c["name"] for c in insp.get_columns("libraries")]
+    if "visibility" in cols:
+        return
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE libraries ADD COLUMN visibility VARCHAR(20) NOT NULL DEFAULT 'private'"))
+        conn.commit()
+
+
+def _ensure_libraries_has_allow_download() -> None:
+    """兼容旧库：若 libraries 表缺少 allow_download 列则自动添加，默认允许下载"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "libraries" not in insp.get_table_names():
+        return
+    cols = [c["name"] for c in insp.get_columns("libraries")]
+    if "allow_download" in cols:
+        return
+    with engine.connect() as conn:
+        conn.execute(
+            text("ALTER TABLE libraries ADD COLUMN allow_download BOOLEAN NOT NULL DEFAULT 1")
+        )
+        conn.commit()
+
+
 def _ensure_default_admin() -> None:
     """启动时确保存在默认管理员：用户名 admin，密码 admin123"""
     db = SessionLocal()
@@ -98,6 +130,8 @@ def create_app() -> FastAPI:
     _ensure_file_entries_has_deleted_at()
     _ensure_users_has_department_id()
     _ensure_libraries_has_department_id()
+    _ensure_libraries_has_visibility()
+    _ensure_libraries_has_allow_download()
     _ensure_default_admin()
 
     app = FastAPI(

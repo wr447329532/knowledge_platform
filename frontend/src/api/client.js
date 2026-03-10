@@ -82,6 +82,14 @@ export async function listUsers(params = {}) {
   return api(`/auth/users${query ? '?' + query : ''}`)
 }
 
+/** 库成员选择用的活跃用户列表：所有登录用户可调用，仅返回活跃账号 */
+export async function listUsersForLibrary(search = '') {
+  const q = new URLSearchParams()
+  if (search != null && search !== '') q.set('search', search)
+  const query = q.toString()
+  return api(`/auth/users/active${query ? '?' + query : ''}`)
+}
+
 /** 仅管理员：更新用户（禁用/启用、重置密码） */
 export async function updateUser(userId, { is_active, new_password }) {
   const body = {}
@@ -102,9 +110,10 @@ export async function getLibrary(id) {
   return api(`/libraries/${id}`)
 }
 
-export async function createLibrary(name, description = '', departmentId = null) {
-  const body = { name, description }
+export async function createLibrary(name, description = '', departmentId = null, visibility = 'private', memberUserIds = [], allowDownload = true) {
+  const body = { name, description, visibility, allow_download: allowDownload }
   if (departmentId != null) body.department_id = departmentId
+  if (Array.isArray(memberUserIds) && memberUserIds.length) body.member_user_ids = memberUserIds
   return api('/libraries/', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -112,10 +121,12 @@ export async function createLibrary(name, description = '', departmentId = null)
   })
 }
 
-export async function updateLibrary(id, name, description) {
+export async function updateLibrary(id, name, description, visibility, allowDownload) {
   const body = {}
   if (name !== undefined) body.name = name
   if (description !== undefined) body.description = description
+  if (visibility !== undefined) body.visibility = visibility
+  if (allowDownload !== undefined) body.allow_download = allowDownload
   return api(`/libraries/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -125,6 +136,23 @@ export async function updateLibrary(id, name, description) {
 
 export async function deleteLibrary(id) {
   return api(`/libraries/${id}`, { method: 'DELETE' })
+}
+
+/** 资料库成员管理 */
+export async function listLibraryMembers(libraryId) {
+  return api(`/libraries/${libraryId}/members`)
+}
+
+export async function addLibraryMember(libraryId, userId, role = 'read') {
+  return api(`/libraries/${libraryId}/members?user_id=${encodeURIComponent(userId)}&role=${encodeURIComponent(role)}`, {
+    method: 'POST',
+  })
+}
+
+export async function removeLibraryMember(libraryId, userId) {
+  return api(`/libraries/${libraryId}/members/${userId}`, {
+    method: 'DELETE',
+  })
 }
 
 /** 部门树 */

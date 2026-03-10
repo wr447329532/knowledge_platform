@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from backend.app.db.base import Base
@@ -22,6 +22,12 @@ class Library(Base):
         nullable=True,
         index=True,
     )
+
+    # 可见性：private=私有；members=指定成员；department=部门可见；public=全员可见
+    visibility = Column(String(20), nullable=False, default="private")
+
+    # 是否允许非拥有者下载库中文件（拥有者和超级管理员始终可下载）
+    allow_download = Column(Boolean, nullable=False, default=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
