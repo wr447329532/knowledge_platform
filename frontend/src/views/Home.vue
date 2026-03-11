@@ -28,11 +28,13 @@
         v-model:fileSortOrder="fileSortOrder"
         v-model:fileViewMode="fileViewMode"
         :breadcrumb-segments="breadcrumbSegments"
+        :notify-count="unreadNotifyCount"
         @search="doSearch"
         @new-lib="openNewLib"
-        @upload="showUpload = true; uploadErr = ''"
+        @upload="openUploadModal"
         @clear-lib="currentLib = null; pathPrefix = ''"
         @set-path="p => pathPrefix = p"
+        @toggle-notify="toggleNotifyPanel"
       />
 
       <!-- Toast 提示 -->
@@ -43,14 +45,23 @@
         <div v-if="errorMessage" class="error-toast">{{ errorMessage }}</div>
       </Transition>
 
-      <!-- 我的文件库 -->
-      <LibraryPage
-        v-if="tab === 'lib'"
+      <!-- 部门视图：选中部门时显示 -->
+      <DepartmentFiles
+        v-if="tab === 'lib' && activeDeptId"
+        :me="me"
         :active-dept-id="activeDeptId"
-        :active-dept-info="activeDeptInfo"
-        :active-dept-libraries="activeDeptLibraries"
-        :active-dept-loading="activeDeptLoading"
-        :active-dept-err="activeDeptErr"
+        @back="clearDeptView"
+        @open-lib="openDeptLib"
+      />
+
+      <!-- 我的文件库：未选中部门时显示 -->
+      <LibraryPage
+        v-else-if="tab === 'lib'"
+        :active-dept-id="null"
+        :active-dept-info="null"
+        :active-dept-libraries="[]"
+        :active-dept-loading="false"
+        :active-dept-err="''"
         :current-lib="currentLib"
         :libraries="sortedLibraries"
         :file-view-mode="fileViewMode"
@@ -106,10 +117,23 @@
         :trash-lib-id="trashLibId"
         :trash-list="trashList"
         :trash-loading="trashLoading"
+        :trash-library-list="trashLibraryList"
+        :trash-library-loading="trashLibraryLoading"
         :format-date="formatDate"
         @lib-change="v => { trashLibId = v; loadTrash() }"
         @restore="restore"
         @perm-delete="permDelete"
+        @clear="clearTrash"
+        @restore-lib="restoreLib"
+        @perm-delete-lib="permDeleteLib"
+      />
+
+      <NotificationPanel
+        :is-open="showNotifyPanel"
+        :notifications="notifications"
+        :unread-count="unreadNotifyCount"
+        @close="showNotifyPanel = false"
+        @mark-all="markAllNotifications"
       />
 
     </div><!-- /app-main -->
@@ -187,17 +211,126 @@
       </div>
     </div>
 
-    <!-- 上传文件 -->
-    <div v-if="showUpload" class="modal">
+    <!-- 删除资料库确认 -->
+    <div v-if="showDeleteLibConfirm" class="modal">
       <div class="card">
-        <h3>上传文件</h3>
-        <p>路径前缀: {{ pathPrefix || '/' }}</p>
-        <input type="file" ref="fileInput" @change="onFileSelect" />
-        <input v-model="uploadPath" placeholder="相对路径，如 readme.txt（留空则用文件名）" style="width:100%; margin-top:8px;" />
-        <p v-if="uploadErr" class="text-danger" style="margin-top:12px; font-weight:600;">{{ uploadErr }}</p>
-        <div class="modal-actions">
-          <button class="primary" @click="upload">上传</button>
-          <button @click="showUpload = false">取消</button>
+        <h3>删除资料库</h3>
+        <p style="margin-top:8px;">
+          确定将资料库「{{ libToDelete?.name }}」移入回收站吗？<br />
+          可在回收站中恢复或永久删除。
+        </p>
+        <div class="modal-actions" style="margin-top:16px;">
+          <button class="primary danger" @click="doConfirmDeleteLib">确定删除</button>
+          <button @click="showDeleteLibConfirm = false; libToDelete = null">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 上传文件（新 UI：拖拽、多文件、进度） -->
+    <div v-if="showUpload" class="upload-modal-overlay" @click.self="closeUploadModal">
+      <div class="upload-modal-card">
+        <div class="upload-modal-header">
+          <div>
+            <h2 class="upload-modal-title">上传文件</h2>
+            <p v-if="uploadFiles.length" class="upload-modal-subtitle">
+              {{ uploadCompletedCount }} / {{ uploadFiles.length }} 个文件已上传
+            </p>
+          </div>
+          <button type="button" class="upload-modal-close" @click="closeUploadModal" aria-label="关闭">
+            <Icons name="x" class="upload-modal-close-icon" />
+          </button>
+        </div>
+        <div class="upload-modal-body">
+          <input
+            ref="uploadModalInputRef"
+            type="file"
+            multiple
+            class="upload-modal-input-hidden"
+            @change="onUploadFileSelect"
+          />
+          <template v-if="!uploadFiles.length">
+            <div
+              class="upload-dropzone"
+              :class="{ 'upload-dropzone-active': uploadDropzoneActive }"
+              @dragenter.prevent="uploadDropzoneActive = true"
+              @dragleave.prevent="uploadDropzoneActive = false"
+              @dragover.prevent
+              @drop.prevent="onUploadDrop"
+              @click="triggerUploadInput"
+            >
+              <Icons name="cloud-up" class="upload-dropzone-icon" />
+              <h3 class="upload-dropzone-title">拖拽文件到此处上传</h3>
+              <p class="upload-dropzone-hint">或点击此处选择文件</p>
+              <p class="upload-dropzone-limit">支持上传任意文件类型，单个文件不超过 500MB</p>
+            </div>
+          </template>
+          <template v-else>
+            <div
+              class="upload-dropzone upload-dropzone-small"
+              :class="{ 'upload-dropzone-active': uploadDropzoneActive }"
+              @dragenter.prevent="uploadDropzoneActive = true"
+              @dragleave.prevent="uploadDropzoneActive = false"
+              @dragover.prevent
+              @drop.prevent="onUploadDrop"
+              @click="triggerUploadInput"
+            >
+              <Icons name="cloud-up" class="upload-dropzone-icon-small" />
+              <p class="upload-dropzone-hint-small">点击或拖拽添加更多文件</p>
+            </div>
+            <div class="upload-file-list">
+              <div
+                v-for="uf in uploadFiles"
+                :key="uf.id"
+                class="upload-file-item"
+              >
+                <div class="upload-file-item-icon">
+                  <Icons v-if="getUploadFileIcon(uf.file.name) === 'image'" name="file-text" class="icon-purple" />
+                  <Icons v-else-if="getUploadFileIcon(uf.file.name) === 'code'" name="file-text" class="icon-blue" />
+                  <Icons v-else name="file-text" class="icon-gray" />
+                </div>
+                <div class="upload-file-item-main">
+                  <div class="upload-file-item-row">
+                    <p class="upload-file-item-name">{{ uf.file.name }}</p>
+                    <div class="upload-file-item-actions">
+                      <Icons v-if="uf.status === 'uploading'" name="loader" class="upload-file-loader" />
+                      <Icons v-else-if="uf.status === 'success'" name="check-circle" class="upload-file-success" />
+                      <Icons v-else-if="uf.status === 'error'" name="x-circle" class="upload-file-error" />
+                      <button type="button" class="upload-file-remove" @click.stop="removeUploadFile(uf.id)" aria-label="移除">
+                        <Icons name="x" class="upload-file-remove-icon" />
+                      </button>
+                    </div>
+                  </div>
+                  <div class="upload-file-item-meta">
+                    <span class="upload-file-item-size">{{ formatUploadSize(uf.file.size) }}</span>
+                    <span v-if="uf.status === 'uploading'" class="upload-file-item-progress">{{ uf.progress }}%</span>
+                    <span v-else-if="uf.status === 'success'" class="upload-file-item-status success">上传成功</span>
+                    <span v-else-if="uf.status === 'error'" class="upload-file-item-status error">{{ uf.error || '上传失败' }}</span>
+                  </div>
+                  <div v-if="uf.status !== 'pending'" class="upload-file-progress-bar">
+                    <div
+                      class="upload-file-progress-fill"
+                      :class="{ error: uf.status === 'error', success: uf.status === 'success' }"
+                      :style="{ width: uf.status === 'error' ? '100%' : uf.progress + '%' }"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+        <div class="upload-modal-footer">
+          <div class="upload-modal-footer-left">
+            <template v-if="uploadFiles.length">
+              共 {{ uploadFiles.length }} 个文件
+              <span v-if="uploadFiles.some(f => f.status === 'error')" class="upload-modal-footer-error"> · 部分文件上传失败</span>
+            </template>
+          </div>
+          <div class="upload-modal-footer-actions">
+            <button type="button" class="upload-btn-secondary" @click="closeUploadModal">取消</button>
+            <button type="button" class="upload-btn-primary" :disabled="uploadCompletedCount === 0" @click="finishUploadModal">
+              完成
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -473,10 +606,12 @@ import Icons from '../components/Icons.vue'
 import DepartmentTree from '../components/DepartmentTree.vue'
 import DepartmentTableRow from '../components/DepartmentTableRow.vue'
 import LibraryPage from '../components/LibraryPage.vue'
+import DepartmentFiles from '../components/DepartmentFiles.vue'
 import AppSidebar from '../components/AppSidebar.vue'
 import AppTopbar from '../components/AppTopbar.vue'
 import SharedPage from '../components/SharedPage.vue'
 import TrashPage from '../components/TrashPage.vue'
+import NotificationPanel from '../components/NotificationPanel.vue'
 
 const router = useRouter()
 const me = ref(null)
@@ -510,12 +645,19 @@ const newLibMemberKeyword = ref('')
 const showUpload = ref(false)
 const uploadPath = ref('')
 const selectedFile = ref(null)
+const showDeleteLibConfirm = ref(false)
+const libToDelete = ref(null)
+const uploadFiles = ref([])
+const uploadDropzoneActive = ref(false)
+const uploadModalInputRef = ref(null)
 const showMkdir = ref(false)
 const mkdirPath = ref('')
 const err = ref('')
 const trashLibId = ref('')
 const trashList = ref([])
 const trashLoading = ref(false)
+const trashLibraryList = ref([])
+const trashLibraryLoading = ref(false)
 const mySharesList = ref([])
 const mySharesLoading = ref(false)
 const sharedSubTab = ref('mine')
@@ -592,6 +734,12 @@ const activeDeptLibraries = ref([])
 const activeDeptLoading = ref(false)
 const activeDeptErr = ref('')
 const uploadErr = ref('')
+
+const notifications = ref([])
+const showNotifyPanel = ref(false)
+const unreadNotifyCount = ref(0)
+
+const uploadCompletedCount = computed(() => uploadFiles.value.filter(f => f.status === 'success').length)
 
 // ---- computed ----
 
@@ -685,7 +833,7 @@ const sortedSearchResults = computed(() => _sortFileList(searchResults.value))
 function onNav(newTab) {
   if (newTab === 'lib') { tab.value = 'lib'; clearDeptView(); err.value = '' }
   if (newTab === 'shared') { tab.value = 'shared'; sharedSubTab.value = 'mine'; err.value = ''; loadMyShares() }
-  if (newTab === 'trash') { tab.value = 'trash'; err.value = ''; loadTrash() }
+  if (newTab === 'trash') { tab.value = 'trash'; err.value = ''; loadLibraryTrash(); loadTrash() }
 }
 
 function onSharedTab(subtab) {
@@ -830,17 +978,80 @@ async function doRename() {
 }
 
 function onFileSelect() { uploadErr.value = '' }
-async function upload() {
-  const input = fileInput.value
-  if (!input?.files?.length) { uploadErr.value = '请选择文件'; return }
-  const path = uploadPath.value.trim() || input.files[0].name
+
+function openUploadModal() {
+  showUpload.value = true
   uploadErr.value = ''
+  uploadFiles.value = []
+  uploadDropzoneActive.value = false
+}
+function closeUploadModal() {
+  showUpload.value = false
+  uploadFiles.value = []
+  uploadDropzoneActive.value = false
+}
+function addUploadFiles(files) {
+  if (!files?.length || !currentLib.value?.id) return
+  const basePath = pathPrefix.value || ''
+  const list = Array.from(files).map(file => ({
+    id: `${file.name}-${Date.now()}-${Math.random()}`,
+    file,
+    progress: 0,
+    status: 'pending',
+    error: undefined,
+  }))
+  uploadFiles.value = uploadFiles.value.concat(list)
+  list.forEach(uf => startUploadOne(uf.id))
+}
+function onUploadDrop(e) {
+  uploadDropzoneActive.value = false
+  const files = e.dataTransfer?.files
+  if (files?.length) addUploadFiles(Array.from(files))
+}
+function triggerUploadInput() {
+  uploadModalInputRef.value?.click()
+}
+function onUploadFileSelect(e) {
+  const files = e.target?.files
+  if (files?.length) addUploadFiles(Array.from(files))
+  e.target.value = ''
+}
+function removeUploadFile(id) {
+  uploadFiles.value = uploadFiles.value.filter(f => f.id !== id)
+}
+function formatUploadSize(bytes) {
+  if (bytes == null || bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return (bytes / Math.pow(k, i)).toFixed(1).replace(/\.0$/, '') + ' ' + sizes[i]
+}
+function getUploadFileIcon(fileName) {
+  const ext = (fileName || '').split('.').pop()?.toLowerCase()
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext || '')) return 'image'
+  if (['js', 'jsx', 'ts', 'tsx', 'css', 'html', 'json'].includes(ext || '')) return 'code'
+  return 'file'
+}
+async function startUploadOne(id) {
+  const uf = uploadFiles.value.find(f => f.id === id)
+  if (!uf || uf.status !== 'pending') return
+  const fullPath = pathPrefix.value ? pathPrefix.value + uf.file.name : uf.file.name
+  uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, status: 'uploading' } : f)
   try {
-    const fullPath = pathPrefix.value ? pathPrefix.value + path : path
-    await api.uploadFile(currentLib.value.id, fullPath, input.files[0])
-    showUpload.value = false; uploadPath.value = ''; input.value = ''
-    loadFiles(); loadStorageStats(); showSuccess('上传成功')
-  } catch (e) { uploadErr.value = e.message }
+    await api.uploadFileWithProgress(currentLib.value.id, fullPath, uf.file, (p) => {
+      uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, progress: p } : f)
+    })
+    uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, progress: 100, status: 'success' } : f)
+  } catch (e) {
+    uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, status: 'error', error: e.message } : f)
+  }
+}
+function finishUploadModal() {
+  const n = uploadCompletedCount.value
+  closeUploadModal()
+  loadFiles()
+  loadStorageStats()
+  if (n > 0) showSuccess(n === 1 ? '上传成功' : `已上传 ${n} 个文件`)
 }
 async function onFileDrop(e) {
   isDragging.value = false
@@ -933,6 +1144,46 @@ function openSharedLib(row) {
 
 // ---- 回收站 ----
 
+async function loadLibraryTrash() {
+  if (tab.value !== 'trash') return
+  trashLibraryLoading.value = true
+  try {
+    trashLibraryList.value = await api.listLibraryTrash()
+  } catch (e) {
+    err.value = e.message
+    trashLibraryList.value = []
+  } finally {
+    trashLibraryLoading.value = false
+  }
+}
+
+async function restoreLib(libraryId) {
+  err.value = ''
+  try {
+    await api.restoreLibrary(libraryId)
+    trashLibraryList.value = await api.listLibraryTrash()
+    libraries.value = await api.listLibraries()
+    showSuccess('资料库已恢复')
+  } catch (e) {
+    err.value = e.message
+  }
+}
+
+async function permDeleteLib(libraryId) {
+  if (!confirm('确定彻底删除该资料库？将同时删除库内所有文件，不可恢复。')) return
+  err.value = ''
+  try {
+    await api.permanentDeleteLibrary(libraryId)
+    trashLibraryList.value = await api.listLibraryTrash()
+    libraries.value = await api.listLibraries()
+    if (currentLib.value?.id === libraryId) currentLib.value = null
+    loadStorageStats()
+    showSuccess('已彻底删除')
+  } catch (e) {
+    err.value = e.message
+  }
+}
+
 async function loadTrash() {
   if (tab.value !== 'trash') return
   if (!trashLibId.value) { trashList.value = []; trashLoading.value = false; return }
@@ -951,6 +1202,54 @@ async function permDelete(entryId) {
   err.value = ''
   try { await api.permanentDelete(entryId); loadTrash(); showSuccess('删除成功') }
   catch (e) { err.value = e.message }
+}
+
+async function clearTrash() {
+  if (!trashLibId.value || !trashList.value?.length) return
+  if (!confirm('确定清空当前资料库的回收站？将彻底删除其中所有文件，且不可恢复。')) return
+  err.value = ''
+  try {
+    for (const f of trashList.value) {
+      try {
+        await api.permanentDelete(f.id)
+      } catch (e) {
+        // 单个文件失败不阻断整体清空，记录最后一条错误提示
+        err.value = e.message
+      }
+    }
+    await loadTrash()
+    showSuccess('回收站已清空')
+  } catch (e) {
+    err.value = e.message
+  }
+}
+
+// ---- 通知 ----
+
+async function loadNotifications(unreadOnly = false) {
+  try {
+    const list = await api.listNotifications(unreadOnly)
+    notifications.value = Array.isArray(list) ? list : []
+    unreadNotifyCount.value = notifications.value.filter(n => !n.is_read).length
+  } catch (e) {
+    // 通知失败不影响主流程，仅在控制台输出
+    // eslint-disable-next-line no-console
+    console.error('loadNotifications error', e)
+  }
+}
+
+function toggleNotifyPanel() {
+  showNotifyPanel.value = !showNotifyPanel.value
+  if (showNotifyPanel.value) loadNotifications(false)
+}
+
+async function markAllNotifications() {
+  try {
+    await api.markAllNotificationsRead()
+    await loadNotifications(false)
+  } catch (e) {
+    err.value = e.message
+  }
 }
 
 // ---- 资料库 ----
@@ -1007,14 +1306,26 @@ async function createLib() {
     showSuccess(deptId ? '部门资料库已创建' : '资料库已创建')
   } catch (e) { err.value = e.message }
 }
-async function delLib(lib) {
-  if (!confirm('确定删除资料库「' + lib.name + '」？将同时删除库内所有文件（含回收站），不可恢复。')) return
+function delLib(lib) {
+  libToDelete.value = lib
+  showDeleteLibConfirm.value = true
+}
+async function doConfirmDeleteLib() {
+  const lib = libToDelete.value
+  if (!lib) { showDeleteLibConfirm.value = false; return }
   err.value = ''; errorMessage.value = ''
   try {
-    await api.deleteLibrary(lib.id); libraries.value = await api.listLibraries()
+    await api.deleteLibrary(lib.id)
+    libraries.value = await api.listLibraries()
     if (currentLib.value?.id === lib.id) currentLib.value = null
-    loadStorageStats(); showSuccess('删除成功')
+    loadStorageStats()
+    if (tab.value === 'trash') trashLibraryList.value = await api.listLibraryTrash()
+    showSuccess('已移入回收站')
   } catch (e) { err.value = e.message; showError(e.message) }
+  finally {
+    showDeleteLibConfirm.value = false
+    libToDelete.value = null
+  }
 }
 async function openEditLib(lib) {
   editLibId.value = lib.id; editLibName.value = lib.name; editLibDesc.value = lib.description || ''
@@ -1280,4 +1591,270 @@ async function resetUserPassword(u) {
 .user-modal-card { max-width: 520px; }
 .user-modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; margin-top: 12px; }
 @media (max-width: 640px) { .user-modal-grid { grid-template-columns: 1fr; } }
+
+/* 上传文件弹窗（新 UI） */
+.upload-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 16px;
+}
+.upload-modal-card {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  width: 100%;
+  max-width: 32rem;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+.upload-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.upload-modal-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #111827;
+  margin: 0;
+}
+.upload-modal-subtitle {
+  font-size: 0.875rem;
+  color: #6b7280;
+  margin: 4px 0 0 0;
+}
+.upload-modal-close {
+  padding: 8px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #6b7280;
+}
+.upload-modal-close:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+.upload-modal-close-icon {
+  width: 20px;
+  height: 20px;
+}
+.upload-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+.upload-dropzone {
+  border: 2px dashed #d1d5db;
+  border-radius: 12px;
+  padding: 48px 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+.upload-dropzone:hover,
+.upload-dropzone-active {
+  border-color: #4a90e2;
+  background: #eff6ff;
+}
+.upload-dropzone-small {
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.upload-dropzone-icon {
+  width: 64px;
+  height: 64px;
+  color: #9ca3af;
+  margin: 0 auto 16px;
+  display: block;
+}
+.upload-dropzone-icon-small {
+  width: 32px;
+  height: 32px;
+  color: #9ca3af;
+  margin: 0 auto 8px;
+  display: block;
+}
+.upload-dropzone-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 8px 0;
+}
+.upload-dropzone-hint {
+  font-size: 0.875rem;
+  color: #6b7280;
+  margin: 0 0 16px 0;
+}
+.upload-dropzone-hint-small {
+  font-size: 0.875rem;
+  color: #4b5563;
+  margin: 0;
+}
+.upload-dropzone-limit {
+  font-size: 0.75rem;
+  color: #9ca3af;
+  margin: 0;
+}
+.upload-modal-input-hidden {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.upload-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.upload-file-item {
+  background: #f9fafb;
+  border-radius: 8px;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.upload-file-item-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.upload-file-item-icon .icon {
+  width: 20px;
+  height: 20px;
+}
+.icon-purple { color: #a855f7; }
+.icon-blue { color: #3b82f6; }
+.icon-gray { color: #6b7280; }
+.upload-file-item-main {
+  flex: 1;
+  min-width: 0;
+}
+.upload-file-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.upload-file-item-name {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #111827;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 8px;
+}
+.upload-file-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.upload-file-loader { width: 16px; height: 16px; color: #4a90e2; }
+.upload-file-success { width: 20px; height: 20px; color: #22c55e; }
+.upload-file-error { width: 20px; height: 20px; color: #ef4444; }
+.upload-file-remove {
+  padding: 4px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #6b7280;
+}
+.upload-file-remove:hover {
+  background: #e5e7eb;
+  color: #111827;
+}
+.upload-file-remove-icon { width: 16px; height: 16px; }
+.upload-file-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.upload-file-item-size {
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+.upload-file-item-progress {
+  font-size: 0.75rem;
+  color: #4a90e2;
+}
+.upload-file-item-status {
+  font-size: 0.75rem;
+}
+.upload-file-item-status.success { color: #16a34a; }
+.upload-file-item-status.error { color: #dc2626; }
+.upload-file-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.upload-file-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #4a90e2;
+  transition: width 0.3s ease;
+}
+.upload-file-progress-fill.success { background: #22c55e; }
+.upload-file-progress-fill.error { background: #ef4444; }
+.upload-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-top: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+.upload-modal-footer-left {
+  font-size: 0.875rem;
+  color: #4b5563;
+}
+.upload-modal-footer-error { color: #dc2626; }
+.upload-modal-footer-actions {
+  display: flex;
+  gap: 12px;
+}
+.upload-btn-secondary {
+  padding: 8px 16px;
+  font-size: 0.875rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  color: #374151;
+  cursor: pointer;
+}
+.upload-btn-secondary:hover {
+  background: #f9fafb;
+  border-color: #9ca3af;
+}
+.upload-btn-primary {
+  padding: 8px 16px;
+  font-size: 0.875rem;
+  border: none;
+  border-radius: 8px;
+  background: #4a90e2;
+  color: #fff;
+  cursor: pointer;
+}
+.upload-btn-primary:hover:not(:disabled) {
+  background: #357abd;
+}
+.upload-btn-primary:disabled {
+  background: #d1d5db;
+  cursor: not-allowed;
+}
 </style>

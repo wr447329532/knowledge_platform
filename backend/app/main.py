@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api import audit, auth, departments, files, libraries
+from backend.app.api import audit, auth, departments, files, libraries, notifications
 from backend.app.core.config import get_settings
 from backend.app.core.security import get_password_hash
 from backend.app.db.base import Base
@@ -90,6 +90,21 @@ def _ensure_libraries_has_allow_download() -> None:
         conn.commit()
 
 
+def _ensure_libraries_has_deleted_at() -> None:
+    """兼容旧库：若 libraries 表缺少 deleted_at 列则自动添加（软删除用）"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "libraries" not in insp.get_table_names():
+        return
+    cols = [c["name"] for c in insp.get_columns("libraries")]
+    if "deleted_at" in cols:
+        return
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE libraries ADD COLUMN deleted_at DATETIME"))
+        conn.commit()
+
+
 def _ensure_default_admin() -> None:
     """启动时确保存在默认管理员：用户名 admin，密码 admin123"""
     db = SessionLocal()
@@ -132,6 +147,7 @@ def create_app() -> FastAPI:
     _ensure_libraries_has_department_id()
     _ensure_libraries_has_visibility()
     _ensure_libraries_has_allow_download()
+    _ensure_libraries_has_deleted_at()
     _ensure_default_admin()
 
     app = FastAPI(
@@ -158,6 +174,7 @@ def create_app() -> FastAPI:
     app.include_router(files.router)
     app.include_router(audit.router)
     app.include_router(departments.router)
+    app.include_router(notifications.router)
 
     return app
 

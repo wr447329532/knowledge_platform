@@ -32,7 +32,7 @@
               <Icons name="shield" class="admin-nav-icon" />
               权限管理
             </button>
-            <button class="admin-nav-item disabled" disabled title="敬请期待">
+            <button :class="['admin-nav-item', { active: subTab === 'storage' }]" @click="switchTab('storage')">
               <Icons name="database" class="admin-nav-icon" />
               存储管理
             </button>
@@ -40,7 +40,7 @@
               <Icons name="file-text" class="admin-nav-icon" />
               系统日志
             </button>
-            <button class="admin-nav-item disabled" disabled title="敬请期待">
+            <button :class="['admin-nav-item', { active: subTab === 'notify' }]" @click="switchTab('notify')">
               <Icons name="bell" class="admin-nav-icon" />
               通知设置
             </button>
@@ -225,6 +225,326 @@
             </div>
           </div>
 
+          <!-- 存储管理 -->
+          <div v-if="subTab === 'storage'" class="admin-page">
+            <div class="admin-page-header">
+              <div>
+                <h2 class="admin-page-title">存储管理</h2>
+                <p class="admin-page-desc">监控和管理系统存储空间使用情况</p>
+              </div>
+            </div>
+
+            <div class="admin-stats">
+              <div class="admin-stat-card">
+                <div class="admin-stat-label">总存储容量</div>
+                <div class="admin-stat-value">{{ storageStats?.total_display || '500 GB' }}</div>
+                <div class="admin-stat-extra text-muted">企业总配额</div>
+              </div>
+              <div class="admin-stat-card">
+                <div class="admin-stat-label">已使用空间</div>
+                <div class="admin-stat-value">{{ storageStats?.used_display || '0 B' }}</div>
+                <div class="admin-stat-extra text-green">
+                  {{ Math.round(storageStats?.percent || 0) }}% 使用率
+                </div>
+              </div>
+              <div class="admin-stat-card">
+                <div class="admin-stat-label">剩余空间</div>
+                <div class="admin-stat-value">
+                  {{ remainingStorageDisplay }}
+                </div>
+                <div class="admin-stat-extra text-muted">可用容量</div>
+              </div>
+              <div class="admin-stat-card">
+                <div class="admin-stat-label">总文件数</div>
+                <div class="admin-stat-value">
+                  {{ totalFileCountDisplay }}
+                </div>
+                <div class="admin-stat-extra text-blue">按文件类型统计</div>
+              </div>
+            </div>
+
+            <div class="card admin-storage-overview-card">
+              <div class="admin-storage-overview-header">
+                <div>
+                  <h3 class="admin-storage-card-title">整体存储使用情况</h3>
+                  <p class="admin-storage-overview-sub">
+                    {{ storageStats?.used_display || '0 B' }} / {{ storageStats?.total_display || '500 GB' }}
+                  </p>
+                </div>
+                <div class="admin-storage-overview-percent">
+                  {{ Math.round(storageStats?.percent || 0) }}%
+                </div>
+              </div>
+              <div class="admin-storage-bar">
+                <div
+                  class="admin-storage-bar-inner"
+                  :style="{ width: Math.min(storageStats?.percent || 0, 100) + '%' }"
+                />
+              </div>
+              <div
+                v-if="(storageStats?.percent || 0) > 80"
+                class="admin-storage-overview-alert"
+              >
+                <Icons name="alert-circle" class="admin-storage-alert-icon" />
+                <span>存储空间使用率较高，建议扩容或清理无用文件</span>
+              </div>
+            </div>
+
+            <div class="card admin-storage-tabs">
+              <div class="admin-storage-tabs-header">
+                <button
+                  :class="['admin-storage-tab', { active: storageInnerTab === 'departments' }]"
+                  @click="storageInnerTab = 'departments'"
+                >
+                  部门存储
+                </button>
+                <button
+                  :class="['admin-storage-tab', { active: storageInnerTab === 'users' }]"
+                  @click="storageInnerTab = 'users'"
+                >
+                  用户存储
+                </button>
+                <button
+                  :class="['admin-storage-tab', { active: storageInnerTab === 'filetypes' }]"
+                  @click="storageInnerTab = 'filetypes'"
+                >
+                  文件类型
+                </button>
+              </div>
+
+              <!-- 部门存储 -->
+              <div v-if="storageInnerTab === 'departments'" class="admin-storage-section">
+                <div class="admin-toolbar">
+                  <div class="admin-search-wrap">
+                    <Icons name="search" class="admin-search-icon" />
+                    <input
+                      v-model="storageSearchKeyword"
+                      type="text"
+                      placeholder="搜索部门名称..."
+                      class="admin-search-input"
+                    />
+                  </div>
+                  <select v-model="storageDeptStatus" class="admin-select">
+                    <option value="all">全部状态</option>
+                    <option value="normal">正常</option>
+                    <option value="warning">警告</option>
+                    <option value="critical">超限</option>
+                  </select>
+                </div>
+                <div class="admin-table-wrap">
+                  <table class="admin-table">
+                    <thead>
+                      <tr>
+                        <th>部门名称</th>
+                        <th>存储使用</th>
+                        <th class="admin-th-center">使用率</th>
+                        <th class="admin-th-center">用户数</th>
+                        <th class="admin-th-center">文件数量</th>
+                        <th class="admin-th-center">增长趋势</th>
+                        <th class="text-right">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in filteredDeptStorage" :key="row.id" class="admin-table-row">
+                        <td>
+                          <div class="admin-storage-dept-name">
+                            <Icons name="building" class="admin-stat-icon" />
+                            <span>{{ row.name }}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <div class="admin-storage-usage">
+                            <div class="admin-storage-usage-main">
+                              {{ row.used_display }} / {{ row.total_display }}
+                            </div>
+                            <div class="admin-storage-bar">
+                              <div
+                                class="admin-storage-bar-inner"
+                                :class="['status-' + row.status]"
+                                :style="{ width: Math.min(row.percent, 100) + '%' }"
+                              />
+                            </div>
+                          </div>
+                        </td>
+                        <td class="admin-cell-center">
+                          <span :class="['admin-badge', 'badge-' + row.status]">
+                            {{ row.percent.toFixed(1) }}%
+                          </span>
+                        </td>
+                        <td class="admin-cell-center">
+                          {{ row.users }}
+                        </td>
+                        <td class="admin-cell-center">
+                          {{ row.file_count.toLocaleString('zh-CN') }}
+                        </td>
+                        <td class="admin-cell-center">
+                          <span class="text-green">{{ row.trend }}</span>
+                        </td>
+                        <td class="text-right">
+                          <button
+                            type="button"
+                            class="admin-action-btn"
+                            @click="openDeptQuotaModal(row)"
+                          >
+                            调整配额
+                          </button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p v-if="!filteredDeptStorage.length" class="admin-empty">暂无部门存储数据</p>
+                </div>
+              </div>
+
+              <!-- 用户存储 -->
+              <div v-else-if="storageInnerTab === 'users'" class="admin-storage-section">
+                <div class="admin-toolbar">
+                  <div class="admin-search-wrap">
+                    <Icons name="search" class="admin-search-icon" />
+                    <input
+                      v-model="storageSearchKeyword"
+                      type="text"
+                      placeholder="搜索用户名称或部门..."
+                      class="admin-search-input"
+                    />
+                  </div>
+                  <select v-model="storageUserSort" class="admin-select">
+                    <option value="usage-desc">使用量降序</option>
+                    <option value="usage-asc">使用量升序</option>
+                    <option value="name">按姓名</option>
+                  </select>
+                </div>
+                <div class="admin-table-wrap">
+                  <table class="admin-table">
+                    <thead>
+                      <tr>
+                        <th>用户</th>
+                        <th class="admin-th-center">部门</th>
+                        <th>存储使用</th>
+                        <th class="admin-th-center">使用率</th>
+                        <th class="admin-th-center">文件数量</th>
+                        <th class="admin-th-center">最后上传</th>
+                        <th class="text-right">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in filteredUserStorage" :key="row.id" class="admin-table-row">
+                        <td>
+                          <div class="admin-user-info">
+                            <div class="admin-user-name">{{ row.name }}</div>
+                          </div>
+                        </td>
+                        <td class="admin-cell-center">
+                          {{ row.department_name || '-' }}
+                        </td>
+                        <td>
+                          <div class="admin-storage-usage">
+                            <div class="admin-storage-usage-main">
+                              {{ row.used_display }} / {{ row.total_display }}
+                            </div>
+                            <div class="admin-storage-bar">
+                              <div
+                                class="admin-storage-bar-inner"
+                                :style="{ width: Math.min(row.percent, 100) + '%' }"
+                              />
+                            </div>
+                          </div>
+                        </td>
+                        <td class="admin-cell-center">
+                          <span
+                            :class="[
+                              'admin-badge',
+                              row.percent >= 90 ? 'badge-critical' : row.percent >= 70 ? 'badge-warning' : 'badge-ok',
+                            ]"
+                          >
+                            {{ row.percent.toFixed(1) }}%
+                          </span>
+                        </td>
+                        <td class="admin-cell-center">
+                          {{ row.file_count.toLocaleString('zh-CN') }}
+                        </td>
+                        <td class="admin-cell-center">
+                          {{ formatDate(row.last_upload) }}
+                        </td>
+                        <td class="text-right">
+                          <button
+                            type="button"
+                            class="admin-action-btn"
+                            @click="openUserQuotaModal(row)"
+                          >
+                            调整配额
+                          </button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p v-if="!filteredUserStorage.length" class="admin-empty">暂无用户存储数据</p>
+                </div>
+              </div>
+
+              <!-- 文件类型 -->
+              <div v-else class="admin-storage-section">
+                <div class="admin-table-wrap admin-storage-filetypes">
+                  <div class="admin-storage-filetypes-grid">
+                    <div class="admin-storage-card">
+                      <h3 class="admin-storage-card-title">文件类型分布（按数量）</h3>
+                      <div class="admin-storage-filetype-list">
+                        <div
+                          v-for="stat in fileTypeStorage"
+                          :key="'count-' + stat.type"
+                          class="admin-storage-filetype-row"
+                        >
+                          <div class="admin-storage-filetype-meta">
+                            <span class="admin-storage-dot" />
+                            <span class="admin-storage-filetype-name">{{ stat.type }}</span>
+                          </div>
+                          <div class="admin-storage-filetype-values">
+                            <span class="admin-storage-filetype-count">
+                              {{ stat.count.toLocaleString('zh-CN') }}
+                            </span>
+                          </div>
+                          <div class="admin-storage-bar">
+                            <div
+                              class="admin-storage-bar-inner"
+                              :style="{ width: stat.percent_count.toFixed(1) + '%' }"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="admin-storage-card">
+                      <h3 class="admin-storage-card-title">文件类型分布（按大小）</h3>
+                      <div class="admin-storage-filetype-list">
+                        <div
+                          v-for="stat in fileTypeStorage"
+                          :key="'size-' + stat.type"
+                          class="admin-storage-filetype-row"
+                        >
+                          <div class="admin-storage-filetype-meta">
+                            <span class="admin-storage-dot" />
+                            <span class="admin-storage-filetype-name">{{ stat.type }}</span>
+                          </div>
+                          <div class="admin-storage-filetype-values">
+                            <span class="admin-storage-filetype-count">
+                              {{ stat.size_display }}
+                            </span>
+                          </div>
+                          <div class="admin-storage-bar">
+                            <div
+                              class="admin-storage-bar-inner"
+                              :style="{ width: stat.percent_size.toFixed(1) + '%' }"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <p v-if="!fileTypeStorage.length" class="admin-empty">暂无文件类型统计数据</p>
+              </div>
+            </div>
+          </div>
+
           <!-- 系统日志 -->
           <div v-if="subTab === 'audit'" class="admin-page">
             <div class="admin-page-header">
@@ -278,6 +598,299 @@
               <p v-if="!auditList.length" class="admin-empty">暂无审计记录，或调整筛选条件后查询。</p>
             </div>
           </div>
+
+          <!-- 通知设置 / 通知管理 -->
+          <div v-if="subTab === 'notify'" class="admin-page">
+            <div class="admin-page-header">
+              <div>
+                <h2 class="admin-page-title">通知管理</h2>
+                <p class="admin-page-desc">管理系统通知模板、发送历史和通知开关</p>
+              </div>
+              <button type="button" class="admin-btn-primary" @click="showSendDialog = true">
+                <Icons name="send" class="admin-btn-icon" />
+                发送通知
+              </button>
+            </div>
+
+            <div class="admin-stats">
+              <div class="admin-stat-card">
+                <div class="admin-stat-label">通知模板</div>
+                <div class="admin-stat-value">{{ notifyTemplates.length }}</div>
+                <div class="admin-stat-extra text-muted">
+                  {{ notifyTemplates.filter(t => t.enabled).length }} 个已启用
+                </div>
+              </div>
+              <div class="admin-stat-card">
+                <div class="admin-stat-label">历史发送</div>
+                <div class="admin-stat-value">{{ notifyHistory.length }}</div>
+                <div class="admin-stat-extra text-green">最近 {{ notifyHistory.length }} 条记录</div>
+              </div>
+              <div class="admin-stat-card">
+                <div class="admin-stat-label">系统通知开关</div>
+                <div class="admin-stat-value">{{ notifySettings.length }}</div>
+                <div class="admin-stat-extra text-muted">可配置通知项</div>
+              </div>
+              <div class="admin-stat-card">
+                <div class="admin-stat-label">最近一次发送</div>
+                <div class="admin-stat-value">
+                  {{ notifyHistory[0]?.title || '暂无' }}
+                </div>
+                <div class="admin-stat-extra text-muted">
+                  {{ notifyHistory[0]?.sentTime ? formatDate(notifyHistory[0].sentTime) : '——' }}
+                </div>
+              </div>
+            </div>
+
+            <div class="card admin-storage-tabs">
+              <div class="admin-storage-tabs-header">
+                <button
+                  :class="['admin-storage-tab', { active: notifyInnerTab === 'templates' }]"
+                  @click="notifyInnerTab = 'templates'"
+                >
+                  通知模板
+                </button>
+                <button
+                  :class="['admin-storage-tab', { active: notifyInnerTab === 'history' }]"
+                  @click="notifyInnerTab = 'history'"
+                >
+                  发送历史
+                </button>
+                <button
+                  :class="['admin-storage-tab', { active: notifyInnerTab === 'settings' }]"
+                  @click="notifyInnerTab = 'settings'"
+                >
+                  通知设置
+                </button>
+              </div>
+
+              <!-- 模板列表 -->
+              <div v-if="notifyInnerTab === 'templates'" class="admin-notify-section">
+                <div class="admin-notify-templates-grid">
+                  <div
+                    v-for="tpl in notifyTemplates"
+                    :key="tpl.id"
+                    class="admin-notify-template-card"
+                  >
+                    <div class="admin-notify-template-header">
+                      <div class="admin-notify-template-left">
+                        <div class="admin-notify-template-icon">
+                          <Icons
+                            :name="['file','database','lock','check-circle','settings','bell'].includes(tpl.icon) ? tpl.icon : 'bell'"
+                            class="admin-notify-template-icon-svg"
+                          />
+                        </div>
+                        <div>
+                          <div class="admin-notify-template-title-wrap">
+                            <h3 class="admin-notify-template-name">{{ tpl.name }}</h3>
+                            <span
+                              :class="[
+                                'admin-badge',
+                                tpl.enabled ? 'badge-ok' : 'badge-disabled',
+                              ]"
+                            >
+                              {{ tpl.enabled ? '启用中' : '已禁用' }}
+                            </span>
+                          </div>
+                          <p class="admin-notify-template-sub">{{ tpl.title }}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="admin-notify-template-body">
+                      <p class="admin-notify-template-content">{{ tpl.content }}</p>
+                    </div>
+                    <div class="admin-notify-template-footer">
+                      <div class="admin-notify-channels">
+                        <span
+                          v-if="tpl.channels?.includes('system')"
+                          class="admin-notify-chip chip-system"
+                        >
+                          <Icons name="bell" class="admin-notify-chip-icon" />
+                          系统通知
+                        </span>
+                        <span
+                          v-if="tpl.channels?.includes('email')"
+                          class="admin-notify-chip chip-email"
+                        >
+                          <Icons name="mail" class="admin-notify-chip-icon" />
+                          邮件
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 发送历史 -->
+              <div v-else-if="notifyInnerTab === 'history'" class="admin-notify-section">
+                <div class="admin-table-wrap">
+                  <table class="admin-table">
+                    <thead>
+                      <tr>
+                        <th>通知标题</th>
+                        <th>内容</th>
+                        <th class="admin-th-center">接收人数</th>
+                        <th class="admin-th-center">发送时间</th>
+                        <th class="admin-th-center">发送渠道</th>
+                        <th class="admin-th-center">状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in notifyHistory" :key="row.id" class="admin-table-row">
+                        <td>
+                          <div class="admin-user-name">{{ row.title }}</div>
+                        </td>
+                        <td>
+                          <div class="admin-cell-ellipsis">{{ row.content }}</div>
+                        </td>
+                        <td class="admin-cell-center">
+                          <div class="admin-notify-recipients">
+                            <Icons name="users" class="admin-stat-icon" />
+                            {{ row.recipients }}
+                          </div>
+                        </td>
+                        <td class="admin-cell-center">
+                          {{ formatDate(row.sentTime) }}
+                        </td>
+                        <td class="admin-cell-center">
+                          <div class="admin-notify-chips-row">
+                            <span
+                              v-if="row.channels?.includes('system')"
+                              class="admin-notify-chip chip-system"
+                            >
+                              <Icons name="bell" class="admin-notify-chip-icon" />
+                              系统
+                            </span>
+                            <span
+                              v-if="row.channels?.includes('email')"
+                              class="admin-notify-chip chip-email"
+                            >
+                              <Icons name="mail" class="admin-notify-chip-icon" />
+                              邮件
+                            </span>
+                          </div>
+                        </td>
+                        <td class="admin-cell-center">
+                          <span class="admin-badge badge-ok">已发送</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p v-if="!notifyHistory.length" class="admin-empty">暂无发送记录</p>
+                </div>
+              </div>
+
+              <!-- 通知设置 -->
+              <div v-else class="admin-notify-section">
+                <div
+                  v-for="cat in groupedNotifySettings"
+                  :key="cat.category"
+                  class="admin-notify-settings-card"
+                >
+                  <h3 class="admin-notify-settings-title">
+                    <Icons name="bell" class="admin-notify-settings-icon" />
+                    {{ cat.category }}
+                  </h3>
+                  <div class="admin-notify-settings-list">
+                    <div
+                      v-for="s in cat.items"
+                      :key="s.id"
+                      class="admin-notify-setting-row"
+                    >
+                      <div class="admin-notify-setting-left">
+                        <div class="admin-notify-setting-name">{{ s.name }}</div>
+                        <div class="admin-notify-setting-desc">
+                          {{ s.enabled ? '已启用' : '已禁用' }}
+                        </div>
+                      </div>
+                      <label class="switch">
+                        <input
+                          type="checkbox"
+                          :checked="s.enabled"
+                          @change="toggleNotifySetting(s)"
+                        />
+                        <span class="slider" />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 发送通知弹窗 -->
+            <div v-if="showSendDialog" class="modal">
+              <div class="card user-modal-card">
+                <h3>发送通知</h3>
+                <p class="admin-notify-send-desc">创建一次性系统通知，立即发送给选定用户范围。</p>
+                <div class="user-modal-grid admin-notify-send-grid">
+                  <div class="form-group form-group-full">
+                    <label>通知标题</label>
+                    <input
+                      v-model="sendForm.title"
+                      placeholder="请输入通知标题，例如「系统维护通知」"
+                    />
+                  </div>
+                  <div class="form-group form-group-full">
+                    <label>通知内容</label>
+                    <textarea
+                      v-model="sendForm.content"
+                      rows="4"
+                      class="admin-textarea"
+                      placeholder="请输入通知内容，例如维护时间、影响范围等"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label>发送对象</label>
+                    <select v-model="sendForm.target" class="admin-select">
+                      <option value="all">所有用户</option>
+                      <option value="department">指定部门（当前按全部部门处理）</option>
+                      <option value="custom">指定用户（当前按全部用户处理）</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label>发送渠道</label>
+                    <div class="admin-notify-channel-options">
+                      <div class="admin-notify-channel-option">
+                        <input
+                          id="notify-channel-system"
+                          type="checkbox"
+                          class="admin-notify-checkbox"
+                          :checked="sendForm.channels.includes('system')"
+                          @change="onToggleChannel('system', $event.target.checked)"
+                        />
+                        <label for="notify-channel-system" class="admin-notify-channel-label">
+                          系统通知
+                        </label>
+                      </div>
+                      <div class="admin-notify-channel-option">
+                        <input
+                          id="notify-channel-email"
+                          type="checkbox"
+                          class="admin-notify-checkbox"
+                          :checked="sendForm.channels.includes('email')"
+                          @change="onToggleChannel('email', $event.target.checked)"
+                        />
+                        <label for="notify-channel-email" class="admin-notify-channel-label">
+                          邮件
+                        </label>
+                      </div>
+                    </div>
+                    <p class="admin-notify-send-hint">建议至少选择「系统通知」，重要公告可同时勾选邮件。</p>
+                  </div>
+                </div>
+                <p v-if="err" class="text-danger">{{ err }}</p>
+                <div class="modal-actions">
+                  <button
+                    class="primary"
+                    :disabled="sendingNotify"
+                    @click="doSendNotification"
+                  >
+                    {{ sendingNotify ? '发送中...' : '立即发送' }}
+                  </button>
+                  <button @click="closeSendDialog">取消</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </main>
       </div>
     </template>
@@ -309,6 +922,62 @@
         <div class="modal-actions">
           <button class="primary" @click="doAddSubDept">确定</button>
           <button @click="showAddSubDept = false; addSubDeptParent = null; err = ''">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 部门配额调整 -->
+    <div v-if="showDeptQuota" class="modal">
+      <div class="card">
+        <h3>调整部门存储配额</h3>
+        <p style="margin-bottom:8px; color:#6b7280; font-size:14px;">
+          部门：{{ editingDeptQuotaRow?.name }}
+        </p>
+        <div class="form-group">
+          <label>配额（GB）</label>
+          <input
+            v-model="deptQuotaInput"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="例如 100"
+            style="width:100%; margin-bottom:8px;"
+          />
+        </div>
+        <p v-if="err" class="text-danger">{{ err }}</p>
+        <div class="modal-actions">
+          <button class="primary" @click="saveDeptQuota">保存</button>
+          <button @click="showDeptQuota = false; editingDeptQuotaRow = null; deptQuotaInput = ''; err = ''">
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 用户配额调整 -->
+    <div v-if="showUserQuota" class="modal">
+      <div class="card">
+        <h3>调整用户存储配额</h3>
+        <p style="margin-bottom:8px; color:#6b7280; font-size:14px;">
+          用户：{{ editingUserQuotaRow?.name }}
+        </p>
+        <div class="form-group">
+          <label>配额（GB）</label>
+          <input
+            v-model="userQuotaInput"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="例如 100"
+            style="width:100%; margin-bottom:8px;"
+          />
+        </div>
+        <p v-if="err" class="text-danger">{{ err }}</p>
+        <div class="modal-actions">
+          <button class="primary" @click="saveUserQuota">保存</button>
+          <button @click="showUserQuota = false; editingUserQuotaRow = null; userQuotaInput = ''; err = ''">
+            取消
+          </button>
         </div>
       </div>
     </div>
@@ -390,12 +1059,34 @@ const userFilterStatus = ref('')
 const userFilterRole = ref('')
 const userList = ref([])
 const storageStats = ref(null)
+const deptStorage = ref([])
+const userStorage = ref([])
+const fileTypeStorage = ref([])
 const deptTreeForTable = ref([])
 const auditList = ref([])
 const auditUsername = ref('')
 const auditAction = ref('')
 const auditStartDate = ref('')
 const auditEndDate = ref('')
+
+const storageInnerTab = ref('departments')
+const storageSearchKeyword = ref('')
+const storageDeptStatus = ref('all')
+const storageUserSort = ref('usage-desc')
+
+// 通知管理
+const notifyInnerTab = ref('templates')
+const notifyTemplates = ref([])
+const notifyHistory = ref([])
+const notifySettings = ref([])
+const showSendDialog = ref(false)
+const sendingNotify = ref(false)
+const sendForm = ref({
+  title: '',
+  content: '',
+  target: 'all',
+  channels: ['system'],
+})
 
 // 部门弹窗相关
 const showAddRootDept = ref(false)
@@ -406,6 +1097,14 @@ const addSubDeptName = ref('')
 const showEditDept = ref(false)
 const editDeptNode = ref(null)
 const editDeptName = ref('')
+
+// 存储配额弹窗相关
+const showDeptQuota = ref(false)
+const editingDeptQuotaRow = ref(null)
+const deptQuotaInput = ref('')
+const showUserQuota = ref(false)
+const editingUserQuotaRow = ref(null)
+const userQuotaInput = ref('')
 
 // 创建用户相关
 const showCreateUser = ref(false)
@@ -478,10 +1177,214 @@ const filteredDeptTreeForTable = computed(() =>
 const deptOptionsForUser = computed(() => _flattenDepts(deptTreeForTable.value))
 const deptTreeCount = computed(() => _countDeptNodes(deptTreeForTable.value))
 
+const filteredDeptStorage = computed(() => {
+  const kw = storageSearchKeyword.value?.trim().toLowerCase()
+  let list = deptStorage.value || []
+  if (kw) {
+    list = list.filter((d) => (d.name || '').toLowerCase().includes(kw))
+  }
+  if (storageDeptStatus.value !== 'all') {
+    list = list.filter((d) => d.status === storageDeptStatus.value)
+  }
+  return list
+})
+
+const filteredUserStorage = computed(() => {
+  const kw = storageSearchKeyword.value?.trim().toLowerCase()
+  let list = [...(userStorage.value || [])]
+  if (kw) {
+    list = list.filter(
+      (u) =>
+        (u.name || '').toLowerCase().includes(kw) ||
+        (u.department_name || '').toLowerCase().includes(kw),
+    )
+  }
+  if (storageUserSort.value === 'usage-desc') {
+    list.sort((a, b) => (b.used_bytes || 0) - (a.used_bytes || 0))
+  } else if (storageUserSort.value === 'usage-asc') {
+    list.sort((a, b) => (a.used_bytes || 0) - (b.used_bytes || 0))
+  } else if (storageUserSort.value === 'name') {
+    list.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+  }
+  return list
+})
+
+const remainingStorageDisplay = computed(() => {
+  if (!storageStats.value) return '0 B'
+  const total = storageStats.value.total_bytes || 0
+  const used = storageStats.value.used_bytes || 0
+  const remain = Math.max(total - used, 0)
+  return formatBytes(remain)
+})
+
+const totalFileCountDisplay = computed(() => {
+  if (!fileTypeStorage.value?.length) return '0'
+  const total = fileTypeStorage.value.reduce((sum, s) => sum + (s.count || 0), 0)
+  return total.toLocaleString('zh-CN')
+})
+
+const groupedNotifySettings = computed(() => {
+  const groups = {}
+  for (const s of notifySettings.value || []) {
+    if (!groups[s.category]) {
+      groups[s.category] = []
+    }
+    groups[s.category].push(s)
+  }
+  return Object.keys(groups).map((k) => ({
+    category: k,
+    items: groups[k],
+  }))
+})
+
+async function loadNotifyAll() {
+  try {
+    const [tpls, his, sets] = await Promise.all([
+      api.listNotificationTemplatesAdmin(),
+      api.listNotificationHistoryAdmin(),
+      api.listNotificationSettingsAdmin(),
+    ])
+    notifyTemplates.value = tpls || []
+    notifyHistory.value = his || []
+    notifySettings.value = sets || []
+  } catch (e) {
+    console.error(e)
+  }
+}
+
 function formatDate(s) {
   if (!s) return '-'
   const d = new Date(s)
   return d.toLocaleString('zh-CN')
+}
+
+function formatBytes(b) {
+  if (!b || b <= 0) return '0 B'
+  if (b < 1024) return `${b} B`
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
+  if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`
+  return `${(b / (1024 * 1024 * 1024)).toFixed(1)} GB`
+}
+
+function openDeptQuotaModal(row) {
+  editingDeptQuotaRow.value = row
+  // total_display 里是格式化后的字符串，这里直接用一个粗略的 GB 值回填输入框
+  const gb = row.total_bytes ? (row.total_bytes / (1024 * 1024 * 1024)) : 0
+  deptQuotaInput.value = gb ? gb.toFixed(1) : ''
+  err.value = ''
+  showDeptQuota.value = true
+}
+
+async function saveDeptQuota() {
+  if (!editingDeptQuotaRow.value) return
+  const v = Number(deptQuotaInput.value)
+  if (!v || v <= 0) {
+    err.value = '请输入大于 0 的配额（GB）'
+    return
+  }
+  try {
+    await api.updateDepartmentQuota(editingDeptQuotaRow.value.id, v)
+    showDeptQuota.value = false
+    editingDeptQuotaRow.value = null
+    deptQuotaInput.value = ''
+    await loadDeptStorage()
+  } catch (e) {
+    err.value = e.message
+  }
+}
+
+function openUserQuotaModal(row) {
+  editingUserQuotaRow.value = row
+  const gb = row.total_bytes ? (row.total_bytes / (1024 * 1024 * 1024)) : 0
+  userQuotaInput.value = gb ? gb.toFixed(1) : ''
+  err.value = ''
+  showUserQuota.value = true
+}
+
+async function saveUserQuota() {
+  if (!editingUserQuotaRow.value) return
+  const v = Number(userQuotaInput.value)
+  if (!v || v <= 0) {
+    err.value = '请输入大于 0 的配额（GB）'
+    return
+  }
+  try {
+    await api.updateUserQuota(editingUserQuotaRow.value.id, v)
+    showUserQuota.value = false
+    editingUserQuotaRow.value = null
+    userQuotaInput.value = ''
+    await loadUserStorage()
+  } catch (e) {
+    err.value = e.message
+  }
+}
+
+async function toggleNotifySetting(s) {
+  try {
+    const updated = await api.updateNotificationSettingAdmin(s.id, !s.enabled)
+    s.enabled = updated.enabled
+  } catch (e) {
+    err.value = e.message
+  }
+}
+
+function onToggleChannel(channel, checked) {
+  const cur = sendForm.value.channels || []
+  if (checked) {
+    if (!cur.includes(channel)) {
+      sendForm.value.channels = [...cur, channel]
+    }
+  } else {
+    sendForm.value.channels = cur.filter((c) => c !== channel)
+  }
+}
+
+async function doSendNotification() {
+  err.value = ''
+  if (!sendForm.value.title.trim()) {
+    err.value = '请输入通知标题'
+    return
+  }
+  if (!sendForm.value.content.trim()) {
+    err.value = '请输入通知内容'
+    return
+  }
+  if (!sendForm.value.channels.length) {
+    err.value = '请至少选择一个发送渠道'
+    return
+  }
+  try {
+    sendingNotify.value = true
+    await api.sendAdminNotification({
+      title: sendForm.value.title.trim(),
+      content: sendForm.value.content.trim(),
+      target: sendForm.value.target,
+      channels: sendForm.value.channels,
+    })
+    await loadNotifyAll()
+    showSendDialog.value = false
+    sendForm.value = {
+      title: '',
+      content: '',
+      target: 'all',
+      channels: ['system'],
+    }
+  } catch (e) {
+    err.value = e.message
+  } finally {
+    sendingNotify.value = false
+  }
+}
+
+function closeSendDialog() {
+  showSendDialog.value = false
+  sendForm.value = {
+    title: '',
+    content: '',
+    target: 'all',
+    channels: ['system'],
+  }
+  err.value = ''
 }
 
 function goBackHome() {
@@ -492,7 +1395,9 @@ function switchTab(name) {
   subTab.value = name
   if (name === 'users') loadUsers()
   if (name === 'departments') loadDepartments()
+  if (name === 'storage') loadStorageAll()
   if (name === 'audit') loadAudit()
+  if (name === 'notify') loadNotifyAll()
 }
 
 async function loadStorageStats() {
@@ -500,6 +1405,39 @@ async function loadStorageStats() {
     storageStats.value = await api.getStorageStats()
   } catch (e) {
     storageStats.value = null
+  }
+}
+
+async function loadStorageAll() {
+  await Promise.all([
+    loadStorageStats(),
+    loadDeptStorage(),
+    loadUserStorage(),
+    loadFileTypeStorage(),
+  ])
+}
+
+async function loadDeptStorage() {
+  try {
+    deptStorage.value = await api.getDepartmentStorage()
+  } catch (e) {
+    deptStorage.value = []
+  }
+}
+
+async function loadUserStorage() {
+  try {
+    userStorage.value = await api.getUserStorage()
+  } catch (e) {
+    userStorage.value = []
+  }
+}
+
+async function loadFileTypeStorage() {
+  try {
+    fileTypeStorage.value = await api.getFileTypeStorage()
+  } catch (e) {
+    fileTypeStorage.value = []
   }
 }
 
@@ -700,14 +1638,17 @@ async function doCreateUserModal() {
 }
 
 onMounted(async () => {
-  me.value = await api.getMe()
-  if (!me.value?.is_superuser) {
+  try {
+    me.value = await api.getMe()
+  } catch (e) {
+    router.push('/login')
     return
   }
+  if (!me.value?.is_superuser) return
   await Promise.all([
     loadUsers(),
     loadDepartments(),
-    loadStorageStats(),
+    loadStorageAll(),
     loadAudit(),
   ])
 })
@@ -751,6 +1692,490 @@ onMounted(async () => {
   margin: 2px 0 0;
   font-size: 12px;
   color: #6b7280;
+}
+
+.admin-storage-tabs {
+  margin-top: 16px;
+}
+
+.admin-storage-overview-card {
+  margin-top: 16px;
+  margin-bottom: 16px;
+}
+
+.admin-storage-overview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.admin-storage-overview-sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.admin-storage-overview-percent {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.admin-storage-overview-alert {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: #b45309;
+}
+
+.admin-storage-alert-icon {
+  width: 14px;
+  height: 14px;
+  color: #f59e0b;
+}
+
+.admin-storage-tabs-header {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+  margin-bottom: 16px;
+}
+
+.admin-storage-tab {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: #6b7280;
+  cursor: pointer;
+}
+
+.admin-storage-tab.active {
+  background: #e5f0ff;
+  color: #2563eb;
+}
+
+.admin-storage-section {
+  margin-top: 4px;
+}
+
+.admin-storage-dept-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-storage-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-storage-usage-main {
+  font-size: 13px;
+}
+
+.admin-storage-bar {
+  position: relative;
+  width: 160px;
+  height: 6px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+}
+
+.admin-storage-bar-inner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  border-radius: 999px;
+  background: #4b9fff;
+}
+
+.admin-storage-bar-inner.status-warning {
+  background: #f59e0b;
+}
+
+.admin-storage-bar-inner.status-critical {
+  background: #ef4444;
+}
+
+.admin-storage-filetypes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.admin-storage-card {
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+.admin-storage-card-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.admin-storage-filetype-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-storage-filetype-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-storage-filetype-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-storage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #4b9fff;
+}
+
+.admin-storage-filetype-name {
+  font-size: 13px;
+  color: #374151;
+}
+
+.admin-storage-filetype-values {
+  display: flex;
+  justify-content: flex-end;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.admin-storage-filetype-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.badge-normal {
+  background: #ecfdf3;
+  color: #15803d;
+}
+
+.badge-warning {
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.badge-critical {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+/* 通知管理样式复用存储管理卡片风格 */
+.admin-notify-section {
+  margin-top: 8px;
+}
+
+.admin-notify-templates-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.admin-notify-template-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.admin-notify-template-header {
+  display: flex;
+  justify-content: space-between;
+}
+
+.admin-notify-template-left {
+  display: flex;
+  gap: 10px;
+}
+
+.admin-notify-template-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.admin-notify-template-icon-svg {
+  width: 18px;
+  height: 18px;
+}
+
+.admin-notify-template-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-notify-template-name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.admin-notify-template-sub {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.admin-notify-template-body {
+  background: #f9fafb;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.admin-notify-template-content {
+  margin: 0;
+  font-size: 13px;
+  color: #4b5563;
+}
+
+.admin-notify-template-footer {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.admin-notify-channels {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.admin-notify-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.chip-system {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.chip-email {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.admin-notify-chip-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.admin-notify-settings-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: #fff;
+  margin-bottom: 12px;
+}
+
+.admin-notify-settings-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.admin-notify-settings-icon {
+  width: 16px;
+  height: 16px;
+  color: #4b9fff;
+}
+
+.admin-notify-settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-notify-setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.admin-notify-setting-left {
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-notify-setting-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.admin-notify-setting-desc {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.admin-notify-recipients {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.admin-notify-chips-row {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+}
+
+.admin-notify-channel-switches {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-notify-send-grid {
+  grid-template-columns: 1fr 1fr;
+}
+
+.admin-notify-send-grid .form-group-full {
+  grid-column: 1 / -1;
+}
+
+.admin-notify-send-desc {
+  margin: 4px 0 12px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.admin-notify-send-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.admin-notify-channel-switches-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.admin-textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+}
+
+.admin-notify-channel-options {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 60px;
+  align-items: center;
+}
+
+.admin-notify-channel-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #374151;
+}
+
+.admin-notify-checkbox {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
+.admin-notify-channel-label {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute
+}
+
+.slider {
+  position: relative;
+  width: 30px;
+  height: 16px;
+  background-color: #d1d5db;
+  border-radius: 999px;
+  transition: 0.2s;
+  flex-shrink: 0;
+  margin-right: 8px;
+}
+
+.slider:before {
+  content: '';
+  position: absolute;
+  height: 12px;
+  width: 12px;
+  left: 2px;
+  top: 2px;
+  background-color: white;
+  border-radius: 50%;
+  transition: 0.2s;
+}
+
+.switch input:checked + .slider {
+  background-color: #4b9fff;
+}
+
+.switch input:checked + .slider:before {
+  transform: translateX(14px);
+}
+
+.switch-label {
+  font-size: 13px;
+  color: #374151;
+  white-space: nowrap;
+  display: inline-block;
 }
 
 .admin-back-btn {

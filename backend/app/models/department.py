@@ -17,6 +17,9 @@ class Department(Base):
     parent_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), nullable=True, index=True)
     sort_order = Column(Integer, default=0, nullable=False)  # 同级排序，越小越靠前
 
+    # 可选：部门级存储配额（字节）。为 null 时使用系统默认配额。
+    storage_quota_bytes = Column(Integer, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False

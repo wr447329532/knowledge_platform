@@ -125,8 +125,12 @@ def _compute_accessible_department_ids(
     - 其他用户：仅可访问自己的部门及其所有子部门
     """
     all_ids: Set[int] = {d.id for d in departments}
-    if current_user.is_superuser or current_user.department_id is None:
+    # 超级管理员：可访问所有部门
+    if current_user.is_superuser:
         return all_ids
+    # 普通用户未绑定部门：不再回退为全部部门，视为无部门权限
+    if current_user.department_id is None:
+        return set()
 
     # 构建 parent -> children 映射
     children_map: Dict[Optional[int], List[int]] = {}
@@ -135,8 +139,8 @@ def _compute_accessible_department_ids(
 
     start_id = current_user.department_id
     if start_id not in all_ids:
-        # 用户没有绑定有效部门，则暂时不限制（回退为全部）
-        return all_ids
+        # 用户没有绑定有效部门：视为无部门权限
+        return set()
 
     accessible: Set[int] = set()
     stack = [start_id]
@@ -319,7 +323,10 @@ def list_department_libraries(
 
     libs = (
         db.query(Library)
-        .filter(Library.department_id == department_id)
+        .filter(
+            Library.department_id == department_id,
+            Library.deleted_at.is_(None),
+        )
         .order_by(Library.created_at.desc())
         .all()
     )

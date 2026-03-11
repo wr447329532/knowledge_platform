@@ -6,4 +6,5 @@ from backend.app.models.file_share import FileShare  # noqa
 from backend.app.models.file import FileEntry, FileVersion  # noqa
 from backend.app.models.audit import AuditLog  # noqa
 from backend.app.models.department import Department  # noqa
+from backend.app.models.notification import Notification  # noqa
 

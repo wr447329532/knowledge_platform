@@ -14,10 +14,15 @@ from backend.app.models.user import User
 def _get_accessible_department_ids(db: Session, user: User) -> Set[int]:
     """用户可访问的部门 ID（本人部门及所有子部门，超级管理员为全部）"""
     all_depts = {d.id: d for d in db.query(Department).all()}
-    if user.is_superuser or user.department_id is None:
+    # 超级管理员：可访问全部部门
+    if user.is_superuser:
         return set(all_depts.keys())
+    # 普通用户未绑定部门：不自动放宽为全部，按「无部门访问权限」处理
+    if user.department_id is None:
+        return set()
     if user.department_id not in all_depts:
-        return set(all_depts.keys())
+        # 绑定了无效部门，同样视为无部门访问权限
+        return set()
     children_map: dict = {}
     for d in all_depts.values():
         children_map.setdefault(d.parent_id, []).append(d.id)
@@ -61,6 +66,8 @@ def has_library_access(db: Session, library_id: int, user: User, require_write: 
     lib = db.query(Library).filter(Library.id == library_id).first()
     if not lib:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料库不存在")
+    if getattr(lib, "deleted_at", None) is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料库已删除")
 
     # 超级管理员：完全权限
     if user.is_superuser:
@@ -105,32 +112,50 @@ def has_library_access(db: Session, library_id: int, user: User, require_write: 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该资料库")
 
 
+def _library_not_deleted():
+    """未软删除的资料库条件"""
+    return Library.deleted_at.is_(None)
+
+
 def get_accessible_library_ids(db: Session, user: User) -> list[int]:
-    """获取用户可访问的资料库 ID：拥有 + 部门库 + 库成员 + public 库"""
+    """获取用户可访问的资料库 ID：拥有 + 部门库 + 库成员 + public 库（排除已软删除）"""
+    not_deleted = _library_not_deleted()
     # 拥有的资料库
-    owned = [r[0] for r in db.query(Library.id).filter(Library.owner_id == user.id).all()]
+    owned = [
+        r[0]
+        for r in db.query(Library.id).filter(Library.owner_id == user.id, not_deleted).all()
+    ]
 
     # 部门库
     acc_dept_ids = _get_accessible_department_ids(db, user)
     dept_lib_ids = [
         r[0]
-        for r in db.query(Library.id).filter(Library.department_id.in_(acc_dept_ids)).all()
+        for r in db.query(Library.id)
+        .filter(Library.department_id.in_(acc_dept_ids), not_deleted)
+        .all()
     ]
 
     # 库成员
-    member_lib_ids = [
+    member_lib_ids_raw = [
         r[0]
         for r in db.query(LibraryMember.library_id)
         .filter(LibraryMember.user_id == user.id)
         .all()
     ]
+    if member_lib_ids_raw:
+        member_lib_ids = [
+            r[0]
+            for r in db.query(Library.id)
+            .filter(Library.id.in_(member_lib_ids_raw), not_deleted)
+            .all()
+        ]
+    else:
+        member_lib_ids = []
 
     # public 库（所有登录用户可见）
     public_lib_ids = [
         r[0]
-        for r in db.query(Library.id)
-        .filter(Library.visibility == "public")
-        .all()
+        for r in db.query(Library.id).filter(Library.visibility == "public", not_deleted).all()
     ]
 
     return list(set(owned) | set(dept_lib_ids) | set(member_lib_ids) | set(public_lib_ids))
@@ -155,7 +180,7 @@ def can_access_file(db: Session, entry: FileEntry, user: User) -> bool:
     4. LibraryMember 成员（read / write）
     """
     lib = db.query(Library).filter(Library.id == entry.library_id).first()
-    if not lib:
+    if not lib or getattr(lib, "deleted_at", None) is not None:
         return False
 
     # 超级管理员 / 拥有者
@@ -190,7 +215,7 @@ def can_download_file(db: Session, entry: FileEntry, user: User) -> bool:
     - 其他用户：需先通过库级访问控制，且库 allow_download=True
     """
     lib = db.query(Library).filter(Library.id == entry.library_id).first()
-    if not lib:
+    if not lib or getattr(lib, "deleted_at", None) is not None:
         return False
 
     # 超级管理员 / 拥有者

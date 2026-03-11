@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -12,6 +13,7 @@ from backend.app.core.library_access import (
     get_accessible_library_ids,
     has_library_access,
 )
+from backend.app.api.notifications import create_notification
 from backend.app.db.session import get_db
 from backend.app.models.department import Department
 from backend.app.models.library import Library
@@ -41,6 +43,13 @@ class LibraryRead(BaseModel):
     member_count: int | None = None
     is_owner: bool | None = None  # 当前用户是否拥有者
     is_writeable: bool | None = None  # 当前用户是否可写
+
+    class Config:
+        from_attributes = True
+
+
+class LibraryTrashRead(LibraryRead):
+    deleted_at: datetime
 
     class Config:
         from_attributes = True
@@ -145,6 +154,48 @@ def create_library(
     db.commit()
     db.refresh(lib)
     return _lib_to_read(db, lib, current_user.id, is_owner=True, is_write=True, dept_name=dept_name)
+
+
+@router.get("/trash", response_model=List[LibraryTrashRead])
+def list_library_trash(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出已软删除的资料库（仅拥有者或超级管理员可见），超过 30 天自动彻底删除"""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=30)
+    # 自动彻底删除超过 30 天的已删除资料库
+    old_libs = (
+        db.query(Library)
+        .filter(Library.deleted_at.isnot(None), Library.deleted_at < cutoff)
+        .all()
+    )
+    for lib in old_libs:
+        if current_user.is_superuser or lib.owner_id == current_user.id:
+            from sqlalchemy import func
+            from backend.app.api.files import _permanent_delete_entry
+            from backend.app.models.file import FileEntry
+            entries = (
+                db.query(FileEntry)
+                .filter(FileEntry.library_id == lib.id)
+                .order_by(func.length(FileEntry.path).desc())
+                .all()
+            )
+            for entry in entries:
+                _permanent_delete_entry(db, entry)
+            db.delete(lib)
+    if old_libs:
+        db.commit()
+
+    q = db.query(Library).filter(Library.deleted_at.isnot(None))
+    if not current_user.is_superuser:
+        q = q.filter(Library.owner_id == current_user.id)
+    libs = q.order_by(Library.deleted_at.desc()).all()
+    result = []
+    for l in libs:
+        r = _lib_to_read(db, l, current_user.id, is_owner=l.owner_id == current_user.id, is_write=True)
+        result.append(LibraryTrashRead(**r.model_dump(), deleted_at=l.deleted_at))
+    return result
 
 
 @router.get("/", response_model=List[LibraryRead])
@@ -261,6 +312,14 @@ def add_or_update_library_member(
         action = "add_library_member"
     db.commit()
     log_audit(db, current_user.id, current_user.username, action, "library_member", library_id, f"user_id={user_id} role={role}")
+    # 通知被添加/更新的成员
+    try:
+        title = "资料库权限更新"
+        msg = f"您被授予资料库「{lib.name}」的 {('只读' if role == 'read' else '读写')} 权限"
+        create_notification(db, user_id=user_id, type="info", title=title, message=msg)
+    except Exception:
+        # 通知失败不影响主流程
+        pass
 
 
 @router.delete("/{library_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -292,15 +351,60 @@ def delete_library(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """软删除：将资料库移入回收站（可恢复）"""
+    lib, _ = has_library_access(db, library_id, current_user)
+    check_can_manage_library(lib, current_user, db)
+    if getattr(lib, "deleted_at", None) is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="资料库已在回收站")
+
+    from datetime import timezone
+
+    now = datetime.now(timezone.utc)
+    lib.deleted_at = now
+    log_audit(db, current_user.id, current_user.username, "delete_library", "library", lib.id, f"name={lib.name} (soft)")
+    db.commit()
+
+
+@router.post("/{library_id}/restore", response_model=LibraryRead)
+def restore_library(
+    library_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """从回收站恢复资料库"""
+    lib = db.query(Library).filter(Library.id == library_id).first()
+    if not lib:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料库不存在")
+    if getattr(lib, "deleted_at", None) is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="资料库未在回收站")
+    check_can_manage_library(lib, current_user, db)
+
+    lib.deleted_at = None
+    db.commit()
+    db.refresh(lib)
+    log_audit(db, current_user.id, current_user.username, "restore_library", "library", lib.id, f"name={lib.name}")
+    return _lib_to_read(db, lib, current_user.id, is_owner=lib.owner_id == current_user.id, is_write=True)
+
+
+@router.delete("/trash/{library_id}", status_code=status.HTTP_204_NO_CONTENT)
+def permanent_delete_library(
+    library_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """彻底删除回收站中的资料库（不可恢复）"""
     from sqlalchemy import func
 
     from backend.app.api.files import _permanent_delete_entry
     from backend.app.models.file import FileEntry
 
-    lib, _ = has_library_access(db, library_id, current_user)
+    lib = db.query(Library).filter(Library.id == library_id).first()
+    if not lib:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料库不存在")
+    if getattr(lib, "deleted_at", None) is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="仅可彻底删除回收站中的资料库")
     check_can_manage_library(lib, current_user, db)
 
-    # 级联删除：先彻底删除库内所有文件/目录（含回收站），再删资料库
     entries = (
         db.query(FileEntry)
         .filter(FileEntry.library_id == library_id)
@@ -310,7 +414,7 @@ def delete_library(
     for entry in entries:
         _permanent_delete_entry(db, entry)
 
-    log_audit(db, current_user.id, current_user.username, "delete_library", "library", lib.id, f"name={lib.name}")
+    log_audit(db, current_user.id, current_user.username, "permanent_delete_library", "library", lib.id, f"name={lib.name}")
     db.delete(lib)
     db.commit()
 

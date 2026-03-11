@@ -33,6 +33,7 @@ class Library(Base):
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
+    deleted_at = Column(DateTime, nullable=True)  # 软删除：非空表示已移入回收站
 
     owner = relationship("User")
     department = relationship("Department", backref="libraries")

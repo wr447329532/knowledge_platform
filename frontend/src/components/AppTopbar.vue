@@ -22,6 +22,15 @@
             + 新建
           </button>
         </template>
+        <button
+          type="button"
+          class="notify-btn"
+          @click="emit('toggle-notify')"
+          title="通知"
+        >
+          <Icons name="bell" class="notify-icon" />
+          <span v-if="notifyCount > 0" class="notify-dot">{{ notifyCount }}</span>
+        </button>
       </div>
     </div>
 
@@ -74,11 +83,12 @@ defineProps({
   fileSortOrder: String,
   fileViewMode: String,
   breadcrumbSegments: Array,
+  notifyCount: { type: Number, default: 0 },
 })
 
 const emit = defineEmits([
   'update:searchKeyword', 'update:fileSortOrder', 'update:fileViewMode',
-  'search', 'new-lib', 'upload', 'clear-lib', 'set-path',
+  'search', 'new-lib', 'upload', 'clear-lib', 'set-path', 'toggle-notify',
 ])
 </script>
 
@@ -110,7 +120,39 @@ const emit = defineEmits([
 .search-icon { width: 18px; height: 18px; font-size: 18px; color: #999; flex-shrink: 0; }
 .search-input { flex: 1; border: none; background: transparent; font-size: 14px; padding: 0; }
 .search-input:focus { outline: none; }
-.topbar-actions { margin-left: auto; }
+.topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.notify-btn {
+  position: relative;
+  border: none;
+  background: transparent;
+  padding: 6px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: #6b7280;
+}
+.notify-btn:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+.notify-icon {
+  width: 18px;
+  height: 18px;
+}
+.notify-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 18px;
+  padding: 0 4px;
+  height: 16px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #ffffff;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .btn-primary {
   background: var(--primary);
   color: #fff;

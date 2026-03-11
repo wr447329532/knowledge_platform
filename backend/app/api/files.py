@@ -12,6 +12,7 @@ from backend.app.api.deps import get_current_user
 from backend.app.core.audit import log_audit
 from backend.app.core.config import get_settings
 from backend.app.core.library_access import can_download_file, can_access_file, get_accessible_library_ids, has_library_access
+from backend.app.api.notifications import create_notification
 from backend.app.db.session import get_db
 from backend.app.models.department import Department
 from backend.app.models.file import FileEntry, FileVersion
@@ -210,24 +211,8 @@ def list_files(
         entries = [e for e in entries if "/" not in e.path[len(prefix):]]
     else:
         entries = [e for e in entries if "/" not in e.path]
-    # 被分享者：仅显示分享给自己的文件，及为导航所需的父目录
-    if not is_owner:
-        from backend.app.models.file_share import FileShare
-
-        shared_ids = {
-            r[0]
-            for r in db.query(FileShare.file_entry_id)
-            .join(FileEntry, FileShare.file_entry_id == FileEntry.id)
-            .filter(FileEntry.library_id == library_id, FileShare.user_id == current_user.id)
-            .all()
-        }
-        shared_paths = {e.path for e in entries if e.id in shared_ids}
-        entries = [
-            e
-            for e in entries
-            if e.id in shared_ids
-            or (e.is_dir and any(p.startswith(e.path.rstrip("/") + "/") for p in shared_paths))
-        ]
+    # 统一采用库级访问控制：只要通过 has_library_access 校验（拥有者 / 库成员 / 部门库 / public），
+    # 即可在列表中看到该资料库下的全部文件和目录，不再按文件级分享单独过滤。
     # 文件取最新版本大小；目录无 size
     file_entry_ids = [e.id for e in entries if not e.is_dir]
     latest_size: dict[int, int] = {}
@@ -400,8 +385,26 @@ def list_trash(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """列出回收站中的文件/目录"""
-    _get_library_and_check(db, library_id, current_user)
+    """列出回收站中的文件/目录，并清理超过保留期的记录。"""
+    lib = _get_library_and_check(db, library_id, current_user)
+
+    # 自动清理超过 30 天的回收站记录，避免无限占用存储
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=30)
+    old_entries = (
+        db.query(FileEntry)
+        .filter(
+            FileEntry.library_id == library_id,
+            FileEntry.deleted_at != None,  # noqa: E711
+            FileEntry.deleted_at < cutoff,
+        )
+        .all()
+    )
+    for e in old_entries:
+        _permanent_delete_entry(db, e)
+    if old_entries:
+        db.commit()
+
     entries = (
         db.query(FileEntry)
         .filter(
@@ -429,6 +432,18 @@ def restore_file(
     log_audit(db, current_user.id, current_user.username, "restore", "file", entry.id, f"path={entry.path}")
     db.commit()
     db.refresh(entry)
+    # 通知创建者（如存在且不是当前用户）
+    try:
+        if entry.created_by_id and entry.created_by_id != current_user.id:
+            create_notification(
+                db,
+                user_id=entry.created_by_id,
+                type="info",
+                title="文件已恢复",
+                message=f"文件「{entry.path}」已从回收站恢复",
+            )
+    except Exception:
+        pass
     return entry
 
 
@@ -542,6 +557,42 @@ class StorageStats(BaseModel):
     percent: float
 
 
+class DepartmentStorageRow(BaseModel):
+    id: int
+    name: str
+    used_bytes: int
+    used_display: str
+    total_bytes: int
+    total_display: str
+    percent: float
+    users: int
+    file_count: int
+    status: str  # normal | warning | critical
+    trend: str = "+0.0%"
+
+
+class UserStorageRow(BaseModel):
+    id: int
+    name: str
+    department_name: str | None = None
+    used_bytes: int
+    used_display: str
+    total_bytes: int
+    total_display: str
+    percent: float
+    file_count: int
+    last_upload: datetime | None = None
+
+
+class FileTypeStat(BaseModel):
+    type: str
+    count: int
+    size_bytes: int
+    size_display: str
+    percent_count: float
+    percent_size: float
+
+
 @router.get("/storage", response_model=StorageStats)
 def get_storage_stats(
     library_id: Optional[int] = Query(None, description="指定资料库，不填则统计当前用户可访问的汇总"),
@@ -587,6 +638,314 @@ def get_storage_stats(
         total_display="500 GB",
         percent=round(pct, 1),
     )
+
+
+def _format_bytes(b: int) -> str:
+    if b < 1024:
+        return f"{b} B"
+    if b < 1024 * 1024:
+        return f"{b / 1024:.1f} KB"
+    if b < 1024 * 1024 * 1024:
+        return f"{b / (1024 * 1024):.1f} MB"
+    return f"{b / (1024 * 1024 * 1024):.1f} GB"
+
+
+def _iter_latest_files(db: Session):
+    """返回所有未删除文件的最新版本行，用于存储统计。"""
+    from sqlalchemy import func
+
+    subq = (
+        db.query(
+            FileVersion.file_entry_id,
+            func.max(FileVersion.version_no).label("max_ver"),
+        )
+        .group_by(FileVersion.file_entry_id)
+        .subquery()
+    )
+    rows = (
+        db.query(
+            FileEntry.id,
+            FileEntry.path,
+            FileEntry.library_id,
+            FileVersion.size,
+            FileVersion.uploaded_at,
+            FileVersion.uploaded_by_id,
+            Library.department_id,
+            Library.owner_id,
+        )
+        .join(
+            subq,
+            (FileVersion.file_entry_id == subq.c.file_entry_id)
+            & (FileVersion.version_no == subq.c.max_ver),
+        )
+        .join(FileEntry, FileEntry.id == FileVersion.file_entry_id)
+        .join(Library, Library.id == FileEntry.library_id)
+        .filter(
+            FileEntry.deleted_at.is_(None),
+            Library.deleted_at.is_(None),
+        )
+        .all()
+    )
+    return rows
+
+
+@router.get("/storage/departments", response_model=List[DepartmentStorageRow])
+def get_storage_by_department(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """按部门统计存储使用情况，仅管理员可见。"""
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="仅管理员可查看存储统计"
+        )
+
+    # 基础数据
+    depts = {d.id: d for d in db.query(Department).all()}
+
+    from sqlalchemy import func
+
+    # 每个部门用户数
+    dept_user_counts: dict[int, int] = {
+        row[0]: row[1]
+        for row in db.query(User.department_id, func.count(User.id))
+        .group_by(User.department_id)
+        .all()
+        if row[0] is not None
+    }
+
+    # 文件级别统计
+    latest_rows = _iter_latest_files(db)
+    dept_used: dict[int, int] = {}
+    dept_file_count: dict[int, int] = {}
+    for (
+        _entry_id,
+        _path,
+        _lib_id,
+        size,
+        _uploaded_at,
+        _uploaded_by_id,
+        dept_id,
+        _owner_id,
+    ) in latest_rows:
+        if dept_id is None:
+            continue
+        dept_used[dept_id] = dept_used.get(dept_id, 0) + int(size or 0)
+        dept_file_count[dept_id] = dept_file_count.get(dept_id, 0) + 1
+
+    rows_out: list[DepartmentStorageRow] = []
+    for dept_id, dept in depts.items():
+        used = dept_used.get(dept_id, 0)
+        # 部门配额：优先使用自定义配额，否则默认 100GB
+        quota_bytes = dept.storage_quota_bytes or (100 * 1024 * 1024 * 1024)
+        users = dept_user_counts.get(dept_id, 0)
+        file_cnt = dept_file_count.get(dept_id, 0)
+        pct = (used / quota_bytes * 100) if quota_bytes > 0 else 0.0
+        if pct >= 90:
+            status_str = "critical"
+        elif pct >= 70:
+            status_str = "warning"
+        else:
+            status_str = "normal"
+        rows_out.append(
+            DepartmentStorageRow(
+                id=dept_id,
+                name=dept.name,
+                used_bytes=used,
+                used_display=_format_bytes(used),
+                total_bytes=quota_bytes,
+                total_display=_format_bytes(quota_bytes),
+                percent=round(pct, 1),
+                users=users,
+                file_count=file_cnt,
+                status=status_str,
+            )
+        )
+
+    # 使用量降序
+    rows_out.sort(key=lambda r: r.used_bytes, reverse=True)
+    return rows_out
+
+
+@router.get("/storage/users", response_model=List[UserStorageRow])
+def get_storage_by_user(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """按用户统计存储使用情况，仅管理员可见。"""
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="仅管理员可查看存储统计"
+        )
+
+    users = {u.id: u for u in db.query(User).all()}
+    dept_map = {d.id: d for d in db.query(Department).all()}
+
+    latest_rows = _iter_latest_files(db)
+
+    user_used: dict[int, int] = {}
+    user_file_count: dict[int, int] = {}
+    user_last_upload: dict[int, datetime] = {}
+
+    for (
+        _entry_id,
+        _path,
+        _lib_id,
+        size,
+        uploaded_at,
+        uploaded_by_id,
+        _dept_id,
+        owner_id,
+    ) in latest_rows:
+        # 以资料库拥有者作为主要归属人；若缺失则回退到最后上传者
+        uid = owner_id or uploaded_by_id
+        if uid is None:
+            continue
+        used_prev = user_used.get(uid, 0)
+        user_used[uid] = used_prev + int(size or 0)
+        user_file_count[uid] = user_file_count.get(uid, 0) + 1
+        if uploaded_at is not None:
+            last = user_last_upload.get(uid)
+            if last is None or uploaded_at > last:
+                user_last_upload[uid] = uploaded_at
+
+    rows_out: list[UserStorageRow] = []
+    for uid, used in user_used.items():
+        u = users.get(uid)
+        if not u:
+            continue
+        quota_bytes = u.storage_quota_bytes or (100 * 1024 * 1024 * 1024)
+        dept_name = None
+        if u.department_id is not None:
+            d = dept_map.get(u.department_id)
+            if d:
+                dept_name = d.name
+        pct = (used / quota_bytes * 100) if quota_bytes > 0 else 0.0
+        rows_out.append(
+            UserStorageRow(
+                id=uid,
+                name=u.username or u.email or f"用户{uid}",
+                department_name=dept_name,
+                used_bytes=used,
+                used_display=_format_bytes(used),
+                total_bytes=quota_bytes,
+                total_display=_format_bytes(quota_bytes),
+                percent=round(pct, 1),
+                file_count=user_file_count.get(uid, 0),
+                last_upload=user_last_upload.get(uid),
+            )
+        )
+
+    rows_out.sort(key=lambda r: r.used_bytes, reverse=True)
+    return rows_out
+
+
+class QuotaUpdate(BaseModel):
+    quota_gb: float = Field(..., gt=0, le=100000, description="配额大小（GB）")
+
+
+@router.post("/storage/departments/{dept_id}/quota", status_code=status.HTTP_204_NO_CONTENT)
+def update_department_quota(
+    dept_id: int,
+    payload: QuotaUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """调整部门存储配额（GB），仅管理员可调用。"""
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="仅管理员可调整存储配额"
+        )
+    dept: Department | None = db.query(Department).filter(Department.id == dept_id).first()
+    if not dept:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
+    quota_bytes = int(payload.quota_gb * 1024 * 1024 * 1024)
+    dept.storage_quota_bytes = quota_bytes
+    db.commit()
+    return None
+
+
+@router.post("/storage/users/{user_id}/quota", status_code=status.HTTP_204_NO_CONTENT)
+def update_user_quota(
+    user_id: int,
+    payload: QuotaUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """调整用户存储配额（GB），仅管理员可调用。"""
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="仅管理员可调整存储配额"
+        )
+    u: User | None = db.query(User).filter(User.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    quota_bytes = int(payload.quota_gb * 1024 * 1024 * 1024)
+    u.storage_quota_bytes = quota_bytes
+    db.commit()
+    return None
+
+
+@router.get("/storage/filetypes", response_model=List[FileTypeStat])
+def get_storage_by_file_type(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """按文件类型统计存储情况，仅管理员可见。"""
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="仅管理员可查看存储统计"
+        )
+
+    # 最新版本的文件（不含目录）
+    latest_rows = _iter_latest_files(db)
+    file_count = len(latest_rows)
+    total_file_size = sum(int(r[3] or 0) for r in latest_rows)
+
+    # 目录数量（不计入大小）
+    dir_count = (
+        db.query(FileEntry)
+        .join(Library, Library.id == FileEntry.library_id)
+        .filter(
+            FileEntry.is_dir.is_(True),
+            FileEntry.deleted_at.is_(None),
+            Library.deleted_at.is_(None),
+        )
+        .count()
+    )
+
+    total_count = (file_count + dir_count) or 1
+    total_size = total_file_size or 1
+
+    rows_out: list[FileTypeStat] = []
+
+    # 文件
+    rows_out.append(
+        FileTypeStat(
+            type="文件",
+            count=file_count,
+            size_bytes=total_file_size,
+            size_display=_format_bytes(total_file_size),
+            percent_count=round(file_count / total_count * 100, 1),
+            percent_size=round(total_file_size / total_size * 100, 1),
+        )
+    )
+
+    # 文件夹（目录）：只统计数量，大小为 0
+    rows_out.append(
+        FileTypeStat(
+            type="文件夹",
+            count=dir_count,
+            size_bytes=0,
+            size_display=_format_bytes(0),
+            percent_count=round(dir_count / total_count * 100, 1),
+            percent_size=0.0,
+        )
+    )
+
+    # 仍按大小占用降序（文件在前，文件夹在后）
+    rows_out.sort(key=lambda r: r.size_bytes, reverse=True)
+    return rows_out
 
 
 @router.get("/versions", response_model=List[FileVersionRead])

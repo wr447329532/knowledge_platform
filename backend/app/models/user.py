@@ -22,6 +22,9 @@ class User(Base):
         index=True,
     )
 
+    # 可选：用户级存储配额（字节）。为 null 时使用系统默认配额。
+    storage_quota_bytes = Column(Integer, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False

@@ -134,8 +134,24 @@ export async function updateLibrary(id, name, description, visibility, allowDown
   })
 }
 
+/** 软删除：将资料库移入回收站（可恢复） */
 export async function deleteLibrary(id) {
   return api(`/libraries/${id}`, { method: 'DELETE' })
+}
+
+/** 列出回收站中的资料库 */
+export async function listLibraryTrash() {
+  return api('/libraries/trash')
+}
+
+/** 从回收站恢复资料库 */
+export async function restoreLibrary(id) {
+  return api(`/libraries/${id}/restore`, { method: 'POST' })
+}
+
+/** 彻底删除回收站中的资料库（不可恢复） */
+export async function permanentDeleteLibrary(id) {
+  return api(`/libraries/trash/${id}`, { method: 'DELETE' })
 }
 
 /** 资料库成员管理 */
@@ -241,6 +257,39 @@ export async function getStorageStats(libraryId = null) {
   return api(url)
 }
 
+/** 存储管理：按部门统计 */
+export async function getDepartmentStorage() {
+  return api('/files/storage/departments')
+}
+
+/** 存储管理：按用户统计 */
+export async function getUserStorage() {
+  return api('/files/storage/users')
+}
+
+/** 存储管理：按文件类型统计 */
+export async function getFileTypeStorage() {
+  return api('/files/storage/filetypes')
+}
+
+/** 存储管理：调整部门配额（GB） */
+export async function updateDepartmentQuota(deptId, quotaGb) {
+  return api(`/files/storage/departments/${deptId}/quota`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quota_gb: quotaGb }),
+  })
+}
+
+/** 存储管理：调整用户配额（GB） */
+export async function updateUserQuota(userId, quotaGb) {
+  return api(`/files/storage/users/${userId}/quota`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quota_gb: quotaGb }),
+  })
+}
+
 export async function uploadFile(libraryId, relativePath, file) {
   const form = new FormData()
   form.append('file', file)
@@ -266,6 +315,49 @@ export async function uploadFile(libraryId, relativePath, file) {
     throw new Error(msg)
   }
   return res.json()
+}
+
+/** 带上传进度的上传（用于上传弹窗进度条），onProgress(0-100) */
+export function uploadFileWithProgress(libraryId, relativePath, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const token = getToken()
+    const xhr = new XMLHttpRequest()
+    const form = new FormData()
+    form.append('file', file)
+    const url = `${BASE}/files/upload?library_id=${libraryId}&relative_path=${encodeURIComponent(relativePath)}`
+    xhr.open('POST', url)
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && typeof onProgress === 'function') {
+        onProgress(Math.round((e.loaded / e.total) * 100))
+      }
+    })
+    xhr.addEventListener('load', () => {
+      if (xhr.status === 401) {
+        localStorage.removeItem('token')
+        window.location.href = '/#/login'
+        reject(new Error('未登录'))
+        return
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        let msg = '上传失败'
+        try {
+          const err = JSON.parse(xhr.responseText)
+          if (err.detail) msg = Array.isArray(err.detail) ? err.detail.map((e) => e.msg || JSON.stringify(e)).join('；') : String(err.detail)
+        } catch (_) {}
+        if (xhr.status === 413) msg = '文件过大，请尝试上传较小的文件或联系管理员调整限制'
+        reject(new Error(msg))
+        return
+      }
+      try {
+        resolve(JSON.parse(xhr.responseText || '{}'))
+      } catch (_) {
+        resolve({})
+      }
+    })
+    xhr.addEventListener('error', () => reject(new Error('网络错误')))
+    xhr.send(form)
+  })
 }
 
 export function downloadUrl(entryId, versionNo = '') {
@@ -376,4 +468,52 @@ export async function permanentDelete(entryId) {
 export async function listAuditLogs(params = {}) {
   const q = new URLSearchParams(params).toString()
   return api(`/audit/logs${q ? '?' + q : ''}`)
+}
+
+/** 通知 */
+export async function listNotifications(unreadOnly = false) {
+  const q = unreadOnly ? '?unread_only=true' : ''
+  return api(`/notifications/${q}`)
+}
+
+export async function markNotificationRead(id) {
+  return api(`/notifications/${id}/read`, { method: 'POST' })
+}
+
+export async function markAllNotificationsRead() {
+  return api('/notifications/read-all', { method: 'POST' })
+}
+
+/** 系统管理 - 通知模板列表（管理员） */
+export async function listNotificationTemplatesAdmin() {
+  return api('/notifications/admin/templates')
+}
+
+/** 系统管理 - 通知发送历史（管理员） */
+export async function listNotificationHistoryAdmin(limit = 50) {
+  const q = new URLSearchParams({ limit: String(limit) }).toString()
+  return api(`/notifications/admin/history${q ? '?' + q : ''}`)
+}
+
+/** 系统管理 - 通知开关设置（管理员） */
+export async function listNotificationSettingsAdmin() {
+  return api('/notifications/admin/settings')
+}
+
+/** 系统管理 - 更新通知开关（管理员） */
+export async function updateNotificationSettingAdmin(settingId, enabled) {
+  return api(`/notifications/admin/settings/${settingId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+}
+
+/** 系统管理 - 发送自定义通知（管理员） */
+export async function sendAdminNotification({ title, content, target = 'all', channels = ['system'] }) {
+  return api('/notifications/admin/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, content, target, channels }),
+  })
 }
