@@ -8,6 +8,7 @@
       </div>
       <div class="login-brand-center">
         <h1 class="brand-title">文件共享和知识平台</h1>
+        <p class="brand-copyright">© 2026 中铁建发展集团乌兰察布压缩空气储能有限公司</p>
       </div>
     </div>
     <!-- 右侧登录表单 -->
@@ -169,5 +170,13 @@ async function submit() {
 .form-btn.primary:hover {
   background: linear-gradient(90deg, #357abd, #2d6ba8);
   box-shadow: 0 6px 20px rgba(74,144,226,0.5);
+}
+
+.brand-copyright {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+  margin-top: 12px;
+  text-align: center;
+  letter-spacing: 0.5px;
 }
 </style>

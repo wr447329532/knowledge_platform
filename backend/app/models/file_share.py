@@ -1,5 +1,5 @@
 """文件级共享：单个文件可分享给指定用户，权限为 read（只读/预览）或 download（可下载）"""
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import backref, relationship
@@ -18,7 +18,9 @@ class FileShare(Base):
     # permission: read 只读（可见/预览，不可下载）；download 可下载
     permission = Column(String(20), nullable=False, default="download")
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
+    )
 
     __table_args__ = (UniqueConstraint("file_entry_id", "user_id", name="uq_file_share"),)
 

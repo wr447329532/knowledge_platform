@@ -185,6 +185,7 @@ def add_file_share(
         .first()
     )
     now = datetime.now(timezone.utc)
+    created = False
     if fs:
         fs.permission = body.permission
     else:
@@ -195,6 +196,40 @@ def add_file_share(
             created_at=now,
         )
         db.add(fs)
+        created = True
+
+    # 审计日志：记录文件分享/权限变更
+    action = "file_share_add" if created else "file_share_update"
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        action,
+        "file_share",
+        entry.id,
+        f"to_user_id={body.user_id} permission={body.permission} path={entry.path}",
+    )
+
+    # 通知：被分享用户收到「文件被分享给你」
+    try:
+        if user.id != current_user.id:
+            title = "文件被分享给你"
+            perm_label = "可下载" if body.permission == "download" else "仅预览"
+            msg = (
+                f"用户「{current_user.username or current_user.email}」向你分享了文件「{entry.path}」，"
+                f"权限：{perm_label}"
+            )
+            create_notification(
+                db,
+                user_id=user.id,
+                type="file_share_to_me",
+                title=title,
+                message=msg,
+            )
+    except Exception:
+        # 通知失败不影响主流程
+        pass
+
     db.commit()
 
 
@@ -365,12 +400,27 @@ async def upload_file(
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / file.filename
 
+    # 单个文件大小限制（500MB）
+    MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024
+
     size = 0
     with open(dest_path, "wb") as f:
         while chunk := await file.read(1024 * 1024):
             size += len(chunk)
+            if size > MAX_FILE_SIZE_BYTES:
+                # 删除已写入的临时文件并中止上传
+                f.close()
+                try:
+                    dest_path.unlink()
+                except OSError:
+                    pass
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="单个文件大小不能超过 500MB",
+                )
             f.write(chunk)
 
+    # 记录版本信息
     version = FileVersion(
         file_entry_id=entry.id,
         version_no=next_version_no,
@@ -379,7 +429,62 @@ async def upload_file(
         uploaded_by_id=current_user.id,
     )
     db.add(version)
-    log_audit(db, current_user.id, current_user.username, "upload", "file", entry.id, f"library_id={library_id} path={relative_path}")
+
+    # 审计日志：上传或新版本
+    action = "upload_new_version" if next_version_no > 1 else "upload"
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        action,
+        "file",
+        entry.id,
+        f"library_id={library_id} path={relative_path} version={next_version_no}",
+    )
+
+    # 通知：库拥有者 / 上传者 知晓有新文件/新版本
+    try:
+        if next_version_no == 1:
+            notif_type = "file_upload"
+            title = "文件已上传"
+            msg_for_owner = (
+                f"用户「{current_user.username or current_user.email}」在文件库「{lib.name}」中上传了新文件："
+                f"{relative_path}"
+            )
+            msg_for_self = f"你在文件库「{lib.name}」中上传了新文件：{relative_path}"
+        else:
+            notif_type = "file_new_version"
+            title = "文件有新版本"
+            msg_for_owner = (
+                f"用户「{current_user.username or current_user.email}」在文件库「{lib.name}」中上传了文件「{relative_path}」"
+                f"的新版本（第 {next_version_no} 个版本）"
+            )
+            msg_for_self = (
+                f"你在文件库「{lib.name}」中上传了文件「{relative_path}」的新版本（第 {next_version_no} 个版本）"
+            )
+
+        # 1）发送给库拥有者（若存在且不是当前用户）
+        if lib.owner_id and lib.owner_id != current_user.id:
+            create_notification(
+                db,
+                user_id=lib.owner_id,
+                type=notif_type,
+                title=title,
+                message=msg_for_owner,
+            )
+
+        # 2）发送给上传者本人（无论是否为库拥有者）
+        create_notification(
+            db,
+            user_id=current_user.id,
+            type=notif_type,
+            title=title,
+            message=msg_for_self,
+        )
+    except Exception:
+        # 通知失败不影响主流程
+        pass
+
     db.commit()
     db.refresh(entry)
 

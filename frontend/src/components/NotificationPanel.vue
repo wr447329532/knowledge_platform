@@ -70,6 +70,12 @@ const props = defineProps({
 const emit = defineEmits(['close', 'mark-all', 'item-click'])
 
 function iconName(type) {
+  // 业务类型优先：文件分享 / 新文件 / 新版本
+  if (type === 'file_share_to_me') return 'share-2'
+  if (type === 'file_upload') return 'file-plus'
+  if (type === 'file_new_version') return 'history'
+
+  // 兼容通用级别
   if (type === 'success') return 'check-circle'
   if (type === 'error') return 'x-circle'
   if (type === 'warning') return 'bell'
@@ -77,6 +83,10 @@ function iconName(type) {
 }
 
 function iconClass(type) {
+  if (type === 'file_share_to_me') return 'notify-icon-share'
+  if (type === 'file_upload') return 'notify-icon-upload'
+  if (type === 'file_new_version') return 'notify-icon-version'
+
   if (type === 'success') return 'notify-icon-success'
   if (type === 'error') return 'notify-icon-error'
   if (type === 'warning') return 'notify-icon-warning'
@@ -210,6 +220,9 @@ function formatTime(s) {
 .notify-icon-error { color: #ef4444; }
 .notify-icon-warning { color: #f59e0b; }
 .notify-icon-info { color: #3b82f6; }
+.notify-icon-share { color: #8b5cf6; }   /* 文件被分享给你 */
+.notify-icon-upload { color: #0ea5e9; }  /* 新文件上传 */
+.notify-icon-version { color: #10b981; } /* 新版本上传 */
 
 .notify-content {
   flex: 1;

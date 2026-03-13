@@ -1,7 +1,10 @@
 <template>
   <div class="admin-layout">
-    <div v-if="!me?.is_superuser" class="admin-permission-card">
-      <p class="permission-hint">需要管理员权限，请使用管理员账号登录。</p>
+    <div v-if="!me" class="admin-permission-card">
+      <p class="permission-hint">正在加载权限，请稍候...</p>
+    </div>
+    <div v-else-if="!me.is_superuser && !me.is_department_leader" class="admin-permission-card">
+      <p class="permission-hint">需要管理员或部门负责人权限，请使用有权限的账号登录。</p>
     </div>
     <template v-else>
       <header class="admin-header">
@@ -20,11 +23,18 @@
       <div class="admin-body">
         <aside class="admin-sidebar">
           <nav class="admin-nav">
-            <button :class="['admin-nav-item', { active: subTab === 'users' }]" @click="switchTab('users')">
+            <button
+              v-if="me?.is_superuser"
+              :class="['admin-nav-item', { active: subTab === 'users' }]"
+              @click="switchTab('users')"
+            >
               <Icons name="users" class="admin-nav-icon" />
               用户管理
             </button>
-            <button :class="['admin-nav-item', { active: subTab === 'departments' }]" @click="switchTab('departments')">
+            <button
+              :class="['admin-nav-item', { active: subTab === 'departments' }]"
+              @click="switchTab('departments')"
+            >
               <Icons name="building" class="admin-nav-icon" />
               部门管理
             </button>
@@ -32,15 +42,27 @@
               <Icons name="shield" class="admin-nav-icon" />
               权限管理
             </button>
-            <button :class="['admin-nav-item', { active: subTab === 'storage' }]" @click="switchTab('storage')">
+            <button
+              v-if="me?.is_superuser"
+              :class="['admin-nav-item', { active: subTab === 'storage' }]"
+              @click="switchTab('storage')"
+            >
               <Icons name="database" class="admin-nav-icon" />
               存储管理
             </button>
-            <button :class="['admin-nav-item', { active: subTab === 'audit' }]" @click="switchTab('audit')">
+            <button
+              v-if="me?.is_superuser"
+              :class="['admin-nav-item', { active: subTab === 'audit' }]"
+              @click="switchTab('audit')"
+            >
               <Icons name="file-text" class="admin-nav-icon" />
               系统日志
             </button>
-            <button :class="['admin-nav-item', { active: subTab === 'notify' }]" @click="switchTab('notify')">
+            <button
+              v-if="me?.is_superuser"
+              :class="['admin-nav-item', { active: subTab === 'notify' }]"
+              @click="switchTab('notify')"
+            >
               <Icons name="bell" class="admin-nav-icon" />
               通知设置
             </button>
@@ -1168,6 +1190,29 @@
         </div>
       </div>
     </div>
+
+    <!-- 重置密码 -->
+    <div v-if="showResetPassword" class="modal">
+      <div class="card user-modal-card">
+        <h3>重置密码</h3>
+        <p style="margin-top:8px; margin-bottom:16px; color:#6b7280; font-size:14px;">
+          用户：{{ resettingUser?.username }}（{{ resettingUser?.email || '无邮箱' }}）
+        </p>
+        <div class="form-group">
+          <label>新密码 <span class="label-opt">必填</span></label>
+          <input
+            v-model="resetPasswordInput"
+            type="password"
+            placeholder="8+ 位，包含大小写字母、数字和特殊字符"
+          />
+        </div>
+        <p v-if="resetPasswordError" class="text-danger">{{ resetPasswordError }}</p>
+        <div class="modal-actions">
+          <button class="primary" @click="confirmResetPassword">确定</button>
+          <button @click="closeResetPassword">取消</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -1247,6 +1292,12 @@ const newUserUsername = ref('')
 const newUserPassword = ref('')
 const newUserDeptId = ref(null)
 const newUserRole = ref('user')
+
+// 重置密码相关
+const showResetPassword = ref(false)
+const resettingUser = ref(null)
+const resetPasswordInput = ref('')
+const resetPasswordError = ref('')
 
 const err = ref('')
 
@@ -1611,8 +1662,21 @@ async function loadNotifyAll() {
 
 function formatDate(s) {
   if (!s) return '-'
-  const d = new Date(s)
-  return d.toLocaleString('zh-CN')
+  try {
+    let raw = String(s)
+    // 审计日志历史数据可能是不带时区的时间字符串，这里按 UTC 解析后再转北京时间
+    if (!raw.endsWith('Z') && !raw.includes('+')) {
+      raw = raw.replace(' ', 'T') + 'Z'
+    }
+    const d = new Date(raw)
+    if (Number.isNaN(d.getTime())) return String(s)
+    return d.toLocaleString('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      hour12: false,
+    })
+  } catch {
+    return String(s)
+  }
 }
 
 function formatBytes(b) {
@@ -1751,6 +1815,10 @@ function goBackHome() {
 }
 
 function switchTab(name) {
+  // 非超级管理员（如部门负责人）仅允许访问「部门管理」
+  if (!me.value?.is_superuser && name !== 'departments') {
+    return
+  }
   subTab.value = name
   if (name === 'users') loadUsers()
   if (name === 'departments') loadDepartments()
@@ -1983,15 +2051,44 @@ async function toggleUserActive(u) {
 }
 
 async function resetUserPassword(u) {
-  const newPw = prompt('请输入新密码（8位以上，含大小写、数字、特殊字符）：', '')
-  if (newPw == null || newPw === '') return
-  err.value = ''
-  try {
-    await api.updateUser(u.id, { new_password: newPw })
-    // 不强制刷新列表，以免打断正在查看的数据
-  } catch (e) {
-    err.value = e.message
+  resettingUser.value = u
+  resetPasswordInput.value = ''
+  resetPasswordError.value = ''
+  showResetPassword.value = true
+}
+
+async function confirmResetPassword() {
+  const u = resettingUser.value
+  if (!u) return
+  const pw = resetPasswordInput.value || ''
+  // 前端做一层基础校验，减少来回请求
+  if (pw.length < 8) {
+    resetPasswordError.value = '密码至少 8 位'
+    return
   }
+  if (!/[A-Z]/.test(pw) || !/[a-z]/.test(pw) || !/[0-9]/.test(pw) || !/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/.test(pw)) {
+    resetPasswordError.value = '需包含大小写字母、数字和特殊字符'
+    return
+  }
+  err.value = ''
+  resetPasswordError.value = ''
+  try {
+    await api.updateUser(u.id, { new_password: pw })
+    showResetPassword.value = false
+    resettingUser.value = null
+    resetPasswordInput.value = ''
+    window.alert('密码已重置，请通知用户使用新密码登录。')
+  } catch (e) {
+    // 后端返回的校验错误展示在弹窗内
+    resetPasswordError.value = e.message || '重置密码失败'
+  }
+}
+
+function closeResetPassword() {
+  showResetPassword.value = false
+  resettingUser.value = null
+  resetPasswordInput.value = ''
+  resetPasswordError.value = ''
 }
 
 function closeCreateUser() {
@@ -2041,13 +2138,27 @@ onMounted(async () => {
     router.push('/login')
     return
   }
-  if (!me.value?.is_superuser) return
-  await Promise.all([
-    loadUsers(),
-    loadDepartments(),
-    loadStorageAll(),
-    loadAudit(),
-  ])
+
+  // 超级管理员：加载全部系统管理数据
+  if (me.value?.is_superuser) {
+    await Promise.all([
+      loadUsers(),
+      loadDepartments(),
+      loadStorageAll(),
+      loadAudit(),
+    ])
+    return
+  }
+
+  // 部门负责人：仅加载部门管理相关数据，默认停留在「部门管理」标签
+  if (me.value?.is_department_leader) {
+    subTab.value = 'departments'
+    await loadDepartments()
+    return
+  }
+
+  // 既不是管理员也不是部门负责人：不允许访问该页面，返回首页
+  router.push('/')
 })
 </script>
 

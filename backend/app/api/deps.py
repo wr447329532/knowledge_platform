@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.security import decode_token
 from backend.app.db.session import get_db
+from backend.app.models.department import Department
 from backend.app.models.user import User
 
 
@@ -50,6 +51,34 @@ def get_current_active_superuser(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="需要管理员权限",
+        )
+    return current_user
+
+
+def get_current_dept_admin(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> User:
+    """
+    部门管理权限：
+    - 系统管理员（含内置 admin）
+    - 任何一个部门的负责人（leader_user_id == 当前用户）
+    """
+    # 系统管理员兜底
+    if current_user.username == "admin" or current_user.is_superuser:
+        return current_user
+
+    # 是否为任一部门负责人
+    is_leader = (
+        db.query(Department)
+        .filter(Department.leader_user_id == current_user.id)
+        .first()
+        is not None
+    )
+    if not is_leader:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要系统管理员或部门负责人权限",
         )
     return current_user
 

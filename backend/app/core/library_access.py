@@ -39,6 +39,23 @@ def _get_accessible_department_ids(db: Session, user: User) -> Set[int]:
     return accessible
 
 
+def is_dept_leader(db: Session, user: User, dept_id: int | None) -> bool:
+    """判断用户是否为指定部门的负责人。
+
+    规则：
+    - 若 dept_id 为空，则返回 False
+    - 若当前用户为该部门的 leader_user_id，则为负责人
+    """
+    if dept_id is None:
+        return False
+    if user.is_superuser:
+        return False  # 超管单独判断，不在此函数里重复逻辑
+    dept = db.query(Department).filter(Department.id == dept_id).first()
+    if not dept:
+        return False
+    return getattr(dept, "leader_user_id", None) == user.id
+
+
 def _get_library_member(db: Session, library_id: int, user_id: int) -> LibraryMember | None:
     """查询用户是否为库成员"""
     return (
@@ -163,12 +180,28 @@ def get_accessible_library_ids(db: Session, user: User) -> list[int]:
 
 
 def check_can_manage_library(lib: Library, user: User, db: Session) -> None:
-    """检查用户是否可管理资料库（删除库）。拥有者或超级管理员。"""
-    if lib.owner_id == user.id:
-        return
+    """
+    检查用户是否可管理资料库（删除 / 编辑）。
+
+    允许角色：
+    - 超级管理员
+    - 资料库拥有者
+    - 对应部门的负责人（当库属于某个部门时）
+    """
+    # 超级管理员
     if user.is_superuser:
         return
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅资料库拥有者可删除资料库")
+    # 库拥有者
+    if lib.owner_id == user.id:
+        return
+    # 部门负责人：仅对部门库生效
+    dept_id = getattr(lib, "department_id", None)
+    if dept_id is not None and is_dept_leader(db, user, dept_id):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="仅系统管理员、资料库拥有者或部门负责人可管理该资料库",
+    )
 
 
 def can_access_file(db: Session, entry: FileEntry, user: User) -> bool:

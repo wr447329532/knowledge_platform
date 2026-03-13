@@ -59,9 +59,10 @@
         <Icons name="user" class="nav-icon" />
         <span>账户</span>
       </button>
-      <button v-if="me?.is_superuser" class="nav-item" @click="emit('go-admin')">
+      <button v-if="me?.is_superuser || me?.is_department_leader" class="nav-item" @click="emit('go-admin')">
         <Icons name="settings" class="nav-icon" />
-        <span>系统管理</span>
+        <span v-if="me?.is_superuser">系统管理</span>
+        <span v-else>部门管理</span>
       </button>
     </div>
 

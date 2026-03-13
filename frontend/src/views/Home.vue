@@ -133,6 +133,7 @@
         :unread-count="unreadNotifyCount"
         @close="showNotifyPanel = false"
         @mark-all="markAllNotifications"
+        @item-click="onNotificationClick"
       />
 
     </div><!-- /app-main -->
@@ -851,7 +852,24 @@ function onSharedTab(subtab) {
 function logout() { api.logout() }
 function goAdmin() { router.push('/admin') }
 function goAccount() { router.push('/account') }
-function formatDate(s) { if (!s) return '-'; return new Date(s).toLocaleString('zh-CN') }
+function formatDate(s) {
+  if (!s) return '-'
+  try {
+    let raw = String(s)
+    // 后端历史数据可能是 “YYYY-MM-DD HH:MM:SS” 或不带时区的 ISO，按 UTC 处理
+    if (!raw.endsWith('Z') && !raw.includes('+')) {
+      raw = raw.replace(' ', 'T') + 'Z'
+    }
+    const d = new Date(raw)
+    if (Number.isNaN(d.getTime())) return String(s)
+    return d.toLocaleString('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      hour12: false,
+    })
+  } catch {
+    return String(s)
+  }
+}
 function formatSize(bytes) {
   if (bytes == null) return '-'
   if (bytes < 1024) return bytes + ' B'
@@ -1234,6 +1252,17 @@ async function loadNotifications(unreadOnly = false) {
     // 通知失败不影响主流程，仅在控制台输出
     // eslint-disable-next-line no-console
     console.error('loadNotifications error', e)
+  }
+}
+
+async function onNotificationClick(n) {
+  if (!n?.id) return
+  try {
+    await api.markNotificationRead(n.id)
+    await loadNotifications(false)
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('onNotificationClick error', e)
   }
 }
 

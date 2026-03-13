@@ -1,5 +1,5 @@
 """资料库成员（共享）"""
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import relationship, backref
@@ -18,7 +18,9 @@ class LibraryMember(Base):
     # role: read 只读（列表、下载）；write 读写（上传、删除、重命名等）
     role = Column(String(20), nullable=False, default="read")
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
+    )
 
     __table_args__ = (UniqueConstraint("library_id", "user_id", name="uq_library_member"),)
 

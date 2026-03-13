@@ -45,6 +45,7 @@ class UserRead(UserBase):
     created_at: datetime
     department_id: Optional[int] = None
     department_name: Optional[str] = None
+    is_department_leader: bool = False
 
     class Config:
         from_attributes = True

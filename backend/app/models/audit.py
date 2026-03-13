@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 
@@ -19,4 +19,6 @@ class AuditLog(Base):
     resource_id = Column(Integer, nullable=True)
     detail = Column(Text, nullable=True)  # 如 path, library_id 等简要信息
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
+    )

@@ -38,13 +38,27 @@ def _user_to_read(user: User, is_superuser_override: bool | None = None) -> User
         created_at=user.created_at,
         department_id=user.department_id,
         department_name=dept_name,
+        is_department_leader=False,
     )
 
 
 @router.get("/me", response_model=UserRead)
-def get_me(current_user: User = Depends(get_current_user)):
+def get_me(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """获取当前登录用户信息。用户名 admin 的账号始终视为管理员（与权限校验一致）。"""
-    return _user_to_read(current_user, is_superuser_override=(current_user.username == "admin" or current_user.is_superuser))
+    is_super = current_user.username == "admin" or current_user.is_superuser
+    # 计算是否为任一部门负责人
+    is_leader = (
+        db.query(Department)
+        .filter(Department.leader_user_id == current_user.id)
+        .first()
+        is not None
+    )
+    user_read = _user_to_read(current_user, is_superuser_override=is_super)
+    user_read.is_department_leader = is_leader
+    return user_read
 
 
 @router.patch("/me", response_model=Token)

@@ -5,7 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
-from backend.app.api.deps import get_current_active_superuser, get_current_user
+from backend.app.api.deps import (
+    get_current_active_superuser,
+    get_current_dept_admin,
+    get_current_user,
+)
 from backend.app.api.libraries import LibraryRead, _lib_to_read
 from backend.app.db.session import get_db
 from backend.app.models.department import Department
@@ -227,9 +231,9 @@ def update_department(
     department_id: int,
     body: DepartmentUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_superuser),
+    current_user: User = Depends(get_current_dept_admin),
 ):
-    """更新部门（仅管理员）"""
+    """更新部门（系统管理员 & 部门负责人）。"""
     dept = db.query(Department).filter(Department.id == department_id).first()
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
@@ -351,9 +355,9 @@ def get_department_info(
 def list_department_members(
     department_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_superuser),
+    current_user: User = Depends(get_current_dept_admin),
 ):
-    """部门成员列表（仅管理员可见），用于选择部门负责人。"""
+    """部门成员列表（系统管理员 & 部门负责人可见），用于选择部门负责人。"""
     dept = db.query(Department).filter(Department.id == department_id).first()
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
