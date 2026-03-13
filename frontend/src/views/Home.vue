@@ -11,7 +11,7 @@
       @nav="onNav"
       @dept-select="handleDeptSelect"
       @go-admin="goAdmin"
-      @change-password="showChangePw = true"
+      @account="goAccount"
       @logout="logout"
     />
 
@@ -106,7 +106,6 @@
         :received-shares-list="receivedSharesList"
         :received-shares-loading="receivedSharesLoading"
         @tab="onSharedTab"
-        @remove-share="removeShare"
         @open-shared-lib="openSharedLib"
       />
 
@@ -140,13 +139,13 @@
 
     <!-- ============ 弹窗区 ============ -->
 
-    <!-- 新建资料库 -->
+    <!-- 新建文件库 -->
     <div v-if="showNewLib" class="modal">
       <div class="card">
-        <h3>新建资料库</h3>
+        <h3>新建文件库</h3>
         <div class="form-group">
           <label>名称 <span class="label-opt">必填</span></label>
-          <input v-model="newLibName" placeholder="资料库名称" />
+          <input v-model="newLibName" placeholder="文件库名称" />
         </div>
         <div class="form-group">
           <label>描述 <span class="label-opt">选填</span></label>
@@ -839,13 +838,14 @@ function onNav(newTab) {
 function onSharedTab(subtab) {
   sharedSubTab.value = subtab
   if (subtab === 'mine') loadMyShares()
-  else loadReceivedShares()
+  else if (subtab === 'tome') loadReceivedShares()
 }
 
 // ---- 工具函数 ----
 
 function logout() { api.logout() }
 function goAdmin() { router.push('/admin') }
+function goAccount() { router.push('/account') }
 function formatDate(s) { if (!s) return '-'; return new Date(s).toLocaleString('zh-CN') }
 function formatSize(bytes) {
   if (bytes == null) return '-'
@@ -1122,11 +1122,6 @@ async function loadMyShares() {
   catch (e) { err.value = e.message; mySharesList.value = [] }
   finally { mySharesLoading.value = false }
 }
-async function removeShare(row) {
-  if (!confirm(`确定取消对「${row.username}」的分享？`)) return
-  try { await api.removeFileShare(row.file_entry_id, row.user_id); showSuccess('已取消分享'); await loadMyShares() }
-  catch (e) { err.value = e.message }
-}
 async function loadReceivedShares() {
   if (tab.value !== 'shared' || sharedSubTab.value !== 'tome') return
   receivedSharesLoading.value = true
@@ -1135,11 +1130,10 @@ async function loadReceivedShares() {
   finally { receivedSharesLoading.value = false }
 }
 function openSharedLib(row) {
-  const lib = libraries.value.find(l => l.id === row.library_id)
+  const lib = libraries.value.find(l => l.id === row.id)
   if (lib) {
     tab.value = 'lib'; selectLib(lib)
-    pathPrefix.value = row.file_path.includes('/') ? row.file_path.replace(/\/[^/]+$/, '') + '/' : ''
-  } else { err.value = '未找到该资料库，请刷新页面后重试' }
+  } else { err.value = '未找到该文件库，请刷新页面后重试' }
 }
 
 // ---- 回收站 ----
@@ -1277,7 +1271,7 @@ function openNewLib() {
 async function createLib() {
   err.value = ''
   const name = (newLibName.value || '').trim()
-  if (!name) { err.value = '请填写资料库名称'; return }
+  if (!name) { err.value = '请填写文件库名称'; return }
   const raw = newLibDepartmentId.value
   const deptId = raw === '' || raw === null || raw === undefined ? null : Number(raw)
   const mode = newLibMode.value || 'self'
@@ -1303,7 +1297,7 @@ async function createLib() {
     newLibVisibility.value = 'private'; newLibMembers.value = []; newLibUsers.value = []
     if (deptId && activeDeptId.value === deptId) activeDeptLibraries.value = await api.listDepartmentLibraries(deptId)
     else if (!deptId) clearDeptView()
-    showSuccess(deptId ? '部门资料库已创建' : '资料库已创建')
+    showSuccess(deptId ? '部门文件库已创建' : '文件库已创建')
   } catch (e) { err.value = e.message }
 }
 function delLib(lib) {

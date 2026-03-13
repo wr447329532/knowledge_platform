@@ -2,6 +2,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
@@ -15,6 +16,12 @@ from backend.app.schemas.auth import ChangePassword, Token, UserCreate, UserRead
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+class ProfileUpdate(BaseModel):
+    """当前用户自助修改的基本资料（仅允许修改用户名用于显示）。"""
+
+    username: Optional[str] = Field(None, min_length=1, max_length=50, description="显示名称")
 
 
 def _user_to_read(user: User, is_superuser_override: bool | None = None) -> UserRead:
@@ -38,6 +45,28 @@ def _user_to_read(user: User, is_superuser_override: bool | None = None) -> User
 def get_me(current_user: User = Depends(get_current_user)):
     """获取当前登录用户信息。用户名 admin 的账号始终视为管理员（与权限校验一致）。"""
     return _user_to_read(current_user, is_superuser_override=(current_user.username == "admin" or current_user.is_superuser))
+
+
+@router.patch("/me", response_model=Token)
+def update_me(
+    profile_in: ProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """更新当前登录用户的基础资料（目前仅支持修改用户名）。"""
+    if profile_in.username is not None:
+        username = profile_in.username.strip()
+        if not username:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="姓名不能为空",
+            )
+        current_user.username = username
+    db.commit()
+    db.refresh(current_user)
+    # 用户名作为 JWT 的 subject，修改后需要重新签发一个新的 access_token
+    access_token = create_access_token(subject=current_user.username)
+    return Token(access_token=access_token)
 
 
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)

@@ -16,7 +16,7 @@
       <div class="topbar-actions">
         <template v-if="activeTab === 'lib'">
           <button v-if="!currentLib" class="btn-primary" @click="emit('new-lib')">
-            + 新建资料库
+            + 新建文件库
           </button>
           <button v-else-if="currentLib?.is_writeable" class="btn-primary" @click="emit('upload')">
             + 新建

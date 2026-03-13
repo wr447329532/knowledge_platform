@@ -1,5 +1,5 @@
 <template>
-  <!-- 资料库 / 部门文件：库列表 或 文件列表 -->
+  <!-- 文件库 / 部门文件：库列表 或 文件列表 -->
   <div class="app-content">
     <!-- 部门库视图：部门名左侧，无返回键 -->
     <div v-if="activeDeptId" class="card dept-files-card">
@@ -38,9 +38,9 @@
           </div>
           <div v-else class="dept-empty">
             <Icons name="folder" class="dept-empty-icon" />
-            <p class="dept-empty-text">该部门暂无资料库</p>
+            <p class="dept-empty-text">该部门暂无文件库</p>
             <p class="dept-empty-hint">
-              点击右上角「新建资料库」，选择所属部门「{{ activeDeptInfo?.name }}」后创建
+              点击右上角「新建文件库」，选择所属部门「{{ activeDeptInfo?.name }}」后创建
             </p>
           </div>
         </template>
@@ -154,7 +154,7 @@
           </div>
         </div>
       </template>
-      <p v-else class="empty-hint">暂无资料库，请点击「新建资料库」。</p>
+      <p v-else class="empty-hint">暂无文件库，请点击「新建文件库」。</p>
     </div>
 
     <!-- 当前库文件视图 -->

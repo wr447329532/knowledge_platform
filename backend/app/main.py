@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import or_
 
 from backend.app.api import audit, auth, departments, files, libraries, notifications
 from backend.app.core.config import get_settings
@@ -109,13 +110,19 @@ def _ensure_default_admin() -> None:
     """启动时确保存在默认管理员：用户名 admin，密码 admin123"""
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.username == DEFAULT_ADMIN_USERNAME).first()
+        # 兼容：如果已经存在 admin@example.com，则复用该账号并规范为 admin
+        user = (
+            db.query(User)
+            .filter(or_(User.username == DEFAULT_ADMIN_USERNAME, User.email == "admin@example.com"))
+            .first()
+        )
         pwd_hash = get_password_hash(DEFAULT_ADMIN_PASSWORD)
         if user:
             user.hashed_password = pwd_hash
             user.email = "admin@example.com"
             user.is_superuser = True
             user.is_active = True
+            user.username = DEFAULT_ADMIN_USERNAME
         else:
             user = User(
                 username=DEFAULT_ADMIN_USERNAME,

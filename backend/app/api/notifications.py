@@ -276,9 +276,16 @@ def list_templates_admin(
   if not current_user.is_superuser:
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅管理员可访问")
   _ensure_default_templates(db)
+  _ensure_default_settings(db)
   rows = db.query(NotificationTemplate).order_by(NotificationTemplate.id.asc()).all()
+  # 当前所有通知开关，用于动态计算模板是否启用
+  settings = db.query(NotificationSetting).all()
+  settings_enabled = {s.key: bool(s.enabled) for s in settings}
   result: List[TemplateRead] = []
   for r in rows:
+    # 模板是否启用：优先看是否存在同名 key 的 NotificationSetting
+    enabled_by_setting = settings_enabled.get(r.type)
+    effective_enabled = enabled_by_setting if enabled_by_setting is not None else r.enabled
     result.append(
       TemplateRead(
         id=r.id,
@@ -286,7 +293,7 @@ def list_templates_admin(
         type=r.type,
         title=r.title,
         content=r.content,
-        enabled=r.enabled,
+        enabled=effective_enabled,
         channels=_channels_to_list(r.channels),
         icon=_icon_for_type(r.type),
       )

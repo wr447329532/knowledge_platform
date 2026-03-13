@@ -3,7 +3,7 @@
     <!-- Logo -->
     <div class="sidebar-logo">
       <Icons name="drive" class="logo-icon" />
-      <span class="logo-text">企业云盘</span>
+      <span class="logo-text">文件共享和知识管理平台</span>
     </div>
 
     <!-- 存储空间 -->
@@ -55,6 +55,10 @@
 
     <!-- 底部导航 -->
     <div class="sidebar-bottom">
+      <button class="nav-item" @click="emit('account')">
+        <Icons name="user" class="nav-icon" />
+        <span>账户</span>
+      </button>
       <button v-if="me?.is_superuser" class="nav-item" @click="emit('go-admin')">
         <Icons name="settings" class="nav-icon" />
         <span>系统管理</span>
@@ -67,7 +71,6 @@
       <div class="user-info">
         <span class="user-name">{{ me?.username }}</span>
         <div class="user-actions">
-          <button @click="emit('change-password')" class="user-btn">修改密码</button>
           <button @click="emit('logout')" class="user-btn">退出</button>
         </div>
       </div>
@@ -86,7 +89,7 @@ defineProps({
   storageStats: Object,
 })
 
-const emit = defineEmits(['nav', 'dept-select', 'go-admin', 'change-password', 'logout'])
+const emit = defineEmits(['nav', 'dept-select', 'go-admin', 'account', 'logout'])
 </script>
 
 <style scoped>

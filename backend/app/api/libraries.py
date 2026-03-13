@@ -55,6 +55,20 @@ class LibraryTrashRead(LibraryRead):
         from_attributes = True
 
 
+class SharedLibraryRow(BaseModel):
+    """共享文件库列表行"""
+
+    id: int
+    name: str
+    description: str | None = None
+    owner_username: str | None = None
+    department_name: str | None = None
+    visibility: str
+    share_scope: str
+    can_write: bool
+    created_at: datetime
+
+
 class LibraryUpdate(BaseModel):
     name: str | None = Field(None, max_length=100)
     description: str | None = None
@@ -210,6 +224,154 @@ def list_libraries(
     for l in libs:
         _, is_write = has_library_access(db, l.id, current_user)
         result.append(_lib_to_read(db, l, current_user.id, is_owner=l.owner_id == current_user.id, is_write=is_write))
+    return result
+
+
+def _describe_share_scope_for_owner(lib: Library, dept_name: str | None, member_count: int) -> str:
+    """从拥有者视角描述文件库共享范围。"""
+    visibility = getattr(lib, "visibility", "private")
+    if visibility == "public":
+        base = "公开（所有用户）"
+    elif visibility == "department":
+        base = f"{dept_name or '所属部门'} 部门成员"
+    else:
+        base = "仅自己"
+    if member_count:
+        base += f" + {member_count} 位指定成员"
+    return base
+
+
+def _describe_share_scope_for_receiver(
+    lib: Library,
+    dept_name: str | None,
+    is_member: bool,
+) -> str:
+    """从接收者视角描述为何可以访问该库。"""
+    visibility = getattr(lib, "visibility", "private")
+    if is_member:
+        return "被添加为库成员"
+    if visibility == "public":
+        return "公开文件库"
+    if visibility == "department":
+        return f"{dept_name or '所属部门'} 部门文件库"
+    return "可访问的文件库"
+
+
+@router.get("/shared/mine", response_model=List[SharedLibraryRow])
+def list_shared_libraries_mine(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    我分享的文件库：
+    - 以当前用户为拥有者
+    - visibility 为 public/department，或存在指定成员
+    """
+    from sqlalchemy import func
+
+    rows = (
+        db.query(
+            Library,
+            User.username.label("owner_username"),
+            func.count(LibraryMember.user_id).label("member_cnt"),
+            Department.name.label("dept_name"),
+        )
+        .join(User, Library.owner_id == User.id)
+        .outerjoin(LibraryMember, LibraryMember.library_id == Library.id)
+        .outerjoin(Department, Library.department_id == Department.id)
+        .filter(Library.owner_id == current_user.id, Library.deleted_at.is_(None))
+        .group_by(Library.id, User.username, Department.name)
+        .order_by(Library.created_at.desc())
+        .all()
+    )
+    result: list[SharedLibraryRow] = []
+    for lib, owner_username, member_cnt, dept_name in rows:
+        member_cnt = int(member_cnt or 0)
+        visibility = getattr(lib, "visibility", "private")
+        # 仅展示实际对外共享的库
+        if visibility == "private" and member_cnt == 0:
+            continue
+        scope = _describe_share_scope_for_owner(lib, dept_name, member_cnt)
+        result.append(
+            SharedLibraryRow(
+                id=lib.id,
+                name=lib.name,
+                description=lib.description,
+                owner_username=owner_username,
+                department_name=dept_name,
+                visibility=visibility,
+                share_scope=scope,
+                can_write=True,
+                created_at=lib.created_at,
+            )
+        )
+    return result
+
+
+@router.get("/shared/to-me", response_model=List[SharedLibraryRow])
+def list_shared_libraries_to_me(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    分享给我的文件库：
+    - 当前用户不是拥有者
+    - 但通过公开库 / 部门库 / 库成员等方式获得访问权限
+    """
+    from sqlalchemy import func
+
+    lib_ids = get_accessible_library_ids(db, current_user)
+    if not lib_ids:
+        return []
+
+    # 当前用户作为成员加入的库
+    member_lib_ids = {
+        lid
+        for (lid,) in db.query(LibraryMember.library_id)
+        .filter(LibraryMember.user_id == current_user.id, LibraryMember.library_id.in_(lib_ids))
+        .all()
+    }
+
+    rows = (
+        db.query(
+            Library,
+            User.username.label("owner_username"),
+            func.count(LibraryMember.user_id).label("member_cnt"),
+            Department.name.label("dept_name"),
+        )
+        .join(User, Library.owner_id == User.id)
+        .outerjoin(LibraryMember, LibraryMember.library_id == Library.id)
+        .outerjoin(Department, Library.department_id == Department.id)
+        .filter(
+            Library.id.in_(lib_ids),
+            Library.owner_id != current_user.id,
+            Library.deleted_at.is_(None),
+        )
+        .group_by(Library.id, User.username, Department.name)
+        .order_by(Library.created_at.desc())
+        .all()
+    )
+
+    result: list[SharedLibraryRow] = []
+    for lib, owner_username, member_cnt, dept_name in rows:
+        visibility = getattr(lib, "visibility", "private")
+        is_member = lib.id in member_lib_ids
+        scope = _describe_share_scope_for_receiver(lib, dept_name, is_member)
+        # 计算写权限
+        _, is_write = has_library_access(db, lib.id, current_user)
+        result.append(
+            SharedLibraryRow(
+                id=lib.id,
+                name=lib.name,
+                description=lib.description,
+                owner_username=owner_username,
+                department_name=dept_name,
+                visibility=visibility,
+                share_scope=scope,
+                can_write=is_write,
+                created_at=lib.created_at,
+            )
+        )
     return result
 
 

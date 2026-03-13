@@ -6,40 +6,50 @@
         <Icons name="trash" class="trash-header-icon" />
         <div>
           <h1 class="trash-title">回收站</h1>
-          <p class="trash-subtitle">资料库与文件可恢复，30 天后自动彻底删除</p>
+          <p class="trash-subtitle">文件库与文件可恢复，30 天后自动彻底删除</p>
         </div>
       </div>
       <div class="trash-header-right">
         <select
-          class="trash-lib-select"
-          :value="trashLibId"
-          @change="emit('lib-change', $event.target.value)"
+          class="trash-mode-select"
+          :value="viewMode"
+          @change="onModeChange($event.target.value)"
         >
-          <option value="">选择资料库（查看文件回收站）</option>
-          <option v-for="lib in libraries" :key="lib.id" :value="lib.id">{{ lib.name }}</option>
+          <option value="libraries">文件库</option>
+          <option value="files">文件</option>
         </select>
-        <button
-          v-if="trashList?.length"
-          class="trash-clear-btn"
-          type="button"
-          @click="onClear"
-        >
-          清空文件回收站
-        </button>
+        <template v-if="viewMode === 'files'">
+          <select
+            class="trash-lib-select"
+            :value="trashLibId"
+            @change="emit('lib-change', $event.target.value)"
+          >
+            <option value="">选择文件库（查看文件回收站）</option>
+            <option v-for="lib in libraries" :key="lib.id" :value="lib.id">{{ lib.name }}</option>
+          </select>
+          <button
+            v-if="trashList?.length"
+            class="trash-clear-btn"
+            type="button"
+            @click="onClear"
+          >
+            清空文件回收站
+          </button>
+        </template>
       </div>
     </div>
 
     <!-- Body -->
     <div class="trash-body">
-      <!-- 已删除的资料库 -->
-      <section class="trash-section">
-        <h2 class="trash-section-title">已删除的资料库</h2>
+      <!-- 已删除的文件库 -->
+      <section v-if="viewMode === 'libraries'" class="trash-section">
+        <h2 class="trash-section-title">已删除的文件库</h2>
         <p v-if="trashLibraryLoading" class="empty-hint">加载中...</p>
         <div v-else-if="trashLibraryList?.length" class="trash-table-card">
           <table class="trash-table">
             <thead>
               <tr>
-                <th>资料库名称</th>
+                <th>文件库名称</th>
                 <th>删除时间</th>
                 <th>操作</th>
               </tr>
@@ -70,12 +80,12 @@
           </table>
         </div>
         <div v-else class="trash-empty-card trash-empty-card-sm">
-          <p class="trash-empty-text">无已删除的资料库</p>
+          <p class="trash-empty-text">无已删除的文件库</p>
         </div>
       </section>
 
       <!-- 文件回收站 -->
-      <section class="trash-section">
+      <section v-if="viewMode === 'files'" class="trash-section">
         <h2 class="trash-section-title">已删除的文件</h2>
         <p v-if="trashLoading" class="empty-hint">加载中...</p>
       <template v-else>
@@ -122,11 +132,11 @@
           </div>
           <div v-else class="trash-empty-card">
             <Icons name="trash" class="trash-empty-icon" />
-            <p class="trash-empty-text">该资料库回收站为空</p>
+            <p class="trash-empty-text">该文件库回收站为空</p>
             <p class="trash-empty-hint">删除的文件会显示在这里，30 天后自动清理</p>
           </div>
         </template>
-        <p v-else class="empty-hint">请选择资料库查看文件回收站。</p>
+        <p v-else class="empty-hint">请选择文件库查看文件回收站。</p>
       </template>
       </section>
     </div>
@@ -134,6 +144,7 @@
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import Icons from './Icons.vue'
 
 defineProps({
@@ -147,6 +158,12 @@ defineProps({
 })
 
 const emit = defineEmits(['lib-change', 'restore', 'perm-delete', 'clear', 'restore-lib', 'perm-delete-lib'])
+
+const viewMode = ref('libraries')
+
+function onModeChange(val) {
+  viewMode.value = val === 'files' ? 'files' : 'libraries'
+}
 
 function onClear() {
   emit('clear')
@@ -201,6 +218,13 @@ function onClear() {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.trash-mode-select {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  font-size: 13px;
 }
 
 .trash-lib-select {

@@ -1,22 +1,25 @@
 <template>
   <div class="app-content shared-page">
-    <div class="shared-page-header">
-      <div class="shared-page-icon-wrap">
-        <Icons name="share" class="shared-page-icon" />
-      </div>
-      <div class="shared-page-header-text">
-        <h1 class="shared-page-title">共享文件</h1>
-        <p class="shared-page-desc">管理我分享的权限，或查看他人分享给我的文件</p>
+    <!-- Header，风格对齐回收站 -->
+    <div class="shared-header">
+      <div class="shared-header-left">
+        <Icons name="share" class="shared-header-icon" />
+        <div>
+          <h1 class="shared-title">共享文件库</h1>
+          <p class="shared-subtitle">查看我创建并共享的文件库，或他人共享给我的文件库</p>
+        </div>
       </div>
     </div>
 
+    <!-- Tabs -->
     <div class="shared-tabs">
-      <button :class="['shared-tab', { active: sharedSubTab === 'mine' }]" @click="emit('tab', 'mine')">我分享的</button>
-      <button :class="['shared-tab', { active: sharedSubTab === 'tome' }]" @click="emit('tab', 'tome')">分享给我的</button>
+      <button :class="['shared-tab', { active: sharedSubTab === 'mine' }]" @click="emit('tab', 'mine')">我的分享</button>
+      <button :class="['shared-tab', { active: sharedSubTab === 'tome' }]" @click="emit('tab', 'tome')">分享给我</button>
     </div>
 
+    <!-- Body，列表卡片风格对齐回收站 -->
     <div class="shared-page-body">
-      <!-- 我分享的 -->
+      <!-- 我的分享（文件库） -->
       <template v-if="sharedSubTab === 'mine'">
         <div v-if="mySharesLoading" class="shared-loading">
           <div class="shared-loading-dots">
@@ -27,48 +30,45 @@
           <p class="shared-loading-text">加载中...</p>
         </div>
         <div v-else-if="mySharesList.length > 0" class="shared-table-card">
-          <div class="shared-list-grid">
-            <div class="shared-list-header">
-              <span class="shared-col-name">名称</span>
-              <span class="shared-col-to">共享给</span>
-              <span class="shared-col-lib">所属资料库</span>
-              <span class="shared-col-perm">权限</span>
-              <span class="shared-col-action">操作</span>
-            </div>
-            <div v-for="row in mySharesList" :key="row.id" class="shared-list-row">
-              <div class="shared-td-name">
-                <div class="shared-file-name" :title="row.file_path">
-                  <Icons name="file" class="shared-file-icon" />
-                  <span class="shared-file-path">{{ row.file_path }}</span>
-                </div>
-              </div>
-              <div class="shared-td-to">
-                <span class="shared-user">{{ row.username }}</span>
-                <span v-if="row.department_name" class="shared-dept">{{ row.department_name }}</span>
-              </div>
-              <div class="shared-td-lib">
-                <span class="shared-cell">{{ row.library_name }}</span>
-              </div>
-              <div class="shared-td-perm">
-                <span :class="['shared-permission', row.permission === 'download' ? 'perm-download' : 'perm-read']">
-                  {{ row.permission === 'download' ? '可下载' : '只读' }}
-                </span>
-              </div>
-              <div class="shared-td-action shared-td-action-last">
-                <button type="button" class="btn-small danger" @click="emit('remove-share', row)">取消分享</button>
-              </div>
-            </div>
-          </div>
+          <table class="shared-table">
+            <thead>
+              <tr>
+                <th>文件库名称</th>
+                <th>共享范围</th>
+                <th>创建时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in mySharesList" :key="row.id">
+                <td class="shared-td-name">
+                  <div class="shared-file-name" :title="row.name">
+                    <Icons name="folder" class="shared-file-icon" />
+                    <span class="shared-file-path">{{ row.name }}</span>
+                  </div>
+                </td>
+                <td class="shared-td-to">
+                  <span class="shared-user">{{ row.share_scope }}</span>
+                </td>
+                <td class="shared-td-time">
+                  {{ formatDateStr(row.created_at) }}
+                </td>
+                <td class="shared-td-action-last">
+                  <button type="button" class="shared-link-btn" @click="emit('open-shared-lib', row)">查看</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
         <div v-else class="shared-empty">
           <div class="shared-empty-icon-wrap"><Icons name="share" class="shared-empty-icon" /></div>
-          <p class="shared-empty-title">暂无分享记录</p>
-          <p class="shared-empty-desc">在文件列表中点击「分享」，将文件共享给部门成员后，会在此显示</p>
+          <p class="shared-empty-title">暂无共享文件库</p>
+          <p class="shared-empty-desc">创建文件库并设置为公开、部门可见或添加成员后，会在此显示</p>
         </div>
       </template>
 
-      <!-- 分享给我的 -->
-      <template v-else>
+      <!-- 分享给我（文件库） -->
+      <template v-else-if="sharedSubTab === 'tome'">
         <div v-if="receivedSharesLoading" class="shared-loading">
           <div class="shared-loading-dots">
             <span class="shared-loading-dot"></span>
@@ -78,42 +78,58 @@
           <p class="shared-loading-text">加载中...</p>
         </div>
         <div v-else-if="receivedSharesList.length > 0" class="shared-table-card">
-          <div class="shared-list-grid">
-            <div class="shared-list-header">
-              <span class="shared-col-name">名称</span>
-              <span class="shared-col-to">分享者</span>
-              <span class="shared-col-lib">所属资料库</span>
-              <span class="shared-col-perm">权限</span>
-              <span class="shared-col-action">操作</span>
-            </div>
-            <div v-for="row in receivedSharesList" :key="row.id" class="shared-list-row">
-              <div class="shared-td-name">
-                <div class="shared-file-name" :title="row.file_path">
-                  <Icons name="file" class="shared-file-icon" />
-                  <span class="shared-file-path">{{ row.file_path }}</span>
-                </div>
-              </div>
-              <div class="shared-td-to">
-                <span class="shared-user">{{ row.owner_username }}</span>
-              </div>
-              <div class="shared-td-lib">
-                <span class="shared-cell">{{ row.library_name }}</span>
-              </div>
-              <div class="shared-td-perm">
-                <span :class="['shared-permission', row.permission === 'download' ? 'perm-download' : 'perm-read']">
-                  {{ row.permission === 'download' ? '可下载' : '只读' }}
-                </span>
-              </div>
-              <div class="shared-td-action shared-td-action-last">
-                <button type="button" class="shared-open-btn" @click="emit('open-shared-lib', row)">打开</button>
-              </div>
-            </div>
-          </div>
+          <table class="shared-table">
+            <thead>
+              <tr>
+                <th>文件库名称</th>
+                <th>所有者</th>
+                <th>共享范围</th>
+                <th>我的权限</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in receivedSharesList" :key="row.id">
+                <td class="shared-td-name">
+                  <div class="shared-file-name" :title="row.name">
+                    <Icons name="folder" class="shared-file-icon" />
+                    <span class="shared-file-path">{{ row.name }}</span>
+                  </div>
+                </td>
+                <td class="shared-td-to">
+                  <span class="shared-user">{{ row.owner_username }}</span>
+                </td>
+                <td>
+                  <span class="shared-cell">{{ row.share_scope }}</span>
+                </td>
+                <td>
+                  <span
+                    class="shared-permission"
+                    :class="row.can_write ? 'perm-download' : 'perm-read'"
+                  >
+                    {{ row.can_write ? '读写' : '只读' }}
+                  </span>
+                </td>
+                <td class="shared-td-action-last">
+                  <button type="button" class="shared-link-btn" @click="emit('open-shared-lib', row)">查看</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
         <div v-else class="shared-empty">
           <div class="shared-empty-icon-wrap"><Icons name="share" class="shared-empty-icon" /></div>
-          <p class="shared-empty-title">暂无他人分享给您的文件</p>
-          <p class="shared-empty-desc">当同事将文件分享给您后，会在此显示</p>
+          <p class="shared-empty-title">暂无他人共享给您的文件库</p>
+          <p class="shared-empty-desc">当同事将文件库共享给您后，会在此显示</p>
+        </div>
+      </template>
+
+      <!-- 兜底：默认为「我的分享」空状态 -->
+      <template v-else>
+        <div class="shared-empty">
+          <div class="shared-empty-icon-wrap"><Icons name="share" class="shared-empty-icon" /></div>
+          <p class="shared-empty-title">暂无共享文件库</p>
+          <p class="shared-empty-desc">创建文件库并设置为公开、部门可见或添加成员后，会在此显示</p>
         </div>
       </template>
     </div>
@@ -131,41 +147,95 @@ defineProps({
   receivedSharesLoading: Boolean,
 })
 
-const emit = defineEmits(['tab', 'remove-share', 'open-shared-lib'])
+const emit = defineEmits(['tab', 'open-shared-lib'])
+
+function formatDateStr(s) {
+  if (!s) return ''
+  return String(s).slice(0, 10)
+}
 </script>
 
 <style scoped>
-.shared-page { display: flex; flex-direction: column; min-height: 0; padding: 0; }
-.shared-page-header {
-  background: #fff;
-  border-bottom: 1px solid var(--border);
-  padding: 20px 32px;
+.shared-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #f9fafb;
+}
+
+.shared-header {
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 12px 24px;
   display: flex;
   align-items: center;
-  gap: 16px;
-  flex-shrink: 0;
+  justify-content: space-between;
+  gap: 12px;
 }
-.shared-page-icon-wrap {
-  width: 44px; height: 44px; border-radius: 10px;
-  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+
+.shared-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
-.shared-page-icon { width: 22px; height: 22px; color: #4a90e2; }
-.shared-page-header-text { min-width: 0; }
-.shared-page-title { margin: 0; font-size: 22px; font-weight: 600; color: #111; letter-spacing: -0.02em; }
-.shared-page-desc { margin: 6px 0 0 0; font-size: 13px; color: #6b7280; line-height: 1.4; }
+
+.shared-header-icon {
+  width: 24px;
+  height: 24px;
+  color: #4b5563;
+}
+
+.shared-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.shared-subtitle {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: #6b7280;
+}
+
 .shared-tabs {
-  flex-shrink: 0; display: flex; gap: 4px;
-  padding: 12px 32px 0; background: #fff; border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+  padding: 8px 24px 0;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
 }
+
 .shared-tab {
-  padding: 10px 20px; border: none; background: none; font-size: 14px; font-weight: 500;
-  color: #6b7280; cursor: pointer; border-radius: 8px 8px 0 0; margin-bottom: -1px;
+  padding: 8px 16px;
+  border: none;
+  background: none;
+  font-size: 14px;
+  font-weight: 500;
+  color: #6b7280;
+  cursor: pointer;
+  border-radius: 8px 8px 0 0;
+  margin-bottom: -1px;
   transition: color 0.2s, background 0.2s;
 }
-.shared-tab:hover { color: #111; background: #f9fafb; }
-.shared-tab.active { color: #4a90e2; background: #f3f4f6; border-bottom: 2px solid #4a90e2; }
-.shared-page-body { flex: 1; overflow: auto; background: #f3f4f6; padding: 24px 32px; }
+
+.shared-tab:hover {
+  color: #111827;
+  background: #f9fafb;
+}
+
+.shared-tab.active {
+  color: #111827;
+  background: #ffffff;
+  border-bottom: 2px solid #111827;
+}
+
+.shared-page-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 24px 24px;
+}
 .shared-loading {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 20px; padding: 64px 24px; color: #6b7280; font-size: 14px;
@@ -183,23 +253,35 @@ const emit = defineEmits(['tab', 'remove-share', 'open-shared-lib'])
   40% { transform: scale(1); opacity: 1; }
 }
 .shared-loading-text { margin: 0; }
-.shared-table-card { background: transparent; border-radius: 0; box-shadow: none; border: none; overflow: visible; }
-.shared-list-grid { display: flex; flex-direction: column; width: 100%; }
-.shared-list-header,
-.shared-list-row {
-  display: grid;
-  grid-template-columns: 2.4fr 2fr 1.8fr 1.4fr 1.2fr;
-  gap: 12px; padding: 10px 12px; align-items: center;
+.shared-table-card {
+  background: #ffffff;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  overflow: hidden;
 }
-.shared-list-header {
-  background: #f7f8fa; font-size: 13px; font-weight: 600;
-  color: var(--text); border-bottom: 1px solid var(--border);
+.shared-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
 }
-.shared-list-row { border-bottom: 1px solid #f3f4f6; }
-.shared-list-row:hover { background: #fafafa; }
+.shared-table thead {
+  background: #f9fafb;
+}
+.shared-table th,
+.shared-table td {
+  padding: 10px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+}
+.shared-table th {
+  font-weight: 600;
+  color: #6b7280;
+}
+.shared-table tbody tr:hover {
+  background: #f9fafb;
+}
 .shared-td-name { min-width: 0; }
-.shared-col-perm, .shared-td-perm { text-align: center; }
-.shared-col-action { text-align: right; }
 .shared-td-action-last { text-align: right; white-space: nowrap; }
 .shared-file-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .shared-file-icon { width: 18px; height: 18px; color: #4a90e2; flex-shrink: 0; }
@@ -213,12 +295,20 @@ const emit = defineEmits(['tab', 'remove-share', 'open-shared-lib'])
 .shared-permission { display: inline-block; padding: 2px 8px; font-size: 12px; font-weight: 500; border-radius: 6px; }
 .shared-permission.perm-read { background: #f3f4f6; color: #4b5563; }
 .shared-permission.perm-download { background: #dbeafe; color: #1d4ed8; }
-.shared-td-action { text-align: left; padding-left: 20px; vertical-align: middle; }
-.shared-open-btn {
-  padding: 6px 14px; border: none; background: #4a90e2; color: #fff;
-  font-size: 13px; font-weight: 500; cursor: pointer; border-radius: 6px; transition: background 0.2s;
+.shared-link-btn {
+  padding: 4px 8px;
+  border: none;
+  background: none;
+  font-size: 12px;
+  color: #4a90e2;
+  cursor: pointer;
 }
-.shared-open-btn:hover { background: #357abd; }
+.shared-link-btn:hover {
+  text-decoration: underline;
+}
+.shared-link-btn.danger {
+  color: #dc2626;
+}
 .shared-empty {
   max-width: 400px; margin: 0 auto; text-align: center; padding: 56px 32px;
   background: #fff; border-radius: 12px; border: 1px dashed var(--border);

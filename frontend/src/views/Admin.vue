@@ -265,21 +265,21 @@
 
             <div class="card admin-storage-overview-card">
               <div class="admin-storage-overview-header">
-                <div>
+                <div class="admin-storage-overview-left">
                   <h3 class="admin-storage-card-title">整体存储使用情况</h3>
                   <p class="admin-storage-overview-sub">
                     {{ storageStats?.used_display || '0 B' }} / {{ storageStats?.total_display || '500 GB' }}
                   </p>
+                  <div class="admin-storage-bar">
+                    <div
+                      class="admin-storage-bar-inner"
+                      :style="{ width: Math.min(storageStats?.percent || 0, 100) + '%' }"
+                    />
+                  </div>
                 </div>
                 <div class="admin-storage-overview-percent">
                   {{ Math.round(storageStats?.percent || 0) }}%
                 </div>
-              </div>
-              <div class="admin-storage-bar">
-                <div
-                  class="admin-storage-bar-inner"
-                  :style="{ width: Math.min(storageStats?.percent || 0, 100) + '%' }"
-                />
               </div>
               <div
                 v-if="(storageStats?.percent || 0) > 80"
@@ -1323,6 +1323,8 @@ async function toggleNotifySetting(s) {
   try {
     const updated = await api.updateNotificationSettingAdmin(s.id, !s.enabled)
     s.enabled = updated.enabled
+    // 同步刷新模板与设置，使「通知模板」卡片的启用状态与开关保持一致
+    await loadNotifyAll()
   } catch (e) {
     err.value = e.message
   }
@@ -1707,7 +1709,12 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  gap: 220px;
+  margin-bottom: 4px;
+}
+
+.admin-storage-overview-left {
+  flex: 1;
 }
 
 .admin-storage-overview-sub {
@@ -1719,6 +1726,8 @@ onMounted(async () => {
 .admin-storage-overview-percent {
   font-size: 20px;
   font-weight: 600;
+  min-width: 48px;
+  text-align: right;
 }
 
 .admin-storage-overview-alert {

@@ -11,11 +11,17 @@ from sqlalchemy.orm import Session
 from backend.app.api.deps import get_current_user
 from backend.app.core.audit import log_audit
 from backend.app.core.config import get_settings
-from backend.app.core.library_access import can_download_file, can_access_file, get_accessible_library_ids, has_library_access
+from backend.app.core.library_access import (
+    can_download_file,
+    can_access_file,
+    get_accessible_library_ids,
+    has_library_access,
+)
 from backend.app.api.notifications import create_notification
 from backend.app.db.session import get_db
 from backend.app.models.department import Department
 from backend.app.models.file import FileEntry, FileVersion
+from backend.app.models.file_share import FileShare
 from backend.app.models.library import Library
 from backend.app.models.user import User
 
@@ -107,6 +113,208 @@ def _get_library_and_check(db: Session, library_id: int, user: User, require_wri
     """获取资料库并校验访问权限。require_write=True 时需读写权限。"""
     lib, _ = has_library_access(db, library_id, user, require_write=require_write)
     return lib
+
+
+@router.get("/shares", response_model=List[FileShareRead])
+def list_file_shares(
+    entry_id: int = Query(..., description="文件条目 ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出某个文件当前的分享列表（仅拥有者可查看管理）。"""
+    entry = (
+        db.query(FileEntry)
+        .filter(FileEntry.id == entry_id, FileEntry.deleted_at.is_(None))
+        .first()
+    )
+    if not entry:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    lib = db.query(Library).filter(Library.id == entry.library_id).first()
+    if not lib:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件库不存在")
+    if lib.owner_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅文件库拥有者可管理分享")
+    rows = (
+        db.query(FileShare, User.username)
+        .join(User, FileShare.user_id == User.id)
+        .filter(FileShare.file_entry_id == entry_id)
+        .order_by(FileShare.created_at.desc())
+        .all()
+    )
+    result: list[FileShareRead] = []
+    for fs, username in rows:
+        result.append(
+            FileShareRead(
+                id=fs.id,
+                file_entry_id=fs.file_entry_id,
+                user_id=fs.user_id,
+                username=username,
+                permission=fs.permission,
+                created_at=fs.created_at.isoformat() if getattr(fs, "created_at", None) else None,
+            )
+        )
+    return result
+
+
+@router.post("/shares", status_code=status.HTTP_204_NO_CONTENT)
+def add_file_share(
+    entry_id: int = Query(..., description="文件条目 ID"),
+    body: FileShareAdd = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """新增或更新文件分享记录（仅拥有者可操作）。"""
+    entry = (
+        db.query(FileEntry)
+        .filter(FileEntry.id == entry_id, FileEntry.deleted_at.is_(None))
+        .first()
+    )
+    if not entry:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    lib = db.query(Library).filter(Library.id == entry.library_id).first()
+    if not lib:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件库不存在")
+    if lib.owner_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅文件库拥有者可管理分享")
+    user = db.query(User).filter(User.id == body.user_id, User.is_active == True).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在或已禁用")
+    fs = (
+        db.query(FileShare)
+        .filter(FileShare.file_entry_id == entry_id, FileShare.user_id == body.user_id)
+        .first()
+    )
+    now = datetime.now(timezone.utc)
+    if fs:
+        fs.permission = body.permission
+    else:
+        fs = FileShare(
+            file_entry_id=entry_id,
+            user_id=body.user_id,
+            permission=body.permission,
+            created_at=now,
+        )
+        db.add(fs)
+    db.commit()
+
+
+@router.delete("/shares", status_code=status.HTTP_204_NO_CONTENT)
+def remove_file_share(
+    entry_id: int = Query(..., description="文件条目 ID"),
+    user_id: int = Query(..., description="被分享用户 ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """移除文件分享记录（仅拥有者可操作）。"""
+    entry = (
+        db.query(FileEntry)
+        .filter(FileEntry.id == entry_id, FileEntry.deleted_at.is_(None))
+        .first()
+    )
+    if not entry:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    lib = db.query(Library).filter(Library.id == entry.library_id).first()
+    if not lib:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件库不存在")
+    if lib.owner_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅文件库拥有者可管理分享")
+    fs = (
+        db.query(FileShare)
+        .filter(FileShare.file_entry_id == entry_id, FileShare.user_id == user_id)
+        .first()
+    )
+    if not fs:
+        return
+    db.delete(fs)
+    db.commit()
+
+
+@router.get("/shares/mine", response_model=List[MyShareRow])
+def list_my_shares(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """我分享出去的文件列表。"""
+    rows = (
+        db.query(
+            FileShare,
+            FileEntry.path,
+            FileEntry.library_id,
+            Library.name.label("library_name"),
+            User.username,
+            Department.name.label("department_name"),
+        )
+        .join(FileEntry, FileShare.file_entry_id == FileEntry.id)
+        .join(Library, FileEntry.library_id == Library.id)
+        .join(User, FileShare.user_id == User.id)
+        .outerjoin(Department, User.department_id == Department.id)
+        .filter(
+            Library.owner_id == current_user.id,
+            FileEntry.deleted_at.is_(None),
+            Library.deleted_at.is_(None),
+        )
+        .order_by(FileShare.created_at.desc())
+        .all()
+    )
+    result: list[MyShareRow] = []
+    for fs, path, lib_id, lib_name, username, dept_name in rows:
+        result.append(
+            MyShareRow(
+                id=fs.id,
+                file_entry_id=fs.file_entry_id,
+                file_path=path,
+                library_id=lib_id,
+                library_name=lib_name,
+                user_id=fs.user_id,
+                username=username,
+                department_name=dept_name,
+                permission=fs.permission,
+                created_at=fs.created_at.isoformat() if getattr(fs, "created_at", None) else None,
+            )
+        )
+    return result
+
+
+@router.get("/shares/to-me", response_model=List[SharedToMeRow])
+def list_shares_to_me(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """分享给我的文件列表。"""
+    rows = (
+        db.query(
+            FileShare,
+            FileEntry.path,
+            FileEntry.library_id,
+            Library.name.label("library_name"),
+            User.username.label("owner_username"),
+        )
+        .join(FileEntry, FileShare.file_entry_id == FileEntry.id)
+        .join(Library, FileEntry.library_id == Library.id)
+        .join(User, Library.owner_id == User.id)
+        .filter(
+            FileShare.user_id == current_user.id,
+            FileEntry.deleted_at.is_(None),
+            Library.deleted_at.is_(None),
+        )
+        .order_by(FileShare.created_at.desc())
+        .all()
+    )
+    result: list[SharedToMeRow] = []
+    for fs, path, lib_id, lib_name, owner_username in rows:
+        result.append(
+            SharedToMeRow(
+                id=fs.id,
+                file_entry_id=fs.file_entry_id,
+                file_path=path,
+                library_id=lib_id,
+                library_name=lib_name,
+                owner_username=owner_username,
+                permission=fs.permission,
+                created_at=fs.created_at.isoformat() if getattr(fs, "created_at", None) else None,
+            )
+        )
+    return result
 
 
 @router.post("/upload", response_model=FileRead)

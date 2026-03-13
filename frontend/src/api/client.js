@@ -64,6 +64,21 @@ export async function getMe() {
   return api('/auth/me')
 }
 
+export async function updateMe(profile) {
+  // 目前仅支持更新用户名（显示姓名），更新成功后后端会返回新的 access_token
+  const body = {}
+  if (profile.name !== undefined) body.username = profile.name
+  const data = await api('/auth/me', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (data && data.access_token) {
+    localStorage.setItem('token', data.access_token)
+  }
+  return data
+}
+
 export async function changePassword(oldPassword, newPassword) {
   return api('/auth/change-password', {
     method: 'POST',
@@ -206,13 +221,15 @@ export async function deleteDepartment(id) {
   return api(`/departments/${id}`, { method: 'DELETE' })
 }
 
-/** 文件分享：仅拥有者可管理 */
+/** 文件分享：仅拥有者可管理（单文件） */
 export async function listMyShares() {
-  return api('/files/shares/mine')
+  // 共享文件库：我分享的文件库
+  return api('/libraries/shared/mine')
 }
 /** 分享给我的文件列表 */
 export async function listSharesToMe() {
-  return api('/files/shares/to-me')
+  // 共享文件库：分享给我的文件库
+  return api('/libraries/shared/to-me')
 }
 export async function listFileShareAddableUsers(entryId) {
   return api(`/files/shares/addable-users?entry_id=${entryId}`)

@@ -38,11 +38,11 @@
         </div>
         <h2 class="dept-lock-title">访问受限</h2>
         <p class="dept-lock-text">
-          您没有权限访问「{{ deptInfo.name }}」的资料库，请联系系统管理员或部门负责人。
+          您没有权限访问「{{ deptInfo.name }}」的文件库，请联系系统管理员或部门负责人。
         </p>
       </div>
 
-      <!-- 部门资料库表格（用作部门文件视图） -->
+      <!-- 部门文件库表格（用作部门文件视图） -->
       <div v-else class="dept-files-wrap">
         <div v-if="rows.length" class="dept-files-table card">
           <table>
@@ -68,7 +68,7 @@
                   </div>
                 </td>
                 <td class="dept-file-type">
-                  {{ r.type === 'folder' ? '部门资料库' : '资料库' }}
+                  {{ r.type === 'folder' ? '部门文件库' : '文件库' }}
                 </td>
                 <td class="dept-file-desc">
                   {{ r.description || '-' }}
@@ -82,8 +82,8 @@
         </div>
         <div v-else class="dept-empty">
           <Icons name="folder" class="dept-empty-icon" />
-          <p class="dept-empty-text">该部门暂无资料库</p>
-          <p class="dept-empty-hint">可在右上角「新建资料库」中选择所属部门后创建。</p>
+          <p class="dept-empty-text">该部门暂无文件库</p>
+          <p class="dept-empty-hint">可在右上角「新建文件库」中选择所属部门后创建。</p>
         </div>
       </div>
     </div>

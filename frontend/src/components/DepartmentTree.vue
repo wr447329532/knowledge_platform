@@ -1,7 +1,7 @@
 <template>
   <div class="dept-tree" :data-variant="variant">
     <div class="dept-tree-header">
-      <span class="dept-tree-title">部门</span>
+      <span class="dept-tree-title">组织架构</span>
       <button
         v-if="me?.is_superuser && variant === 'content'"
         type="button"
