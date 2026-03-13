@@ -25,6 +25,7 @@ class DepartmentUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     parent_id: Optional[int] = None
     sort_order: Optional[int] = None
+    leader_user_id: Optional[int] = None
 
 
 class DepartmentNode(BaseModel):
@@ -34,6 +35,7 @@ class DepartmentNode(BaseModel):
     sort_order: int
     user_count: int = 0
     leader_name: Optional[str] = None
+    leader_user_id: Optional[int] = None
     has_access: bool = True
     children: List["DepartmentNode"] = []
 
@@ -66,9 +68,25 @@ class DepartmentFileRow(BaseModel):
     owner: str
 
 
+class DepartmentMemberRow(BaseModel):
+    """部门成员行：用于部门负责人下拉列表。"""
+
+    id: int
+    username: Optional[str] = None
+    email: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 
 def _get_leader_name(dept: Department) -> Optional[str]:
-    """部门负责人：优先 leader，否则取该部门第一个用户的用户名。"""
+    """
+    部门负责人显示名称。
+
+    优先使用 leader_user_id 指向的用户（Department.leader 关系）；
+    若未设置负责人，则退化为取该部门第一个用户的用户名/邮箱。
+    """
     leader = getattr(dept, "leader", None)
     if leader:
         return getattr(leader, "username", None) or getattr(leader, "email", None)
@@ -97,6 +115,7 @@ def _build_tree(
                 sort_order=d.sort_order,
                 user_count=user_counts.get(dept_id, 0),
                 leader_name=_get_leader_name(d),
+                leader_user_id=getattr(d, "leader_user_id", None),
                 has_access=True if accessible_ids is None else dept_id in accessible_ids,
                 children=_build_tree(nodes, dept_id, user_counts, accessible_ids),
             )
@@ -162,7 +181,11 @@ def get_department_tree(
     """获取部门树（所有用户可读），包含人员数量与访问权限标记。"""
     all_depts: List[Department] = (
         db.query(Department)
-        .options(joinedload(Department.children), joinedload(Department.users))
+        .options(
+            joinedload(Department.children),
+            joinedload(Department.users),
+            joinedload(Department.leader),
+        )
         .order_by(Department.sort_order, Department.id)
         .all()
     )
@@ -224,11 +247,30 @@ def update_department(
             dept.parent_id = body.parent_id
     if body.sort_order is not None:
         dept.sort_order = body.sort_order
+    if body.leader_user_id is not None:
+        # 允许通过传入 0 来清空负责人
+        if body.leader_user_id == 0:
+            dept.leader_user_id = None
+        else:
+            leader = (
+                db.query(User)
+                .filter(User.id == body.leader_user_id, User.department_id == dept.id)
+                .first()
+            )
+            if not leader:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="负责人必须是该部门的成员",
+                )
+            dept.leader_user_id = leader.id
     db.commit()
     db.refresh(dept)
     all_depts: List[Department] = (
         db.query(Department)
-        .options(joinedload(Department.users))
+        .options(
+            joinedload(Department.users),
+            joinedload(Department.leader),
+        )
         .order_by(Department.sort_order, Department.id)
         .all()
     )
@@ -242,6 +284,7 @@ def update_department(
         sort_order=dept.sort_order,
         user_count=user_counts.get(dept.id, 0),
         leader_name=_get_leader_name(dept),
+        leader_user_id=getattr(dept, "leader_user_id", None),
         has_access=dept.id in accessible_ids,
         children=children,
     )
@@ -302,6 +345,25 @@ def get_department_info(
         has_access=dept.id in accessible_ids,
         user_count=len(getattr(dept, "users", []) or []),
     )
+
+
+@router.get("/{department_id}/members", response_model=List[DepartmentMemberRow])
+def list_department_members(
+    department_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_superuser),
+):
+    """部门成员列表（仅管理员可见），用于选择部门负责人。"""
+    dept = db.query(Department).filter(Department.id == department_id).first()
+    if not dept:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
+    users = (
+        db.query(User)
+        .filter(User.department_id == department_id, User.is_active.is_(True))
+        .order_by(User.username.asc().nullslast(), User.email.asc().nullslast(), User.id.asc())
+        .all()
+    )
+    return users
 
 
 @router.get("/{department_id}/libraries", response_model=List[LibraryRead])

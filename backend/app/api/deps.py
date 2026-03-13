@@ -22,8 +22,16 @@ def get_current_user(
             detail="无法验证凭证",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    username: str = payload["sub"]
-    user: Optional[User] = db.query(User).filter(User.username == username).first()
+    sub = payload["sub"]
+    # 现在 sub 存的是 user.id（字符串），需要转为 int
+    try:
+        user_id = int(sub)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的凭证标识",
+        )
+    user: Optional[User] = db.query(User).filter(User.id == user_id).first()
     if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

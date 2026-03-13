@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.models.department import Department
 from backend.app.models.file import FileEntry
+from backend.app.models.file_share import FileShare
 from backend.app.models.library import Library
 from backend.app.models.library_member import LibraryMember
 from backend.app.models.user import User
@@ -204,6 +205,18 @@ def can_access_file(db: Session, entry: FileEntry, user: User) -> bool:
     if member is not None:
         return True
 
+    # 文件级分享：即使不是库成员，只要被分享了该文件即可访问（只读）
+    share = (
+        db.query(FileShare)
+        .filter(
+            FileShare.file_entry_id == entry.id,
+            FileShare.user_id == user.id,
+        )
+        .first()
+    )
+    if share is not None:
+        return True
+
     return False
 
 
@@ -220,6 +233,18 @@ def can_download_file(db: Session, entry: FileEntry, user: User) -> bool:
 
     # 超级管理员 / 拥有者
     if user.is_superuser or lib.owner_id == user.id:
+        return True
+
+    # 文件级分享：permission=download 的用户始终可下载该文件
+    share = (
+        db.query(FileShare)
+        .filter(
+            FileShare.file_entry_id == entry.id,
+            FileShare.user_id == user.id,
+        )
+        .first()
+    )
+    if share is not None and share.permission == "download":
         return True
 
     visibility = getattr(lib, "visibility", "private") or "private"

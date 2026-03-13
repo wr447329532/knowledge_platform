@@ -106,6 +106,23 @@ def _ensure_libraries_has_deleted_at() -> None:
         conn.commit()
 
 
+def _ensure_departments_has_leader_user_id() -> None:
+    """兼容旧库：若 departments 表缺少 leader_user_id 列则自动添加"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "departments" not in insp.get_table_names():
+        return
+    cols = [c["name"] for c in insp.get_columns("departments")]
+    if "leader_user_id" in cols:
+        return
+    with engine.connect() as conn:
+        conn.execute(
+            text("ALTER TABLE departments ADD COLUMN leader_user_id INTEGER REFERENCES users(id)")
+        )
+        conn.commit()
+
+
 def _ensure_default_admin() -> None:
     """启动时确保存在默认管理员：用户名 admin，密码 admin123"""
     db = SessionLocal()
@@ -147,6 +164,10 @@ def create_app() -> FastAPI:
     """
     settings = get_settings()
 
+    # 强制要求在部署环境中配置真实的 JWT_SECRET_KEY，避免使用默认示例值带来安全风险
+    if settings.JWT_SECRET_KEY == "change_this_secret_in_env":
+        raise RuntimeError("请在 .env 中设置真实的 JWT_SECRET_KEY（不可使用默认示例值）")
+
     # 初始化数据库表（开发期使用，生产建议使用迁移工具）
     Base.metadata.create_all(bind=engine)
     _ensure_file_entries_has_deleted_at()
@@ -155,6 +176,7 @@ def create_app() -> FastAPI:
     _ensure_libraries_has_visibility()
     _ensure_libraries_has_allow_download()
     _ensure_libraries_has_deleted_at()
+    _ensure_departments_has_leader_user_id()
     _ensure_default_admin()
 
     app = FastAPI(

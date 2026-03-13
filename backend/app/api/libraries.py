@@ -392,7 +392,8 @@ def update_library(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    lib, is_write = has_library_access(db, library_id, current_user, require_write=True)
+    lib, _ = has_library_access(db, library_id, current_user)
+    check_can_manage_library(lib, current_user, db)
     if lib_in.name is not None:
         lib.name = lib_in.name
     if lib_in.description is not None:

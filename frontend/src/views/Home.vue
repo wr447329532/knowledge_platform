@@ -512,8 +512,9 @@
             <option value="">选择用户</option>
             <option v-for="u in shareAddableUsers" :key="u.id" :value="u.id">{{ u.username }}</option>
           </select>
-          <select v-model="sharePermission" style="width: 120px;">
+          <select v-model="sharePermission" style="width: 140px;">
             <option value="read">只读（可预览）</option>
+            <option value="download">可下载</option>
           </select>
           <button class="primary btn-small" @click="doAddShare">添加</button>
         </div>
@@ -522,7 +523,11 @@
           <tbody>
             <tr v-for="s in shareList" :key="s.id">
               <td>{{ s.username }}</td>
-              <td><span class="badge badge-user">只读</span></td>
+              <td>
+                <span class="badge badge-user">
+                  {{ s.permission === 'download' ? '可下载' : '只读' }}
+                </span>
+              </td>
               <td><button class="btn-small danger" @click="doRemoveShare(s)">移除</button></td>
             </tr>
           </tbody>

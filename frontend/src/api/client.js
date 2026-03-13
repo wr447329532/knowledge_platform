@@ -1,7 +1,37 @@
 const BASE = '/api'
 
 function getToken() {
-  return localStorage.getItem('token')
+  // 优先使用会话级 token（记住登录未勾选时），否则回退到持久化 token
+  return sessionStorage.getItem('token') || localStorage.getItem('token')
+}
+
+function clearToken() {
+  sessionStorage.removeItem('token')
+  localStorage.removeItem('token')
+}
+
+function setToken(token, { remember } = { remember: true }) {
+  clearToken()
+  if (remember) {
+    localStorage.setItem('token', token)
+  } else {
+    sessionStorage.setItem('token', token)
+  }
+}
+
+function replaceTokenPreserveStorage(token) {
+  // 根据当前 token 所在位置决定写入哪种存储，避免改变登录时的记住策略
+  const inSession = !!sessionStorage.getItem('token')
+  const inLocal = !!localStorage.getItem('token')
+  clearToken()
+  if (inSession) {
+    sessionStorage.setItem('token', token)
+  } else if (inLocal) {
+    localStorage.setItem('token', token)
+  } else {
+    // 默认行为：如果之前没有 token，就当作持久化处理
+    localStorage.setItem('token', token)
+  }
 }
 
 export async function api(url, options = {}) {
@@ -10,7 +40,7 @@ export async function api(url, options = {}) {
   if (token) headers['Authorization'] = `Bearer ${token}`
   const res = await fetch(BASE + url, { ...options, headers })
   if (res.status === 401) {
-    localStorage.removeItem('token')
+    clearToken()
     window.location.href = '/#/login'
     throw new Error('未登录')
   }
@@ -26,7 +56,7 @@ export async function api(url, options = {}) {
   return res
 }
 
-export async function login(username, password) {
+export async function login(username, password, remember = true) {
   const form = new FormData()
   form.append('username', username)
   form.append('password', password)
@@ -41,7 +71,9 @@ export async function login(username, password) {
     throw new Error(err.detail || '登录失败')
   }
   const data = await res.json()
-  localStorage.setItem('token', data.access_token)
+  if (data && data.access_token) {
+    setToken(data.access_token, { remember })
+  }
   return data
 }
 
@@ -56,7 +88,7 @@ export async function createUser(email, username, password, is_superuser = false
 }
 
 export function logout() {
-  localStorage.removeItem('token')
+  clearToken()
   window.location.href = '/#/login'
 }
 
@@ -74,7 +106,7 @@ export async function updateMe(profile) {
     body: JSON.stringify(body),
   })
   if (data && data.access_token) {
-    localStorage.setItem('token', data.access_token)
+    replaceTokenPreserveStorage(data.access_token)
   }
   return data
 }
@@ -199,6 +231,9 @@ export async function listDepartmentFiles(id) {
 export async function listDepartmentLibraries(id) {
   return api(`/departments/${id}/libraries`)
 }
+export async function listDepartmentMembers(id) {
+  return api(`/departments/${id}/members`)
+}
 export async function createDepartment(name, parentId = null, sortOrder = 0) {
   return api('/departments/', {
     method: 'POST',
@@ -206,11 +241,12 @@ export async function createDepartment(name, parentId = null, sortOrder = 0) {
     body: JSON.stringify({ name, parent_id: parentId, sort_order: sortOrder }),
   })
 }
-export async function updateDepartment(id, { name, parent_id, sort_order }) {
+export async function updateDepartment(id, { name, parent_id, sort_order, leader_user_id }) {
   const body = {}
   if (name !== undefined) body.name = name
   if (parent_id !== undefined) body.parent_id = parent_id
   if (sort_order !== undefined) body.sort_order = sort_order
+  if (leader_user_id !== undefined) body.leader_user_id = leader_user_id
   return api(`/departments/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },

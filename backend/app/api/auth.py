@@ -64,8 +64,8 @@ def update_me(
         current_user.username = username
     db.commit()
     db.refresh(current_user)
-    # 用户名作为 JWT 的 subject，修改后需要重新签发一个新的 access_token
-    access_token = create_access_token(subject=current_user.username)
+    # 以 user.id 作为 JWT 的 subject，修改用户名不会导致 Token 失效
+    access_token = create_access_token(subject=str(current_user.id))
     return Token(access_token=access_token)
 
 
@@ -137,7 +137,8 @@ def login(
         )
     log_audit(db, user.id, user.username, "login", "user", user.id, None)
     db.commit()
-    access_token = create_access_token(subject=user.username)
+    # 以 user.id 作为 JWT 的 subject，避免后续用户名修改导致 Token 失效
+    access_token = create_access_token(subject=str(user.id))
     return Token(access_token=access_token)
 
 

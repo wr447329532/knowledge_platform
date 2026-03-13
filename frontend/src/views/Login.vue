@@ -33,7 +33,6 @@
           </div>
           <div class="form-options">
             <label class="form-checkbox"><input type="checkbox" v-model="rememberMe" /> 记住登录状态</label>
-            <a href="#" class="form-link" @click.prevent>忘记密码?</a>
           </div>
           <p v-if="error" class="form-error">{{ error }}</p>
           <button type="submit" class="form-btn primary">登录</button>
@@ -59,7 +58,7 @@ const rememberMe = ref(false)
 async function submit() {
   error.value = ''
   try {
-    await login(email.value, password.value)
+    await login(email.value, password.value, rememberMe.value)
     router.push('/')
   } catch (e) {
     error.value = e.message || '登录失败'

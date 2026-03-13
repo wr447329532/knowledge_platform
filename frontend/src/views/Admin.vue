@@ -550,52 +550,161 @@
             <div class="admin-page-header">
               <div>
                 <h2 class="admin-page-title">系统日志</h2>
-                <p class="admin-page-desc">审计与操作记录</p>
+                <p class="admin-page-desc">查看和分析系统操作日志</p>
               </div>
             </div>
-            <div class="admin-toolbar card">
-              <input v-model="auditUsername" placeholder="用户名" class="admin-input-sm" />
-              <input v-model="auditAction" placeholder="操作类型" class="admin-input-sm" />
-              <span class="admin-label">开始</span>
-              <input
-                v-model="auditStartDate"
-                type="text"
-                placeholder="YYYY-MM-DD"
-                class="admin-date-input"
-                maxlength="10"
-              />
-              <span class="admin-label">结束</span>
-              <input
-                v-model="auditEndDate"
-                type="text"
-                placeholder="YYYY-MM-DD"
-                class="admin-date-input"
-                maxlength="10"
-              />
-              <button type="button" class="admin-btn-primary" @click="loadAudit">查询</button>
+
+            <!-- 统计卡片 -->
+            <div class="admin-stats">
+              <div class="admin-stat-card">
+                <div class="admin-stat-label">总操作数</div>
+                <div class="admin-stat-value">{{ auditList.length }}</div>
+                <div class="admin-stat-extra text-muted">当前加载的系统操作记录数量</div>
+              </div>
+              <div class="admin-stat-card">
+                <div class="admin-stat-label">涉及用户</div>
+                <div class="admin-stat-value">{{ auditUniqueUsersCount }}</div>
+                <div class="admin-stat-extra text-muted">参与过上述操作的不同用户数</div>
+              </div>
+              <div class="admin-stat-card">
+                <div class="admin-stat-label">文件相关操作</div>
+                <div class="admin-stat-value">{{ auditFileOpsCount }}</div>
+                <div class="admin-stat-extra text-muted">例如上传、下载、删除、重命名等文件操作次数</div>
+              </div>
+              <div class="admin-stat-card">
+                <div class="admin-stat-label">库相关操作</div>
+                <div class="admin-stat-value">{{ auditLibraryOpsCount }}</div>
+                <div class="admin-stat-extra text-muted">例如新建、修改、删除文件库等操作次数</div>
+              </div>
             </div>
-            <div class="admin-table-wrap card">
-              <table class="admin-table">
-                <thead>
-                  <tr>
-                    <th>时间</th>
-                    <th>用户</th>
-                    <th>操作</th>
-                    <th>资源</th>
-                    <th>详情</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="log in auditList" :key="log.id" class="admin-table-row">
-                    <td class="admin-cell-muted">{{ formatDate(log.created_at) }}</td>
-                    <td>{{ log.username || '-' }}</td>
-                    <td>{{ log.action }}</td>
-                    <td>{{ log.resource_type }} {{ log.resource_id }}</td>
-                    <td>{{ log.detail || '-' }}</td>
-                  </tr>
-                </tbody>
-              </table>
-              <p v-if="!auditList.length" class="admin-empty">暂无审计记录，或调整筛选条件后查询。</p>
+
+            <!-- 过滤和操作栏 -->
+            <div class="card audit-toolbar">
+              <div class="audit-toolbar-inner">
+                <div class="audit-filters-left">
+                  <div class="audit-search">
+                    <input
+                      v-model="auditSearch"
+                      type="text"
+                      placeholder="搜索用户、操作或详情..."
+                      class="audit-search-input"
+                    />
+                  </div>
+
+                  <select v-model="auditActionFilter" class="audit-select">
+                    <option value="all">全部操作</option>
+                    <option value="file">文件操作</option>
+                    <option value="user">用户管理</option>
+                    <option value="share">分享操作</option>
+                    <option value="permission">权限变更</option>
+                    <option value="login">登录日志</option>
+                    <option value="system">系统操作</option>
+                  </select>
+
+                  <select v-model="auditStatusFilter" class="audit-select">
+                    <option value="all">全部状态</option>
+                    <option value="success">成功</option>
+                    <option value="failed">失败</option>
+                  </select>
+
+                  <input
+                    v-model="auditStartDate"
+                    type="date"
+                    class="audit-date-input"
+                  />
+                  <input
+                    v-model="auditEndDate"
+                    type="date"
+                    class="audit-date-input"
+                  />
+
+                  <button type="button" class="admin-btn-secondary" @click="refreshAuditFirstPage">
+                    查询
+                  </button>
+                </div>
+
+                <div class="audit-toolbar-right">
+                  <button type="button" class="admin-btn-secondary" @click="exportAuditCsv">
+                    导出日志
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 日志列表 -->
+            <div class="card audit-table-wrap">
+              <div class="audit-table-scroll">
+                <table class="audit-table">
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>用户</th>
+                      <th>部门</th>
+                      <th>操作</th>
+                      <th>目标</th>
+                      <th>状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="log in filteredAuditList"
+                      :key="log.id"
+                      class="audit-row"
+                    >
+                      <td class="audit-cell-muted">
+                        {{ formatDate(log.created_at) }}
+                      </td>
+                      <td class="audit-cell-strong">
+                        {{ log.username || '-' }}
+                      </td>
+                      <td class="audit-cell">
+                        {{ log.department_name || '-' }}
+                      </td>
+                      <td class="audit-cell audit-cell-op">
+                        <span
+                          :class="['audit-tag', auditActionTagClass(log)]"
+                        >
+                          {{ formatAuditActionLabel(log) }}
+                        </span>
+                      </td>
+                      <td class="audit-cell">
+                        {{ formatAuditDetailLabel(log) }}
+                      </td>
+                      <td class="audit-cell">
+                        <span :class="['audit-status', auditStatusClass(log)]">
+                          {{ formatAuditStatusLabel(log) }}
+                        </span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p v-if="!filteredAuditList.length" class="admin-empty">
+                暂无审计记录，或调整筛选条件后查询。
+              </p>
+              <div class="audit-pagination" v-else>
+                <div class="audit-pagination-info">
+                  第 {{ auditPage }} 页，每页 {{ auditPageSize }} 条
+                </div>
+                <div class="audit-pagination-actions">
+                  <button
+                    type="button"
+                    class="admin-btn-secondary"
+                    :disabled="auditPage <= 1"
+                    @click="goPrevAuditPage"
+                  >
+                    上一页
+                  </button>
+                  <button
+                    type="button"
+                    class="admin-btn-secondary"
+                    :disabled="!auditHasMore"
+                    @click="goNextAuditPage"
+                  >
+                    下一页
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -986,7 +1095,26 @@
     <div v-if="showEditDept" class="modal">
       <div class="card">
         <h3>编辑部门</h3>
-        <input v-model="editDeptName" placeholder="部门名称" style="width:100%; margin-bottom:12px;" />
+        <div class="form-group">
+          <label>部门名称</label>
+          <input v-model="editDeptName" placeholder="部门名称" style="width:100%; margin-bottom:8px;" />
+        </div>
+        <div class="form-group">
+          <label>部门负责人 <span class="label-opt">选填</span></label>
+          <select v-model="editDeptLeaderId" class="admin-select">
+            <option :value="0">无负责人</option>
+            <option
+              v-for="u in editDeptMembers"
+              :key="u.id"
+              :value="u.id"
+            >
+              {{ u.username || u.email || ('用户 #' + u.id) }}
+            </option>
+          </select>
+          <p v-if="!editDeptMembers.length" class="admin-hint">
+            该部门暂无成员，保存后将仅更新部门名称。
+          </p>
+        </div>
         <p v-if="err" class="text-danger">{{ err }}</p>
         <div class="modal-actions">
           <button class="primary" @click="doSaveEditDept">保存</button>
@@ -1064,10 +1192,14 @@ const userStorage = ref([])
 const fileTypeStorage = ref([])
 const deptTreeForTable = ref([])
 const auditList = ref([])
-const auditUsername = ref('')
-const auditAction = ref('')
+const auditSearch = ref('')
+const auditActionFilter = ref('all')
+const auditStatusFilter = ref('all')
 const auditStartDate = ref('')
 const auditEndDate = ref('')
+const auditPage = ref(1)
+const auditPageSize = 50
+const auditHasMore = ref(false)
 
 const storageInnerTab = ref('departments')
 const storageSearchKeyword = ref('')
@@ -1097,6 +1229,8 @@ const addSubDeptName = ref('')
 const showEditDept = ref(false)
 const editDeptNode = ref(null)
 const editDeptName = ref('')
+const editDeptLeaderId = ref(0)
+const editDeptMembers = ref([])
 
 // 存储配额弹窗相关
 const showDeptQuota = ref(false)
@@ -1215,6 +1349,229 @@ const remainingStorageDisplay = computed(() => {
   const used = storageStats.value.used_bytes || 0
   const remain = Math.max(total - used, 0)
   return formatBytes(remain)
+})
+
+// 系统日志统计与过滤
+const auditUniqueUsersCount = computed(() => {
+  const set = new Set()
+  for (const log of auditList.value || []) {
+    if (log.username) set.add(log.username)
+  }
+  return set.size
+})
+
+const auditFileOpsCount = computed(() =>
+  (auditList.value || []).filter(l => l.resource_type === 'file').length,
+)
+
+const auditLibraryOpsCount = computed(() =>
+  (auditList.value || []).filter(l => l.resource_type === 'library').length,
+)
+
+function auditInferType(log) {
+  const action = (log.action || '').toLowerCase()
+  const rtype = (log.resource_type || '').toLowerCase()
+  if (rtype === 'file' || /upload|download|delete|restore|permanent_delete/.test(action)) return 'file'
+  if (rtype === 'library' || /library/.test(action)) return 'file'
+  if (/user/.test(action) || /create_user|update_user|change_password/.test(action)) return 'user'
+  if (/share/.test(action)) return 'share'
+  if (/permission|role/.test(action)) return 'permission'
+  if (/login|logout/.test(action)) return 'login'
+  return 'system'
+}
+
+function auditActionTagClass(log) {
+  const a = (log.action || '').toLowerCase()
+  if (a.includes('upload')) return 'tag-file-upload'
+  if (a.includes('download')) return 'tag-file-download'
+  if (a.includes('restore')) return 'tag-file-restore'
+  if (a.includes('permanent_delete') || (a.includes('delete') && !a.includes('restore'))) return 'tag-file-delete'
+  if (a.includes('rename')) return 'tag-file-rename'
+  if (a.includes('create_library') || a.includes('update_library') || (a.includes('delete') && a.includes('library')))
+    return 'tag-library'
+  if (a.includes('add_library_member') || a.includes('remove_library_member')) return 'tag-permission'
+  if (a.includes('share')) return 'tag-share'
+  if (a.includes('change_password')) return 'tag-security'
+  if (a.includes('create_user') || a.includes('update_user')) return 'tag-user'
+  if (a.includes('login_failed')) return 'tag-login-failed'
+  if (a.includes('login')) return 'tag-login'
+  if (a.includes('notification')) return 'tag-notify'
+  if (a.includes('quota')) return 'tag-quota'
+
+  const t = auditInferType(log)
+  if (t === 'file') return 'tag-file'
+  if (t === 'user') return 'tag-user'
+  if (t === 'share') return 'tag-share'
+  if (t === 'permission') return 'tag-permission'
+  if (t === 'login') return 'tag-login'
+  if (t === 'system') return 'tag-system'
+  return 'tag-default'
+}
+
+function formatAuditActionLabel(log) {
+  const a = (log.action || '').toLowerCase()
+  if (!a) return '其他操作'
+  if (a.includes('upload')) return '上传文件'
+  if (a.includes('download')) return '下载文件'
+  if (a.includes('restore')) return '恢复文件'
+  if (a.includes('permanent_delete')) return '彻底删除'
+  if (a.includes('rename')) return '重命名'
+  if (a.includes('delete') && a.includes('library')) return '删除文件库'
+  if (a.includes('delete') && !a.includes('library')) return '删除文件'
+  if (a.includes('create_library')) return '新建文件库'
+  if (a.includes('update_library')) return '修改文件库'
+  if (a.includes('add_library_member')) return '添加文件库成员'
+  if (a.includes('remove_library_member')) return '移除文件库成员'
+  if (a.includes('share')) return '分享文件或文件库'
+  if (a.includes('change_password')) return '修改密码'
+  if (a.includes('create_user')) return '创建用户'
+  if (a.includes('update_user')) return '修改用户'
+  if (a.includes('login_failed')) return '登录失败'
+  if (a.includes('login')) return '登录'
+  if (a.includes('notification')) return '发送通知'
+  if (a.includes('quota')) return '调整存储配额'
+  return log.action || '其他操作'
+}
+
+function formatAuditResourceLabel(log) {
+  const rt = (log.resource_type || '').toLowerCase()
+  const id = log.resource_id
+  if (rt === 'file') return id ? `文件 #${id}` : '文件'
+  if (rt === 'library') return id ? `文件库 #${id}` : '文件库'
+  if (rt === 'user') return id ? `用户 #${id}` : '用户'
+  if (rt === 'notification') return '通知'
+  if (rt) return rt
+  return '系统'
+}
+
+function extractNameFromDetail(log) {
+  const detail = log.detail || ''
+  // 常见格式示例：
+  // - "path=/docs/paper.pdf"
+  // - "library_name=技术文档库"
+  // - "user=张三"
+  // - "file=项目文档.pdf"
+  const patterns = [
+    /file_name=([^;，,]+)/i,
+    /filename=([^;，,]+)/i,
+    /file=([^;，,]+)/i,
+    /library_name=([^;，,]+)/i,
+    /库名[:：]\s*([^;，,]+)/,
+    /路径[:：]\s*([^;，,]+)/,
+    /path=([^;，,]+)/i,
+  ]
+  for (const p of patterns) {
+    const m = detail.match(p)
+    if (m && m[1]) {
+      const v = m[1].trim()
+      if (v) return v
+    }
+  }
+  return ''
+}
+
+function formatAuditTargetLabel(log) {
+  // 优先从 detail 中提取更具体的目标名称，其次回退到资源类型 + ID
+  const name = extractNameFromDetail(log)
+  if (name) return name
+  return formatAuditResourceLabel(log)
+}
+
+function formatAuditDetailLabel(log) {
+  const a = (log.action || '').toLowerCase()
+  const user = log.username || '某用户'
+  const target = formatAuditTargetLabel(log)
+  const dept = log.department_name || ''
+
+  if (a.includes('upload')) {
+    return `${user} 在${dept ? '「' + dept + '」中' : ''}上传了 ${target}`
+  }
+  if (a.includes('download')) {
+    return `${user} 下载了 ${target}`
+  }
+  if (a.includes('restore')) {
+    return `${user} 从回收站恢复了 ${target}`
+  }
+  if (a.includes('permanent_delete')) {
+    return `${user} 彻底删除了 ${target}`
+  }
+  if (a.includes('delete') && a.includes('library')) {
+    return `${user} 删除了文件库 ${target}`
+  }
+  if (a.includes('delete') && !a.includes('library')) {
+    return `${user} 删除了 ${target}`
+  }
+  if (a.includes('create_library')) {
+    return `${user} 新建了文件库 ${target}`
+  }
+  if (a.includes('update_library')) {
+    return `${user} 修改了文件库 ${target}`
+  }
+  if (a.includes('add_library_member')) {
+    return `${user} 为文件库 ${target} 添加了成员`
+  }
+  if (a.includes('remove_library_member')) {
+    return `${user} 从文件库 ${target} 移除了成员`
+  }
+  if (a.includes('share')) {
+    return `${user} 分享了 ${target}`
+  }
+  if (a.includes('change_password')) {
+    return `${user} 修改了账户密码`
+  }
+  if (a.includes('create_user')) {
+    return `${user} 创建了新用户 ${target}`
+  }
+  if (a.includes('update_user')) {
+    return `${user} 修改了用户 ${target} 的信息`
+  }
+  if (a.includes('login_failed')) {
+    return `${user} 登录失败`
+  }
+  if (a.includes('login')) {
+    return `${user} 登录了系统`
+  }
+  if (a.includes('notification')) {
+    return `${user} 发送了通知`
+  }
+  if (a.includes('quota')) {
+    return `${user} 调整了存储配额`
+  }
+
+  // 默认回退：直接展示原始 detail 或「无详情」
+  return log.detail || '无详情'
+}
+
+function auditStatusClass(log) {
+  const a = (log.action || '').toLowerCase()
+  const detail = (log.detail || '').toLowerCase()
+  if (a.includes('failed') || detail.includes('失败') || detail.includes('error')) {
+    return 'failed'
+  }
+  return 'success'
+}
+
+function formatAuditStatusLabel(log) {
+  const cls = auditStatusClass(log)
+  return cls === 'failed' ? '失败' : '成功'
+}
+
+const filteredAuditList = computed(() => {
+  const kw = (auditSearch.value || '').trim().toLowerCase()
+  return (auditList.value || []).filter(log => {
+    const type = auditInferType(log)
+    const matchesAction = auditActionFilter.value === 'all' || type === auditActionFilter.value
+    // 当前审计日志未记录失败状态，这里暂全部视为成功
+    const matchesStatus = auditStatusFilter.value === 'all' || auditStatusFilter.value === 'success'
+    const text =
+      (log.username || '') +
+      (log.action || '') +
+      (log.detail || '') +
+      (log.resource_type || '') +
+      (log.resource_id || '')
+    const matchesSearch = !kw || text.toLowerCase().includes(kw)
+    return matchesAction && matchesStatus && matchesSearch
+  })
 })
 
 const totalFileCountDisplay = computed(() => {
@@ -1466,15 +1823,35 @@ async function loadDepartments() {
 
 async function loadAudit() {
   try {
-    const params = { limit: 200 }
-    if (auditUsername.value.trim()) params.username = auditUsername.value.trim()
-    if (auditAction.value.trim()) params.action = auditAction.value.trim()
+    const params = {
+      limit: auditPageSize,
+      offset: (auditPage.value - 1) * auditPageSize,
+    }
     if (auditStartDate.value) params.start_date = auditStartDate.value
     if (auditEndDate.value) params.end_date = auditEndDate.value
-    auditList.value = await api.listAuditLogs(params)
+    const logs = await api.listAuditLogs(params)
+    auditList.value = logs || []
+    auditHasMore.value = (logs || []).length === auditPageSize
   } catch (e) {
     err.value = e.message
   }
+}
+
+function refreshAuditFirstPage() {
+  auditPage.value = 1
+  loadAudit()
+}
+
+function goPrevAuditPage() {
+  if (auditPage.value <= 1) return
+  auditPage.value -= 1
+  loadAudit()
+}
+
+function goNextAuditPage() {
+  if (!auditHasMore.value) return
+  auditPage.value += 1
+  loadAudit()
 }
 
 function onSysSearch() {
@@ -1542,6 +1919,19 @@ async function doAddSubDept() {
 function openEditDept(node) {
   editDeptNode.value = node
   editDeptName.value = node.name
+  editDeptLeaderId.value = node.leader_user_id || 0
+  editDeptMembers.value = []
+  // 预加载该部门成员，用于负责人下拉框
+  if (node.id) {
+    api
+      .listDepartmentMembers(node.id)
+      .then(users => {
+        editDeptMembers.value = users || []
+      })
+      .catch(() => {
+        editDeptMembers.value = []
+      })
+  }
   showEditDept.value = true
   err.value = ''
 }
@@ -1555,9 +1945,14 @@ async function doSaveEditDept() {
     return
   }
   try {
-    await api.updateDepartment(editDeptNode.value.id, { name })
+    await api.updateDepartment(editDeptNode.value.id, {
+      name,
+      leader_user_id: editDeptLeaderId.value,
+    })
     showEditDept.value = false
     editDeptNode.value = null
+    editDeptLeaderId.value = 0
+    editDeptMembers.value = []
     await loadDepartments()
   } catch (e) {
     err.value = e.message
@@ -2097,6 +2492,256 @@ onMounted(async () => {
   display: flex;
   gap: 16px;
   align-items: center;
+}
+
+/* ================= 系统日志（审计）样式 ================= */
+
+.audit-toolbar {
+  margin-top: 16px;
+  margin-bottom: 12px;
+  padding: 12px 16px;
+}
+
+.audit-toolbar-inner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.audit-filters-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.audit-search {
+  min-width: 220px;
+}
+
+.audit-search-input {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  font-size: 13px;
+}
+
+.audit-search-input:focus {
+  outline: none;
+  border-color: #4b9fff;
+  box-shadow: 0 0 0 1px rgba(75, 159, 255, 0.3);
+  background: #fff;
+}
+
+.audit-select {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  font-size: 13px;
+  background: #fff;
+}
+
+.audit-date-input {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  font-size: 13px;
+}
+
+.audit-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.audit-table-wrap {
+  margin-top: 12px;
+}
+
+.audit-table-scroll {
+  max-height: 420px;
+  overflow: auto;
+}
+
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.audit-table thead {
+  background: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.audit-table th {
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 500;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.audit-row:nth-child(odd) {
+  background: #fff;
+}
+
+.audit-row:nth-child(even) {
+  background: #f9fafb;
+}
+
+.audit-row:hover {
+  background: #eff6ff;
+}
+
+.audit-cell {
+  padding: 8px 12px;
+  color: #374151;
+}
+
+.audit-cell-muted {
+  padding: 8px 12px;
+  color: #9ca3af;
+  white-space: nowrap;
+}
+
+.audit-cell-strong {
+  padding: 8px 12px;
+  font-weight: 500;
+}
+
+.audit-cell-op {
+  white-space: nowrap;
+}
+
+.audit-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.tag-file-upload {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.tag-file-download {
+  background: #cffafe;
+  color: #0369a1;
+}
+
+.tag-file-delete {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.tag-file-restore {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.tag-file-rename {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.tag-library {
+  background: #fef9c3;
+  color: #a16207;
+}
+
+.tag-user {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.tag-share {
+  background: #f3e8ff;
+  color: #7e22ce;
+}
+
+.tag-permission {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+.tag-login {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.tag-login-failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.tag-security {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.tag-notify {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.tag-quota {
+  background: #f3f4ff;
+  color: #3730a3;
+}
+
+.tag-system {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.tag-default {
+  background: #e5e7eb;
+  color: #4b5563;
+}
+
+.audit-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.audit-status.success {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.audit-status.failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.audit-pagination {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.audit-pagination-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .admin-textarea {

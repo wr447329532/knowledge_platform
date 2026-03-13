@@ -17,6 +17,9 @@ class Department(Base):
     parent_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), nullable=True, index=True)
     sort_order = Column(Integer, default=0, nullable=False)  # 同级排序，越小越靠前
 
+    # 部门负责人（可选）：指向 users.id，若为空则前端展示时可退化为「取部门第一个用户」
+    leader_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+
     # 可选：部门级存储配额（字节）。为 null 时使用系统默认配额。
     storage_quota_bytes = Column(Integer, nullable=True)
 
@@ -26,3 +29,4 @@ class Department(Base):
     )
 
     parent = relationship("Department", remote_side=[id], backref="children")
+    leader = relationship("User", foreign_keys=[leader_user_id])

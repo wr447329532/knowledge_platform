@@ -11,6 +11,7 @@ from backend.app.api.deps import get_current_active_superuser
 from backend.app.db.session import get_db
 from backend.app.models.audit import AuditLog
 from backend.app.models.user import User
+from backend.app.models.department import Department
 
 
 class AuditLogRead(BaseModel):
@@ -22,6 +23,7 @@ class AuditLogRead(BaseModel):
     resource_id: Optional[int]
     detail: Optional[str]
     created_at: datetime
+    department_name: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -43,11 +45,16 @@ def list_audit_logs(
     current_user: User = Depends(get_current_active_superuser),
 ):
     """查询审计日志（仅管理员可查）"""
-    q = db.query(AuditLog)
+    # 联合用户和部门信息，便于前端展示
+    q = (
+        db.query(AuditLog, User.username, Department.name.label("department_name"))
+        .outerjoin(User, AuditLog.user_id == User.id)
+        .outerjoin(Department, User.department_id == Department.id)
+    )
     if action:
         q = q.filter(AuditLog.action.ilike(f"%{action.strip()}%"))
     if username:
-        q = q.filter(AuditLog.username.ilike(f"%{username}%"))
+        q = q.filter(User.username.ilike(f"%{username}%") | AuditLog.username.ilike(f"%{username}%"))
     if resource_type:
         q = q.filter(AuditLog.resource_type == resource_type)
     if start_date:
@@ -64,5 +71,27 @@ def list_audit_logs(
             q = q.filter(AuditLog.created_at < end)
         except ValueError:
             pass
-    logs = q.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit).all()
-    return logs
+    rows = (
+        q.order_by(AuditLog.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    result: list[AuditLogRead] = []
+    for log, username_db, dept_name in rows:
+        # username 优先使用 AuditLog 冗余的字段，其次使用用户当前用户名
+        username_val = log.username or username_db
+        result.append(
+            AuditLogRead(
+                id=log.id,
+                user_id=log.user_id,
+                username=username_val,
+                action=log.action,
+                resource_type=log.resource_type,
+                resource_id=log.resource_id,
+                detail=log.detail,
+                created_at=log.created_at,
+                department_name=dept_name,
+            )
+        )
+    return result

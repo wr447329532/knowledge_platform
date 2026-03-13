@@ -30,5 +30,10 @@ class User(Base):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
 
-    department = relationship("Department", backref="users")
+    # 指定 foreign_keys，避免与 Department.leader_user_id 之间的外键路径产生歧义
+    department = relationship(
+        "Department",
+        backref="users",
+        foreign_keys=[department_id],
+    )
 
