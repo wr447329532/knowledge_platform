@@ -31,6 +31,51 @@
           <Icons name="bell" class="notify-icon" />
           <span v-if="notifyCount > 0" class="notify-dot">{{ notifyCount }}</span>
         </button>
+        <div class="user-menu-wrap" ref="userMenuWrapRef">
+          <button
+            type="button"
+            class="user-avatar-btn"
+            :title="me?.username || '用户'"
+            @click="toggleUserMenu"
+          >
+            {{ avatarLetter }}
+          </button>
+          <Transition name="dropdown">
+            <div
+              v-if="userMenuOpen"
+              ref="userDropdownRef"
+              class="user-dropdown"
+              role="menu"
+            >
+              <div class="user-dropdown-head">
+                <div class="user-dropdown-name">{{ me?.username || '-' }}</div>
+                <div class="user-dropdown-email">{{ me?.email || '-' }}</div>
+              </div>
+              <div class="user-dropdown-divider" />
+              <div class="user-dropdown-item" role="menuitem" @click="onGoAccount">账户管理</div>
+              <div
+                v-if="me?.is_superuser"
+                class="user-dropdown-item"
+                role="menuitem"
+                @click="onGoAdmin"
+              >
+                系统管理
+              </div>
+              <div
+                v-if="showDeptManage"
+                class="user-dropdown-item"
+                role="menuitem"
+                @click="onGoDeptManage"
+              >
+                部门管理
+              </div>
+              <div class="user-dropdown-divider" />
+              <div class="user-dropdown-item user-dropdown-logout" role="menuitem" @click="onLogout">
+                退出登录
+              </div>
+            </div>
+          </Transition>
+        </div>
       </div>
     </div>
 
@@ -73,9 +118,10 @@
 </template>
 
 <script setup>
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import Icons from './Icons.vue'
 
-defineProps({
+const props = defineProps({
   activeTab: String,
   activeDeptId: { type: Number, default: null },
   currentLib: Object,
@@ -84,12 +130,73 @@ defineProps({
   fileViewMode: String,
   breadcrumbSegments: Array,
   notifyCount: { type: Number, default: 0 },
+  me: { type: Object, default: null },
 })
 
 const emit = defineEmits([
   'update:searchKeyword', 'update:fileSortOrder', 'update:fileViewMode',
   'search', 'new-lib', 'upload', 'clear-lib', 'set-path', 'toggle-notify',
+  'go-account', 'go-admin', 'go-dept-manage', 'logout',
 ])
+
+const userMenuWrapRef = ref(null)
+const userDropdownRef = ref(null)
+const userMenuOpen = ref(false)
+
+const avatarLetter = computed(() => {
+  const name = props.me?.username || ''
+  if (!name) return '?'
+  const first = name.trim()[0]
+  if (/[\u4e00-\u9fa5]/.test(first)) return first
+  return (first || '?').toUpperCase()
+})
+
+const showDeptManage = computed(() => {
+  const m = props.me
+  if (!m) return false
+  if (m.role === 'dept_leader') return true
+  return !!m.is_department_leader
+})
+
+function toggleUserMenu() {
+  userMenuOpen.value = !userMenuOpen.value
+}
+
+function closeUserMenu() {
+  userMenuOpen.value = false
+}
+
+function onGoAccount() {
+  closeUserMenu()
+  emit('go-account')
+}
+function onGoAdmin() {
+  closeUserMenu()
+  emit('go-admin')
+}
+function onGoDeptManage() {
+  closeUserMenu()
+  emit('go-dept-manage')
+}
+function onLogout() {
+  closeUserMenu()
+  emit('logout')
+}
+
+function onDocumentClick(e) {
+  const wrap = userMenuWrapRef.value
+  const dropdown = userDropdownRef.value
+  if (wrap && wrap.contains(e.target)) return
+  if (dropdown && dropdown.contains(e.target)) return
+  closeUserMenu()
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocumentClick)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', onDocumentClick)
+})
 </script>
 
 <style scoped>
@@ -153,6 +260,81 @@ const emit = defineEmits([
   align-items: center;
   justify-content: center;
 }
+
+.user-menu-wrap {
+  position: relative;
+}
+.user-avatar-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: #4a90e2;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.user-avatar-btn:hover {
+  background: #357abd;
+}
+.user-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 180px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 999;
+  overflow: hidden;
+}
+.user-dropdown-head {
+  padding: 12px 16px;
+}
+.user-dropdown-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #111827;
+}
+.user-dropdown-email {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+.user-dropdown-divider {
+  height: 1px;
+  background: #e5e7eb;
+}
+.user-dropdown-item {
+  padding: 9px 16px;
+  font-size: 14px;
+  color: #111827;
+  cursor: pointer;
+}
+.user-dropdown-item:hover {
+  background: #f3f4f6;
+}
+.user-dropdown-logout {
+  color: #ef4444;
+}
+.user-dropdown-logout:hover {
+  background: #fef2f2;
+}
+.dropdown-enter-active,
+.dropdown-leave-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.dropdown-enter-from,
+.dropdown-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
 .btn-primary {
   background: var(--primary);
   color: #fff;

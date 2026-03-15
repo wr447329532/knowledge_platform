@@ -53,28 +53,10 @@
 
     <div class="sidebar-spacer"></div>
 
-    <!-- 底部导航 -->
-    <div class="sidebar-bottom">
-      <button class="nav-item" @click="emit('account')">
-        <Icons name="user" class="nav-icon" />
-        <span>账户</span>
-      </button>
-      <button v-if="me?.is_superuser || me?.is_department_leader" class="nav-item" @click="emit('go-admin')">
-        <Icons name="settings" class="nav-icon" />
-        <span v-if="me?.is_superuser">系统管理</span>
-        <span v-else>部门管理</span>
-      </button>
-    </div>
-
-    <!-- 用户信息 -->
-    <div class="sidebar-user">
-      <div class="user-avatar">{{ me?.username?.[0] || '?' }}</div>
-      <div class="user-info">
-        <span class="user-name">{{ me?.username }}</span>
-        <div class="user-actions">
-          <button @click="emit('logout')" class="user-btn">退出</button>
-        </div>
-      </div>
+    <!-- 底部版权与版本（品牌区底部） -->
+    <div class="sidebar-footer">
+      <div class="sidebar-copyright">{{ copyright }}</div>
+      <div class="sidebar-version">v{{ appVersion }}</div>
     </div>
   </aside>
 </template>
@@ -83,6 +65,9 @@
 import Icons from './Icons.vue'
 import DepartmentTree from './DepartmentTree.vue'
 
+const appVersion = '0.1.0'
+const copyright = '© 2026 中铁建发展集团乌兰察布压缩空气储能有限公司'
+
 defineProps({
   me: Object,
   activeTab: String,
@@ -90,7 +75,7 @@ defineProps({
   storageStats: Object,
 })
 
-const emit = defineEmits(['nav', 'dept-select', 'go-admin', 'account', 'logout'])
+const emit = defineEmits(['nav', 'dept-select'])
 </script>
 
 <style scoped>
@@ -151,6 +136,22 @@ const emit = defineEmits(['nav', 'dept-select', 'go-admin', 'account', 'logout']
   border-bottom: 1px solid rgba(75,85,99,0.5);
 }
 .sidebar-spacer { flex: 0; min-height: 0; }
+.sidebar-footer {
+  padding: 10px 16px 14px;
+  border-top: 1px solid rgba(75,85,99,0.5);
+  flex-shrink: 0;
+  text-align: center;
+}
+.sidebar-copyright {
+  font-size: 10px;
+  color: rgba(255,255,255,0.5);
+  line-height: 1.4;
+  margin-bottom: 2px;
+}
+.sidebar-version {
+  font-size: 10px;
+  color: rgba(255,255,255,0.5);
+}
 .sidebar-bottom {
   padding: 12px;
   border-top: 1px solid rgba(75,85,99,0.5);

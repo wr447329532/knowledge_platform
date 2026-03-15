@@ -123,6 +123,21 @@ def _ensure_departments_has_leader_user_id() -> None:
         conn.commit()
 
 
+def _ensure_audit_logs_has_ip_address() -> None:
+    """兼容旧库：若 audit_logs 表缺少 ip_address 列则自动添加"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "audit_logs" not in insp.get_table_names():
+        return
+    cols = [c["name"] for c in insp.get_columns("audit_logs")]
+    if "ip_address" in cols:
+        return
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE audit_logs ADD COLUMN ip_address VARCHAR(45)"))
+        conn.commit()
+
+
 def _ensure_default_admin() -> None:
     """启动时确保存在默认管理员：用户名 admin，密码 admin123"""
     db = SessionLocal()
@@ -139,7 +154,7 @@ def _ensure_default_admin() -> None:
             user.email = "admin@example.com"
             user.is_superuser = True
             user.is_active = True
-            user.username = DEFAULT_ADMIN_USERNAME
+            # 不覆盖 username，保留用户自行修改的显示名（如「超级管理员」）
         else:
             user = User(
                 username=DEFAULT_ADMIN_USERNAME,
@@ -177,6 +192,7 @@ def create_app() -> FastAPI:
     _ensure_libraries_has_allow_download()
     _ensure_libraries_has_deleted_at()
     _ensure_departments_has_leader_user_id()
+    _ensure_audit_logs_has_ip_address()
     _ensure_default_admin()
 
     app = FastAPI(

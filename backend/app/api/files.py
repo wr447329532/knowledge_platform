@@ -2,14 +2,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, Query, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, Query, Request, status
 from fastapi.responses import FileResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_user
-from backend.app.core.audit import log_audit
+from backend.app.core.audit import get_client_ip, log_audit
 from backend.app.core.config import get_settings
 from backend.app.core.library_access import (
     can_download_file,
@@ -160,6 +160,7 @@ def list_file_shares(
 def add_file_share(
     entry_id: int = Query(..., description="文件条目 ID"),
     body: FileShareAdd = Body(...),
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -208,6 +209,7 @@ def add_file_share(
         "file_share",
         entry.id,
         f"to_user_id={body.user_id} permission={body.permission} path={entry.path}",
+        ip_address=get_client_ip(request),
     )
 
     # 通知：被分享用户收到「文件被分享给你」
@@ -237,6 +239,7 @@ def add_file_share(
 def remove_file_share(
     entry_id: int = Query(..., description="文件条目 ID"),
     user_id: int = Query(..., description="被分享用户 ID"),
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -261,6 +264,16 @@ def remove_file_share(
     if not fs:
         return
     db.delete(fs)
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "file_share_remove",
+        "file_share",
+        entry.id,
+        f"to_user_id={user_id} path={entry.path}",
+        ip_address=get_client_ip(request),
+    )
     db.commit()
 
 
@@ -357,6 +370,7 @@ async def upload_file(
     library_id: int,
     relative_path: str,
     file: UploadFile = File(...),
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -440,6 +454,7 @@ async def upload_file(
         "file",
         entry.id,
         f"library_id={library_id} path={relative_path} version={next_version_no}",
+        ip_address=get_client_ip(request),
     )
 
     # 通知：库拥有者 / 上传者 知晓有新文件/新版本
@@ -565,6 +580,7 @@ def list_files(
 def create_directory(
     library_id: int,
     path: str,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -591,7 +607,16 @@ def create_directory(
         created_by_id=current_user.id,
     )
     db.add(entry)
-    log_audit(db, current_user.id, current_user.username, "mkdir", "file", entry.id, f"library_id={library_id} path={path}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "mkdir",
+        "file",
+        entry.id,
+        f"library_id={library_id} path={path}",
+        ip_address=get_client_ip(request),
+    )
     db.commit()
     db.refresh(entry)
     return entry
@@ -601,6 +626,7 @@ def create_directory(
 def rename_file(
     entry_id: int,
     new_path: str = Query(..., description="新路径，如 docs/readme.txt"),
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -651,7 +677,16 @@ def rename_file(
     else:
         entry.path = new_path
 
-    log_audit(db, current_user.id, current_user.username, "rename", "file", entry.id, f"{old_path} -> {new_path}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "rename",
+        "file",
+        entry.id,
+        f"{old_path} -> {new_path}",
+        ip_address=get_client_ip(request),
+    )
     db.commit()
     db.refresh(entry)
     return entry
@@ -660,6 +695,7 @@ def rename_file(
 @router.delete("/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_file(
     entry_id: int,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -688,7 +724,16 @@ def delete_file(
             FileEntry.path.startswith(entry.path.rstrip("/") + "/"),
             FileEntry.deleted_at.is_(None),
         ).update({FileEntry.deleted_at: now}, synchronize_session=False)
-    log_audit(db, current_user.id, current_user.username, "delete", "file", entry.id, f"path={entry.path} -> recycle")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "delete",
+        "file",
+        entry.id,
+        f"path={entry.path} -> recycle",
+        ip_address=get_client_ip(request),
+    )
     db.commit()
 
 
@@ -733,6 +778,7 @@ def list_trash(
 @router.post("/{entry_id}/restore", response_model=FileRead)
 def restore_file(
     entry_id: int,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -742,7 +788,16 @@ def restore_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="回收站中无此项")
     _get_library_and_check(db, entry.library_id, current_user, require_write=True)
     entry.deleted_at = None
-    log_audit(db, current_user.id, current_user.username, "restore", "file", entry.id, f"path={entry.path}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "restore",
+        "file",
+        entry.id,
+        f"path={entry.path}",
+        ip_address=get_client_ip(request),
+    )
     db.commit()
     db.refresh(entry)
     # 通知创建者（如存在且不是当前用户）
@@ -777,6 +832,7 @@ def _permanent_delete_entry(db: Session, entry: FileEntry) -> None:
 @router.delete("/trash/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
 def permanent_delete(
     entry_id: int,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -801,7 +857,16 @@ def permanent_delete(
             _permanent_delete_entry(db, c)
     path_before_delete = entry.path
     _permanent_delete_entry(db, entry)
-    log_audit(db, current_user.id, current_user.username, "permanent_delete", "file", entry_id, f"path={path_before_delete}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "permanent_delete",
+        "file",
+        entry_id,
+        f"path={path_before_delete}",
+        ip_address=get_client_ip(request),
+    )
     db.commit()
 
 
@@ -1286,6 +1351,7 @@ def list_versions(
 def download_file(
     entry_id: int,
     version_no: Optional[int] = Query(None, description="指定版本号，不填则下载最新版本"),
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1308,7 +1374,16 @@ def download_file(
     if not storage_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件物理数据缺失")
 
-    log_audit(db, current_user.id, current_user.username, "下载文件", "file", entry.id, f"path={entry.path} version={version.version_no}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "下载文件",
+        "file",
+        entry.id,
+        f"path={entry.path} version={version.version_no}",
+        ip_address=get_client_ip(request),
+    )
     db.commit()
 
     filename = storage_path.name
@@ -1374,6 +1449,7 @@ class PreviewTokenRead(BaseModel):
 @router.get("/preview-token", response_model=PreviewTokenRead)
 def get_preview_token(
     entry_id: int,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1383,7 +1459,16 @@ def get_preview_token(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
     if not can_access_file(db, entry, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问")
-    log_audit(db, current_user.id, current_user.username, "预览文件", "file", entry.id, f"path={entry.path}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "预览文件",
+        "file",
+        entry.id,
+        f"path={entry.path}",
+        ip_address=get_client_ip(request),
+    )
     db.commit()
     return PreviewTokenRead(token=_create_preview_token(entry_id, current_user.id))
 
@@ -1440,6 +1525,7 @@ def preview_by_token(
 def preview_file(
     entry_id: int,
     version_no: Optional[int] = Query(None),
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1449,7 +1535,16 @@ def preview_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
     if not can_access_file(db, entry, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问")
-    log_audit(db, current_user.id, current_user.username, "预览文件", "file", entry.id, f"path={entry.path}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "预览文件",
+        "file",
+        entry.id,
+        f"path={entry.path}",
+        ip_address=get_client_ip(request),
+    )
     db.commit()
     return _serve_preview_file(version_no, db, entry)
 

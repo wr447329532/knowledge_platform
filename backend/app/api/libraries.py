@@ -1,12 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_user
-from backend.app.core.audit import log_audit
+from backend.app.core.audit import get_client_ip, log_audit
 from backend.app.core.library_access import (
     _get_accessible_department_ids,
     check_can_manage_library,
@@ -110,6 +110,7 @@ def _lib_to_read(
 @router.post("/", response_model=LibraryRead)
 def create_library(
     lib_in: LibraryCreate,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -164,7 +165,16 @@ def create_library(
                 db.add(member)
 
     dept_name = dept.name if dept_id is not None else None
-    log_audit(db, current_user.id, current_user.username, "create_library", "library", lib.id, f"name={lib_in.name} dept={dept_id}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "create_library",
+        "library",
+        lib.id,
+        f"name={lib_in.name} dept={dept_id}",
+        ip_address=get_client_ip(request),
+    )
     db.commit()
     db.refresh(lib)
     return _lib_to_read(db, lib, current_user.id, is_owner=True, is_write=True, dept_name=dept_name)
@@ -389,6 +399,7 @@ def get_library(
 def update_library(
     library_id: int,
     lib_in: LibraryUpdate,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -412,7 +423,16 @@ def update_library(
         lib.allow_download = bool(lib_in.allow_download)
     db.commit()
     db.refresh(lib)
-    log_audit(db, current_user.id, current_user.username, "update_library", "library", lib.id, f"name={lib.name}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "update_library",
+        "library",
+        lib.id,
+        f"name={lib.name}",
+        ip_address=get_client_ip(request),
+    )
     return _lib_to_read(db, lib, current_user.id, is_owner=lib.owner_id == current_user.id, is_write=True)
 
 
@@ -447,6 +467,7 @@ def add_or_update_library_member(
     library_id: int,
     user_id: int = Query(..., description="成员用户 ID"),
     role: str = Query("read", description="角色：read 或 write"),
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -474,7 +495,16 @@ def add_or_update_library_member(
         db.add(member)
         action = "add_library_member"
     db.commit()
-    log_audit(db, current_user.id, current_user.username, action, "library_member", library_id, f"user_id={user_id} role={role}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        action,
+        "library_member",
+        library_id,
+        f"user_id={user_id} role={role}",
+        ip_address=get_client_ip(request),
+    )
     # 通知被添加/更新的成员
     try:
         title = "资料库权限更新"
@@ -489,6 +519,7 @@ def add_or_update_library_member(
 def remove_library_member(
     library_id: int,
     user_id: int,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -505,12 +536,22 @@ def remove_library_member(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成员不存在")
     db.delete(member)
     db.commit()
-    log_audit(db, current_user.id, current_user.username, "remove_library_member", "library_member", library_id, f"user_id={user_id}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "remove_library_member",
+        "library_member",
+        library_id,
+        f"user_id={user_id}",
+        ip_address=get_client_ip(request),
+    )
 
 
 @router.delete("/{library_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_library(
     library_id: int,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -524,13 +565,23 @@ def delete_library(
 
     now = datetime.now(timezone.utc)
     lib.deleted_at = now
-    log_audit(db, current_user.id, current_user.username, "delete_library", "library", lib.id, f"name={lib.name} (soft)")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "delete_library",
+        "library",
+        lib.id,
+        f"name={lib.name} (soft)",
+        ip_address=get_client_ip(request),
+    )
     db.commit()
 
 
 @router.post("/{library_id}/restore", response_model=LibraryRead)
 def restore_library(
     library_id: int,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -545,13 +596,23 @@ def restore_library(
     lib.deleted_at = None
     db.commit()
     db.refresh(lib)
-    log_audit(db, current_user.id, current_user.username, "restore_library", "library", lib.id, f"name={lib.name}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "restore_library",
+        "library",
+        lib.id,
+        f"name={lib.name}",
+        ip_address=get_client_ip(request),
+    )
     return _lib_to_read(db, lib, current_user.id, is_owner=lib.owner_id == current_user.id, is_write=True)
 
 
 @router.delete("/trash/{library_id}", status_code=status.HTTP_204_NO_CONTENT)
 def permanent_delete_library(
     library_id: int,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -577,7 +638,16 @@ def permanent_delete_library(
     for entry in entries:
         _permanent_delete_entry(db, entry)
 
-    log_audit(db, current_user.id, current_user.username, "permanent_delete_library", "library", lib.id, f"name={lib.name}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "permanent_delete_library",
+        "library",
+        lib.id,
+        f"name={lib.name}",
+        ip_address=get_client_ip(request),
+    )
     db.delete(lib)
     db.commit()
 

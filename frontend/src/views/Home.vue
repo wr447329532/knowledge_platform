@@ -10,9 +10,6 @@
       :storage-stats="storageStats"
       @nav="onNav"
       @dept-select="handleDeptSelect"
-      @go-admin="goAdmin"
-      @account="goAccount"
-      @logout="logout"
     />
 
     <!-- 右侧主区域 -->
@@ -29,12 +26,17 @@
         v-model:fileViewMode="fileViewMode"
         :breadcrumb-segments="breadcrumbSegments"
         :notify-count="unreadNotifyCount"
+        :me="me"
         @search="doSearch"
         @new-lib="openNewLib"
         @upload="openUploadModal"
         @clear-lib="currentLib = null; pathPrefix = ''"
         @set-path="p => pathPrefix = p"
         @toggle-notify="toggleNotifyPanel"
+        @go-account="goAccount"
+        @go-admin="goAdmin"
+        @go-dept-manage="goDeptManage"
+        @logout="logout"
       />
 
       <!-- Toast 提示 -->
@@ -112,19 +114,11 @@
       <!-- 回收站 -->
       <TrashPage
         v-if="tab === 'trash'"
-        :libraries="libraries"
-        :trash-lib-id="trashLibId"
-        :trash-list="trashList"
+        :trash-items="trashItems"
         :trash-loading="trashLoading"
-        :trash-library-list="trashLibraryList"
-        :trash-library-loading="trashLibraryLoading"
         :format-date="formatDate"
-        @lib-change="v => { trashLibId = v; loadTrash() }"
-        @restore="restore"
-        @perm-delete="permDelete"
-        @clear="clearTrash"
-        @restore-lib="restoreLib"
-        @perm-delete-lib="permDeleteLib"
+        @restore-item="restoreTrashItem"
+        @perm-delete-item="permDeleteTrashItem"
       />
 
       <NotificationPanel
@@ -721,11 +715,9 @@ const uploadModalInputRef = ref(null)
 const showMkdir = ref(false)
 const mkdirPath = ref('')
 const err = ref('')
-const trashLibId = ref('')
-const trashList = ref([])
+const trashItems = ref([])
 const trashLoading = ref(false)
 const trashLibraryList = ref([])
-const trashLibraryLoading = ref(false)
 const mySharesList = ref([])
 const mySharesLoading = ref(false)
 const sharedSubTab = ref('mine')
@@ -911,7 +903,7 @@ const sortedSearchResults = computed(() => _sortFileList(searchResults.value))
 function onNav(newTab) {
   if (newTab === 'lib') { tab.value = 'lib'; clearDeptView(); err.value = '' }
   if (newTab === 'shared') { tab.value = 'shared'; sharedSubTab.value = 'mine'; err.value = ''; loadMyShares() }
-  if (newTab === 'trash') { tab.value = 'trash'; err.value = ''; loadLibraryTrash(); loadTrash() }
+  if (newTab === 'trash') { tab.value = 'trash'; err.value = ''; loadCombinedTrash() }
 }
 
 function onSharedTab(subtab) {
@@ -925,6 +917,9 @@ function onSharedTab(subtab) {
 function logout() { api.logout() }
 function goAdmin() { router.push('/admin') }
 function goAccount() { router.push('/account') }
+function goDeptManage() {
+  router.push({ path: '/admin', query: { tab: 'departments' } })
+}
 function formatDate(s) {
   if (!s) return '-'
   try {
@@ -1417,83 +1412,113 @@ function openSharedLib(row) {
   } else { err.value = '未找到该文件库，请刷新页面后重试' }
 }
 
-// ---- 回收站 ----
+// ---- 回收站（统一列表） ----
 
-async function loadLibraryTrash() {
+async function loadCombinedTrash() {
   if (tab.value !== 'trash') return
-  trashLibraryLoading.value = true
+  trashLoading.value = true
+  err.value = ''
   try {
-    trashLibraryList.value = await api.listLibraryTrash()
+    // 1. 已删除的文件库
+    const deletedLibs = await api.listLibraryTrash()
+    trashLibraryList.value = deletedLibs
+
+    // 2. 当前可访问的文件库（未删除的库里的文件也可能在回收站）
+    const activeLibs = await api.listLibraries()
+
+    const items = []
+
+    // 已删除的库 → 加入库条目，并拉取该库内回收站文件
+    for (const lib of deletedLibs) {
+      items.push({
+        id: lib.id,
+        type: 'library',
+        name: lib.name,
+        deleted_at: lib.deleted_at,
+      })
+    }
+    const deletedLibFilePromises = deletedLibs.map((lib) => api.listTrash(lib.id).catch(() => []))
+    const deletedLibFiles = await Promise.all(deletedLibFilePromises)
+    deletedLibFiles.forEach((files, idx) => {
+      const lib = deletedLibs[idx]
+      for (const f of files) {
+        items.push({
+          id: f.id,
+          type: 'file',
+          name: f.path && f.path.split('/').pop(),
+          path: f.path,
+          library_id: lib?.id,
+          library_name: lib?.name,
+          deleted_at: f.deleted_at,
+        })
+      }
+    })
+
+    // 3. 未删除的库里，回收站中的文件（只删文件、未删库的情况）
+    const activeLibFilePromises = activeLibs.map((lib) => api.listTrash(lib.id).catch(() => []))
+    const activeLibFiles = await Promise.all(activeLibFilePromises)
+    activeLibFiles.forEach((files, idx) => {
+      const lib = activeLibs[idx]
+      for (const f of files) {
+        items.push({
+          id: f.id,
+          type: 'file',
+          name: f.path && f.path.split('/').pop(),
+          path: f.path,
+          library_id: lib?.id,
+          library_name: lib?.name,
+          deleted_at: f.deleted_at,
+        })
+      }
+    })
+
+    trashItems.value = items.sort((a, b) => {
+      const ta = a.deleted_at ? new Date(a.deleted_at).getTime() : 0
+      const tb = b.deleted_at ? new Date(b.deleted_at).getTime() : 0
+      return tb - ta
+    })
   } catch (e) {
     err.value = e.message
+    trashItems.value = []
     trashLibraryList.value = []
   } finally {
-    trashLibraryLoading.value = false
+    trashLoading.value = false
   }
 }
 
-async function restoreLib(libraryId) {
+async function restoreTrashItem(item) {
   err.value = ''
   try {
-    await api.restoreLibrary(libraryId)
-    trashLibraryList.value = await api.listLibraryTrash()
-    libraries.value = await api.listLibraries()
-    showSuccess('资料库已恢复')
-  } catch (e) {
-    err.value = e.message
-  }
-}
-
-async function permDeleteLib(libraryId) {
-  if (!confirm('确定彻底删除该资料库？将同时删除库内所有文件，不可恢复。')) return
-  err.value = ''
-  try {
-    await api.permanentDeleteLibrary(libraryId)
-    trashLibraryList.value = await api.listLibraryTrash()
-    libraries.value = await api.listLibraries()
-    if (currentLib.value?.id === libraryId) currentLib.value = null
-    loadStorageStats()
-    showSuccess('已彻底删除')
-  } catch (e) {
-    err.value = e.message
-  }
-}
-
-async function loadTrash() {
-  if (tab.value !== 'trash') return
-  if (!trashLibId.value) { trashList.value = []; trashLoading.value = false; return }
-  trashLoading.value = true
-  try { trashList.value = await api.listTrash(Number(trashLibId.value)) }
-  catch (e) { err.value = e.message }
-  finally { trashLoading.value = false }
-}
-async function restore(entryId) {
-  err.value = ''
-  try { await api.restoreFile(entryId); loadTrash(); showSuccess('已恢复') }
-  catch (e) { err.value = e.message }
-}
-async function permDelete(entryId) {
-  if (!confirm('确定彻底删除？不可恢复。')) return
-  err.value = ''
-  try { await api.permanentDelete(entryId); loadTrash(); showSuccess('删除成功') }
-  catch (e) { err.value = e.message }
-}
-
-async function clearTrash() {
-  if (!trashLibId.value || !trashList.value?.length) return
-  if (!confirm('确定清空当前资料库的回收站？将彻底删除其中所有文件，且不可恢复。')) return
-  err.value = ''
-  try {
-    for (const f of trashList.value) {
-      try {
-        await api.permanentDelete(f.id)
-      } catch (e) {
-        // 单个文件失败不阻断整体清空，记录最后一条错误提示
-        err.value = e.message
-      }
+    if (item.type === 'library') {
+      await api.restoreLibrary(item.id)
+      libraries.value = await api.listLibraries()
+      loadStorageStats()
+      showSuccess('资料库已恢复')
+    } else {
+      await api.restoreFile(item.id)
+      showSuccess('文件已恢复')
     }
-    await loadTrash()
-    showSuccess('回收站已清空')
+    await loadCombinedTrash()
+  } catch (e) {
+    err.value = e.message
+  }
+}
+
+async function permDeleteTrashItem(item) {
+  if (!confirm('确定从回收站彻底删除？此操作不可恢复。')) return
+  err.value = ''
+  try {
+    if (item.type === 'library') {
+      await api.permanentDeleteLibrary(item.id)
+      libraries.value = await api.listLibraries()
+      if (currentLib.value?.id === item.id) currentLib.value = null
+      loadStorageStats()
+      showSuccess('资料库已彻底删除')
+    } else {
+      await api.permanentDelete(item.id)
+      showSuccess('文件已彻底删除')
+    }
+    await loadCombinedTrash()
   } catch (e) {
     err.value = e.message
   }

@@ -664,6 +664,7 @@
                       <th>部门</th>
                       <th>操作</th>
                       <th>目标</th>
+                      <th>IP 地址</th>
                       <th>状态</th>
                     </tr>
                   </thead>
@@ -691,6 +692,9 @@
                       </td>
                       <td class="audit-cell">
                         {{ formatAuditDetailLabel(log) }}
+                      </td>
+                      <td class="audit-cell">
+                        {{ log.ip_address || '-' }}
                       </td>
                       <td class="audit-cell">
                         <span :class="['audit-status', auditStatusClass(log)]">
@@ -1218,12 +1222,14 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
+import * as XLSX from 'xlsx'
 import * as api from '../api/client'
 import Icons from '../components/Icons.vue'
 import DepartmentTableRow from '../components/DepartmentTableRow.vue'
 
 const router = useRouter()
+const route = useRoute()
 
 const me = ref(null)
 const subTab = ref('users')
@@ -1922,6 +1928,60 @@ function goNextAuditPage() {
   loadAudit()
 }
 
+/** 导出系统日志为 Excel（按当前筛选条件拉取全部数据后下载） */
+async function exportAuditCsv() {
+  err.value = ''
+  try {
+    const params = { limit: 500 }
+    if (auditStartDate.value) params.start_date = auditStartDate.value
+    if (auditEndDate.value) params.end_date = auditEndDate.value
+    const allLogs = []
+    let offset = 0
+    let chunk
+    do {
+      chunk = await api.listAuditLogs({ ...params, offset })
+      allLogs.push(...(chunk || []))
+      offset += 500
+    } while (Array.isArray(chunk) && chunk.length === 500)
+
+    const kw = (auditSearch.value || '').trim().toLowerCase()
+    const filtered = allLogs.filter((log) => {
+      const type = auditInferType(log)
+      const matchesAction = auditActionFilter.value === 'all' || type === auditActionFilter.value
+      const matchesStatus = auditStatusFilter.value === 'all' || auditStatusFilter.value === 'success'
+      const text =
+        (log.username || '') +
+        (log.action || '') +
+        (log.detail || '') +
+        (log.resource_type || '') +
+        (log.resource_id || '')
+      const matchesSearch = !kw || text.toLowerCase().includes(kw)
+      return matchesAction && matchesStatus && matchesSearch
+    })
+
+    const rows = [
+      ['时间', '用户', '部门', '操作', '目标', 'IP 地址', '状态'],
+      ...filtered.map((log) => [
+        formatDate(log.created_at),
+        log.username || '-',
+        log.department_name || '-',
+        formatAuditActionLabel(log),
+        formatAuditDetailLabel(log),
+        log.ip_address || '-',
+        formatAuditStatusLabel(log),
+      ]),
+    ]
+    const ws = XLSX.utils.aoa_to_sheet(rows)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, '系统日志')
+    const fileName = `系统日志_${new Date().toISOString().slice(0, 10)}.xlsx`
+    XLSX.writeFile(wb, fileName)
+    err.value = ''
+  } catch (e) {
+    err.value = e.message || '导出失败'
+  }
+}
+
 function onSysSearch() {
   const kw = sysSearchKeyword.value?.trim()
   if (!kw && subTab.value !== 'departments') {
@@ -2137,6 +2197,11 @@ onMounted(async () => {
   } catch (e) {
     router.push('/login')
     return
+  }
+
+  // URL 指定了 tab 时（如从顶部栏「部门管理」进入）
+  if (route.query?.tab === 'departments') {
+    subTab.value = 'departments'
   }
 
   // 超级管理员：加载全部系统管理数据

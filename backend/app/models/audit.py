@@ -18,6 +18,7 @@ class AuditLog(Base):
     resource_type = Column(String(32), nullable=True)  # file, library
     resource_id = Column(Integer, nullable=True)
     detail = Column(Text, nullable=True)  # 如 path, library_id 等简要信息
+    ip_address = Column(String(45), nullable=True)  # 支持 IPv4 和 IPv6
 
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), nullable=False

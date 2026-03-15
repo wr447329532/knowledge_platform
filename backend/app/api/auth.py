@@ -1,13 +1,13 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from backend.app.api.deps import get_current_user, get_current_active_superuser
-from backend.app.core.audit import log_audit
+from backend.app.core.audit import get_client_ip, log_audit
 from backend.app.core.security import create_access_token, get_password_hash, verify_password
 from backend.app.db.session import get_db
 from backend.app.models.department import Department
@@ -86,6 +86,7 @@ def update_me(
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
 def change_password(
     body: ChangePassword,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -97,12 +98,22 @@ def change_password(
         )
     current_user.hashed_password = get_password_hash(body.new_password)
     db.commit()
-    log_audit(db, current_user.id, current_user.username, "change_password", "user", current_user.id, None)
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "change_password",
+        "user",
+        current_user.id,
+        None,
+        ip_address=get_client_ip(request),
+    )
 
 
 @router.post("/register", response_model=UserRead)
 def register(
     user_in: UserCreate,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_superuser),
 ):
@@ -131,7 +142,16 @@ def register(
     )
     db.add(user)
     db.flush()
-    log_audit(db, current_user.id, current_user.username, "create_user", "user", user.id, f"created={user_in.username}")
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "create_user",
+        "user",
+        user.id,
+        f"created={user_in.username}",
+        ip_address=get_client_ip(request),
+    )
     db.commit()
     db.refresh(user)
     return _user_to_read(user)
@@ -139,6 +159,7 @@ def register(
 
 @router.post("/login", response_model=Token)
 def login(
+    request: Request = None,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
@@ -149,7 +170,16 @@ def login(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="邮箱或密码错误",
         )
-    log_audit(db, user.id, user.username, "login", "user", user.id, None)
+    log_audit(
+        db,
+        user.id,
+        user.username,
+        "login",
+        "user",
+        user.id,
+        None,
+        ip_address=get_client_ip(request),
+    )
     db.commit()
     # 以 user.id 作为 JWT 的 subject，避免后续用户名修改导致 Token 失效
     access_token = create_access_token(subject=str(user.id))
@@ -201,6 +231,7 @@ def list_active_users_for_library(
 def update_user(
     user_id: int,
     body: UserUpdate,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_superuser),
 ):
@@ -212,10 +243,28 @@ def update_user(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能禁用自己")
     if body.is_active is not None:
         user.is_active = body.is_active
-        log_audit(db, current_user.id, current_user.username, "update_user", "user", user.id, f"is_active={body.is_active}")
+        log_audit(
+            db,
+            current_user.id,
+            current_user.username,
+            "update_user",
+            "user",
+            user.id,
+            f"is_active={body.is_active}",
+            ip_address=get_client_ip(request),
+        )
     if body.new_password is not None:
         user.hashed_password = get_password_hash(body.new_password)
-        log_audit(db, current_user.id, current_user.username, "reset_password", "user", user.id, f"target={user.username}")
+        log_audit(
+            db,
+            current_user.id,
+            current_user.username,
+            "reset_password",
+            "user",
+            user.id,
+            f"target={user.username}",
+            ip_address=get_client_ip(request),
+        )
     if body.department_id is not None:
         if body.department_id == 0:
             user.department_id = None
@@ -224,7 +273,16 @@ def update_user(
             if not dept:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="所选部门不存在")
             user.department_id = body.department_id
-        log_audit(db, current_user.id, current_user.username, "update_user", "user", user.id, f"department_id={user.department_id}")
+        log_audit(
+            db,
+            current_user.id,
+            current_user.username,
+            "update_user",
+            "user",
+            user.id,
+            f"department_id={user.department_id}",
+            ip_address=get_client_ip(request),
+        )
     db.commit()
     db.refresh(user)
     return _user_to_read(user)

@@ -22,6 +22,7 @@ class AuditLogRead(BaseModel):
     resource_type: Optional[str]
     resource_id: Optional[int]
     detail: Optional[str]
+    ip_address: Optional[str] = None
     created_at: datetime
     department_name: Optional[str] = None
 
@@ -71,12 +72,7 @@ def list_audit_logs(
             q = q.filter(AuditLog.created_at < end)
         except ValueError:
             pass
-    rows = (
-        q.order_by(AuditLog.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
+    rows = q.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit).all()
     result: list[AuditLogRead] = []
     for log, username_db, dept_name in rows:
         # username 优先使用 AuditLog 冗余的字段，其次使用用户当前用户名
@@ -90,6 +86,7 @@ def list_audit_logs(
                 resource_type=log.resource_type,
                 resource_id=log.resource_id,
                 detail=log.detail,
+                ip_address=getattr(log, "ip_address", None),
                 created_at=log.created_at,
                 department_name=dept_name,
             )
