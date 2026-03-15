@@ -231,24 +231,33 @@
       <div class="upload-modal-card">
         <div class="upload-modal-header">
           <div>
-            <h2 class="upload-modal-title">上传文件</h2>
-            <p v-if="uploadFiles.length" class="upload-modal-subtitle">
-              {{ uploadCompletedCount }} / {{ uploadFiles.length }} 个文件已上传
-            </p>
+            <template v-if="uploadStep === 'confirm'">
+              <h2 class="upload-modal-title">版本确认</h2>
+              <p v-if="vmQueue.length > 1" class="upload-modal-subtitle">
+                {{ vmQueue.length }} 个文件待确认
+              </p>
+            </template>
+            <template v-else>
+              <h2 class="upload-modal-title">上传文件</h2>
+              <p v-if="uploadFiles.length" class="upload-modal-subtitle">
+                {{ uploadCompletedCount }} / {{ uploadFiles.length }} 个文件已上传
+              </p>
+            </template>
           </div>
           <button type="button" class="upload-modal-close" @click="closeUploadModal" aria-label="关闭">
             <Icons name="x" class="upload-modal-close-icon" />
           </button>
         </div>
         <div class="upload-modal-body">
-          <input
-            ref="uploadModalInputRef"
-            type="file"
-            multiple
-            class="upload-modal-input-hidden"
-            @change="onUploadFileSelect"
-          />
-          <template v-if="!uploadFiles.length">
+          <template v-if="uploadStep === 'list'">
+            <input
+              ref="uploadModalInputRef"
+              type="file"
+              multiple
+              class="upload-modal-input-hidden"
+              @change="onUploadFileSelect"
+            />
+            <template v-if="!uploadFiles.length">
             <div
               class="upload-dropzone"
               :class="{ 'upload-dropzone-active': uploadDropzoneActive }"
@@ -317,20 +326,74 @@
               </div>
             </div>
           </template>
+          </template>
+          <template v-else>
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;
+              background:var(--bg-page,#f5f6f8);border-radius:8px;margin-bottom:16px">
+              <div style="width:32px;height:32px;background:#dbeafe;border-radius:6px;
+                display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                <Icons name="file-text" style="width:16px;height:16px;color:#2563eb" />
+              </div>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px;font-weight:500;overflow:hidden;
+                  text-overflow:ellipsis;white-space:nowrap">{{ vmFile?.name }}</div>
+                <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;
+                  display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                  <span>{{ formatUploadSize(vmFile?.size) }}</span>
+                  <span v-if="vmKeyword" style="padding:1px 6px;background:#e6f1fb;color:#185fa5;border-radius:4px">识别关键词：{{ vmKeyword }}</span>
+                </div>
+              </div>
+            </div>
+            <div style="margin-bottom:12px">
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;
+                display:flex;align-items:center;justify-content:space-between">
+                <span>找到 {{ vmSearchResults.length }} 个可能相关的文件</span>
+                <span style="font-size:11px">点击选择，或修改关键词重新搜索</span>
+              </div>
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <input v-model="vmKeyword" type="text" placeholder="搜索关键词"
+                  style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px"
+                  @input="vmOnSearchInput" @keydown.enter.prevent="vmDoSearch" />
+                <button type="button" @click="vmDoSearch" class="btn-small primary">搜索</button>
+              </div>
+              <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:#fff">
+                <div v-for="r in vmSearchResults" :key="r.id"
+                  :class="['vm-result-row', { selected: vmSelectedEntry?.id === r.id }]"
+                  @click="vmSelectedEntry = r; vmMode = 'version'">
+                  <Icons name="file-text" style="width:16px;height:16px;color:#6b7280;flex-shrink:0" />
+                  <span style="flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.path }}</span>
+                  <span v-if="r.size != null" style="font-size:11px;color:var(--text-secondary)">{{ formatSize(r.size) }}</span>
+                </div>
+                <div v-if="vmSearchResults.length === 0" style="padding:16px;text-align:center;color:var(--text-secondary);font-size:13px">无匹配结果，将作为新文件上传</div>
+              </div>
+              <p v-if="vmSearchResults.length === 0" style="font-size:12px;color:var(--text-secondary);margin-top:6px">可选择「作为新文件上传」或修改关键词重新搜索</p>
+            </div>
+            <div v-if="vmQueue.length > 1" style="padding:8px 0;font-size:12px;color:var(--text-secondary);text-align:center">还有 {{ vmQueue.length - 1 }} 个文件需要确认</div>
+          </template>
         </div>
         <div class="upload-modal-footer">
-          <div class="upload-modal-footer-left">
-            <template v-if="uploadFiles.length">
-              共 {{ uploadFiles.length }} 个文件
-              <span v-if="uploadFiles.some(f => f.status === 'error')" class="upload-modal-footer-error"> · 部分文件上传失败</span>
-            </template>
-          </div>
-          <div class="upload-modal-footer-actions">
-            <button type="button" class="upload-btn-secondary" @click="closeUploadModal">取消</button>
-            <button type="button" class="upload-btn-primary" :disabled="uploadCompletedCount === 0" @click="finishUploadModal">
-              完成
+          <template v-if="uploadStep === 'list'">
+            <div class="upload-modal-footer-left">
+              <template v-if="uploadFiles.length">
+                共 {{ uploadFiles.length }} 个文件
+                <span v-if="uploadFiles.some(f => f.status === 'error')" class="upload-modal-footer-error"> · 部分文件上传失败</span>
+              </template>
+            </div>
+            <div class="upload-modal-footer-actions">
+              <button type="button" class="upload-btn-secondary" @click="closeUploadModal">取消</button>
+              <button type="button" class="upload-btn-primary" :disabled="uploadCompletedCount === 0" @click="finishUploadModal">完成</button>
+            </div>
+          </template>
+          <template v-else>
+            <button type="button" @click="vmSkip"
+              style="padding:7px 14px;border:none;border-radius:8px;cursor:pointer;font-size:13px;background:transparent;color:var(--text-secondary)">跳过，作为新文件上传</button>
+            <button @click="vmDoUpload"
+              :disabled="vmMode === 'version' && vmSearchResults.length > 0 && !vmSelectedEntry"
+              style="padding:7px 16px;border:none;border-radius:8px;cursor:pointer;font-size:13px;background:#185fa5;color:#fff;font-weight:500"
+              :style="(vmMode === 'version' && vmSearchResults.length > 0 && !vmSelectedEntry) ? 'opacity:.5;cursor:not-allowed' : ''">
+              {{ vmMode === 'new' || !vmSelectedEntry ? '作为新文件上传' : '确认上传为新版本' }}
             </button>
-          </div>
+          </template>
         </div>
       </div>
     </div>
@@ -740,6 +803,16 @@ const activeDeptLoading = ref(false)
 const activeDeptErr = ref('')
 const uploadErr = ref('')
 
+const uploadStep = ref('list')  // 'list' | 'confirm'
+const vmQueue = ref([])        // 待确认队列：{ file, ufId, searchResults }
+const vmUfId = ref(null)       // 当前弹窗对应的 uploadFiles 条目 id
+const vmFile = ref(null)
+const vmMode = ref('version')  // 'version' | 'new'
+const vmComment = ref('')
+const vmSelectedEntry = ref(null)
+const vmSearchResults = ref([])
+const vmKeyword = ref('')
+
 const notifications = ref([])
 const showNotifyPanel = ref(false)
 const unreadNotifyCount = ref(0)
@@ -1007,16 +1080,89 @@ function openUploadModal() {
   uploadErr.value = ''
   uploadFiles.value = []
   uploadDropzoneActive.value = false
+  uploadStep.value = 'list'
 }
 function closeUploadModal() {
   showUpload.value = false
   uploadFiles.value = []
   uploadDropzoneActive.value = false
+  uploadStep.value = 'list'
 }
-function addUploadFiles(files) {
+function vmExtractKeyword(filename) {
+  if (!filename || typeof filename !== 'string') return ''
+  // 第一步：去扩展名
+  let name = filename.replace(/\.[^.]+$/, '').trim()
+  const original = name
+
+  // 第二步：去末尾括号数字（中英文括号，括号前可能有空格，支持多重）
+  name = name.replace(/\s*[（(]\d+[)）]/g, '').trim()
+
+  // 第三步：去13/14位时间戳（微信/系统保存格式）
+  name = name.replace(/[_\- ]?\d{13,14}$/, '').trim()
+
+  // 第四步：去日期相关后缀（循环去除）
+  let prevName = ''
+  while (prevName !== name) {
+    prevName = name
+    name = name.replace(/[_\- ]?\d{6}$/, '').trim()
+    name = name.replace(/[_\- ]?\d{4}[-]\d{2}[-]\d{2}$/, '').trim()
+    name = name.replace(/[_\- ]?\d{8}$/, '').trim()
+    name = name.replace(/[_\- ]?\d{6}$/, '').trim()
+  }
+
+  // 第五步：去版本号
+  name = name.replace(/[_\- ]?[vV]\d+(\.\d+)?$/, '').trim()
+  name = name.replace(/[_\- ]?[rR][eE][vV]\d+$/, '').trim()
+  name = name.replace(/[vV]\d+(\.\d+)?$/, '').trim()
+
+  // 第六步：去版本标记文字
+  const versionTokens = [
+    '终稿','定版','最终版','修改版','修改稿','送审版','报批版','报审版',
+    '讨论稿','征求意见稿','初稿','第一稿','第二稿','第三稿','第四稿',
+    '评审稿','审查稿','完善版','更新版','final','FINAL',
+  ]
+  versionTokens.forEach(t => {
+    name = name.replace(new RegExp(`[_\\-]?${t}$`, 'i'), '').trim()
+  })
+
+  // 第七步：去人名后缀
+  name = name.replace(/[_\- ]?[\u4e00-\u9fa5]{1,2}工[\u4e00-\u9fa5]{0,2}$/, '').trim()
+  name = name.replace(/\s*[（(][\u4e00-\u9fa5]{1,3}[)）]$/, '').trim()
+
+  // 第八步：去末尾多余的分隔符
+  name = name.replace(/[_\- ]+$/, '').trim()
+
+  if (!name) return original
+
+  // 第九步：长前缀工程命名处理
+  const parts = name.split('_').map(p => p.trim()).filter(p => p.length > 0)
+  if (parts.length >= 3) return parts.slice(1).join(' ')
+  if (parts.length === 2) return parts[1]
+
+  return name
+}
+// 测试用例：
+// vmExtractKeyword('XXXX（1）.pdf')           → 'XXXX'
+// vmExtractKeyword('XXXX(1).pdf')             → 'XXXX'
+// vmExtractKeyword('XXXX （1）（2）.pdf')     → 'XXXX'
+// vmExtractKeyword('环评报告_20260101.pdf')   → '环评报告'
+// vmExtractKeyword('环评报告_20260101_v2.pdf')→ '环评报告'
+// vmExtractKeyword('环评报告_v2.pdf')         → '环评报告'
+// vmExtractKeyword('环评报告_终稿.pdf')       → '环评报告'
+// vmExtractKeyword('报告_王工.pdf')           → '报告'
+// vmExtractKeyword('报告_王工审查.pdf')       → '报告'
+// vmExtractKeyword('报告_1709123456789.pdf')  → '报告'
+// vmExtractKeyword('报告_20260101_143022.pdf')→ '报告'
+// vmExtractKeyword('报告_终稿_20260101_v2（1）.pdf') → '报告'
+// vmExtractKeyword('乌兰察布市_可行性研究报告_专家评审意见_终稿.docx') → '可行性研究报告 专家评审意见'
+// vmExtractKeyword('新的.pdf')                → '新的'
+// vmExtractKeyword('修改后.pdf')              → '修改后'
+
+async function addUploadFiles(files) {
   if (!files?.length || !currentLib.value?.id) return
-  const basePath = pathPrefix.value || ''
-  const list = Array.from(files).map(file => ({
+  const arr = Array.from(files)
+
+  const list = arr.map(file => ({
     id: `${file.name}-${Date.now()}-${Math.random()}`,
     file,
     progress: 0,
@@ -1024,7 +1170,119 @@ function addUploadFiles(files) {
     error: undefined,
   }))
   uploadFiles.value = uploadFiles.value.concat(list)
-  list.forEach(uf => startUploadOne(uf.id))
+  showUpload.value = true
+
+  const searchPromises = arr.map(async (file, i) => {
+    const kw = vmExtractKeyword(file.name)
+    if (!kw) return { file, ufId: list[i].id, results: [] }
+    try {
+      const results = await api.searchFilesGlobal(kw, currentLib.value?.id ?? null)
+      return { file, ufId: list[i].id, results }
+    } catch {
+      return { file, ufId: list[i].id, results: [] }
+    }
+  })
+
+  const searched = await Promise.all(searchPromises)
+  const toQueue = searched.filter(s => s.results.length > 0)
+  const toDirect = searched.filter(s => s.results.length === 0)
+
+  toDirect.forEach(s => startUploadOne(s.ufId))
+
+  if (toQueue.length > 0) {
+    vmQueue.value = toQueue.map(s => ({
+      file: s.file,
+      ufId: s.ufId,
+      searchResults: s.results,
+    }))
+    vmOpenFromQueue()
+  }
+}
+
+function vmOpenFromQueue() {
+  if (!vmQueue.value.length) return
+  const item = vmQueue.value[0]
+  vmFile.value = item.file
+  vmUfId.value = item.ufId
+  vmMode.value = 'version'
+  vmComment.value = ''
+  vmSelectedEntry.value = null
+  vmSearchResults.value = item.searchResults
+  vmKeyword.value = vmExtractKeyword(item.file.name)
+  uploadStep.value = 'confirm'
+}
+
+async function vmDoSearch() {
+  if (!vmKeyword.value?.trim() || !currentLib.value?.id) return
+  try {
+    vmSearchResults.value = await api.searchFiles(currentLib.value.id, vmKeyword.value.trim())
+  } catch {
+    vmSearchResults.value = []
+  }
+}
+
+let vmSearchDebounceTimer = null
+function vmOnSearchInput() {
+  vmSelectedEntry.value = null
+  if (vmSearchDebounceTimer) clearTimeout(vmSearchDebounceTimer)
+  vmSearchDebounceTimer = setTimeout(() => vmDoSearch(), 300)
+}
+
+async function vmDoUpload() {
+  if (!vmFile.value) return
+  const ufId = vmUfId.value
+
+  vmQueue.value = vmQueue.value.slice(1)
+
+  if (vmMode.value === 'new' || !vmSelectedEntry.value) {
+    await startUploadOne(ufId)
+  } else {
+    uploadFiles.value = uploadFiles.value.map(f =>
+      f.id === ufId ? { ...f, status: 'uploading' } : f
+    )
+    try {
+      await api.uploadVersionWithProgress(
+        vmSelectedEntry.value,
+        vmComment.value,
+        vmFile.value,
+        p => {
+          uploadFiles.value = uploadFiles.value.map(f =>
+            f.id === ufId ? { ...f, progress: p } : f
+          )
+        }
+      )
+      uploadFiles.value = uploadFiles.value.map(f =>
+        f.id === ufId ? { ...f, progress: 100, status: 'success' } : f
+      )
+      loadFiles()
+      loadStorageStats()
+    } catch (e) {
+      let errMsg = e.message
+      if (e.message?.includes('SAME_AS_LATEST')) {
+        errMsg = '文件内容与最新版本完全相同，无需重复上传'
+      }
+      uploadFiles.value = uploadFiles.value.map(f =>
+        f.id === ufId ? { ...f, status: 'error', error: errMsg } : f
+      )
+    }
+  }
+
+  if (vmQueue.value.length > 0) {
+    vmOpenFromQueue()
+  } else {
+    uploadStep.value = 'list'
+  }
+}
+
+async function vmSkip() {
+  const ufId = vmUfId.value
+  vmQueue.value = vmQueue.value.slice(1)
+  await startUploadOne(ufId)
+  if (vmQueue.value.length > 0) {
+    vmOpenFromQueue()
+  } else {
+    uploadStep.value = 'list'
+  }
 }
 function onUploadDrop(e) {
   uploadDropzoneActive.value = false
@@ -1884,5 +2142,23 @@ async function resetUserPassword(u) {
 .upload-btn-primary:disabled {
   background: #d1d5db;
   cursor: not-allowed;
+}
+.vm-result-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid #e5e7eb;
+  transition: background 0.15s;
+}
+.vm-result-row:last-child {
+  border-bottom: none;
+}
+.vm-result-row:hover {
+  background: #f3f4f6;
+}
+.vm-result-row.selected {
+  background: #e8f0fa;
 }
 </style>

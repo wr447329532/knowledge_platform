@@ -303,6 +303,13 @@ export async function searchFiles(libraryId, keyword) {
   return api(`/files/search?library_id=${libraryId}&keyword=${encodeURIComponent(keyword.trim())}`)
 }
 
+/** 全局/库内搜索（用于版本匹配）：libraryId 为 null 时返回 [] */
+export async function searchFilesGlobal(keyword, libraryId) {
+  if (!keyword || !keyword.trim()) return []
+  if (libraryId == null) return []
+  return api(`/files/search?library_id=${libraryId}&keyword=${encodeURIComponent(keyword.trim())}`)
+}
+
 /** 获取存储空间统计 */
 export async function getStorageStats(libraryId = null) {
   let url = '/files/storage'
@@ -371,6 +378,12 @@ export async function uploadFile(libraryId, relativePath, file) {
 }
 
 /** 带上传进度的上传（用于上传弹窗进度条），onProgress(0-100) */
+/** 上传为新版本（指定 entry 对象，需含 library_id、path） */
+export function uploadVersionWithProgress(entry, comment, file, onProgress) {
+  if (!entry?.library_id || !entry?.path) throw new Error('无效的文件条目')
+  return uploadFileWithProgress(entry.library_id, entry.path, file, onProgress)
+}
+
 export function uploadFileWithProgress(libraryId, relativePath, file, onProgress) {
   return new Promise((resolve, reject) => {
     const token = getToken()

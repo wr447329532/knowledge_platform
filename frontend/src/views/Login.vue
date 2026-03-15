@@ -3,11 +3,11 @@
     <!-- 左侧品牌区：仅平台名称居中 + 背景图 -->
     <div class="login-left">
       <div class="login-left-bg">
-        <img src="https://images.unsplash.com/photo-1674981208693-de5a9c4c4f44?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1080" alt="" class="login-bg-img" />
+        <img src="/login-bg.png" alt="" class="login-bg-img" />
         <div class="login-bg-overlay"></div>
       </div>
       <div class="login-brand-center">
-        <h1 class="brand-title">文件共享和知识平台</h1>
+        <h1 class="brand-title">文件共享和知识管理平台</h1>
         <p class="brand-copyright">© 2026 中铁建发展集团乌兰察布压缩空气储能有限公司</p>
       </div>
     </div>
@@ -85,12 +85,12 @@ async function submit() {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  opacity: 0.3;
+  opacity: 0.45;
 }
 .login-bg-overlay {
   position: absolute;
   inset: 0;
-  background: linear-gradient(135deg, rgba(26,31,58,0.9) 0%, rgba(45,53,97,0.75) 50%, rgba(26,31,58,0.9) 100%);
+  background: linear-gradient(135deg, rgba(26,31,58,0.45) 0%, rgba(45,53,97,0.3) 50%, rgba(26,31,58,0.45) 100%);
 }
 .login-brand-center {
   position: relative;
