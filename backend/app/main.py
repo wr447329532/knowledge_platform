@@ -44,6 +44,21 @@ def _ensure_users_has_department_id() -> None:
         conn.commit()
 
 
+def _ensure_users_has_role() -> None:
+    """兼容旧库：若 users 表缺少 role 列则自动添加，默认 staff"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "users" not in insp.get_table_names():
+        return
+    cols = [c["name"] for c in insp.get_columns("users")]
+    if "role" in cols:
+        return
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'staff'"))
+        conn.commit()
+
+
 def _ensure_libraries_has_department_id() -> None:
     """兼容旧库：若 libraries 表缺少 department_id 列则自动添加"""
     from sqlalchemy import inspect, text
@@ -187,6 +202,7 @@ def create_app() -> FastAPI:
     Base.metadata.create_all(bind=engine)
     _ensure_file_entries_has_deleted_at()
     _ensure_users_has_department_id()
+    _ensure_users_has_role()
     _ensure_libraries_has_department_id()
     _ensure_libraries_has_visibility()
     _ensure_libraries_has_allow_download()

@@ -1,7 +1,7 @@
 """部门树 API：树形列表、增删改、部门库"""
 from typing import Dict, List, Optional, Set
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
@@ -11,10 +11,13 @@ from backend.app.api.deps import (
     get_current_user,
 )
 from backend.app.api.libraries import LibraryRead, _lib_to_read
+from backend.app.core.audit import get_client_ip, log_audit
+from backend.app.core.library_access import is_executive
 from backend.app.db.session import get_db
 from backend.app.models.department import Department
 from backend.app.models.library import Library
 from backend.app.models.user import User
+from backend.app.schemas.auth import UserCreate, UserRead
 
 router = APIRouter(prefix="/departments", tags=["departments"])
 
@@ -143,13 +146,17 @@ def _compute_accessible_department_ids(
     """
     计算当前用户可访问的部门 ID 列表。
 
-    规则（简单版本）：
+    规则：
     - 超级管理员：可访问所有部门
+    - 高管：可访问所有部门（只读查看所有部门文件库）
     - 其他用户：仅可访问自己的部门及其所有子部门
     """
     all_ids: Set[int] = {d.id for d in departments}
     # 超级管理员：可访问所有部门
     if current_user.is_superuser:
+        return all_ids
+    # 高管：可访问所有部门（用于部门视图与部门文件库列表）
+    if is_executive(current_user):
         return all_ids
     # 普通用户未绑定部门：不再回退为全部部门，视为无部门权限
     if current_user.department_id is None:
@@ -368,6 +375,141 @@ def list_department_members(
         .all()
     )
     return users
+
+
+@router.get("/{department_id}/members/manage", response_model=List[UserRead])
+def list_department_members_manage(
+    department_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_dept_admin),
+):
+    """
+    部门成员管理视图用的成员列表：
+    - 仅本部门成员
+    - 仅活跃用户
+    - 仅系统管理员或本部门负责人可访问
+    """
+    dept = db.query(Department).filter(Department.id == department_id).first()
+    if not dept:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
+    users = (
+        db.query(User)
+        .options(joinedload(User.department))
+        .filter(User.department_id == department_id, User.is_active.is_(True))
+        .order_by(User.id.asc())
+        .all()
+    )
+    return [UserRead.from_orm(u) for u in users]
+
+
+@router.post("/{department_id}/members", response_model=UserRead)
+def create_department_member(
+    department_id: int,
+    body: UserCreate,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_dept_admin),
+):
+    """
+    在本部门创建新用户：
+    - department_id 强制为路径参数
+    - is_superuser 强制为 False
+    - role 仅允许 staff / dept_leader
+    """
+    dept = db.query(Department).filter(Department.id == department_id).first()
+    if not dept:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
+
+    existing = (
+        db.query(User)
+        .filter((User.username == body.username) | (User.email == body.email))
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="用户名或邮箱已被使用",
+        )
+
+    role = getattr(body, "role", "staff") or "staff"
+    if role not in ("staff", "dept_leader"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="仅允许创建部员或部门负责人",
+        )
+
+    from backend.app.core.security import get_password_hash
+
+    user = User(
+        username=body.username,
+        email=body.email,
+        hashed_password=get_password_hash(body.password),
+        is_active=True,
+        is_superuser=False,
+        role=role,
+        department_id=department_id,
+    )
+    db.add(user)
+    db.flush()
+
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "create_department_member",
+        "user",
+        user.id,
+        f"dept_id={department_id} username={user.username}",
+        ip_address=get_client_ip(request),
+    )
+    db.commit()
+    db.refresh(user)
+    return UserRead.from_orm(user)
+
+
+@router.delete("/{department_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_department_member(
+    department_id: int,
+    user_id: int,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_dept_admin),
+):
+    """
+    将目标用户从本部门移出（仅清空 department_id，不删除账号）。
+    限制：
+    - 不能移除超管
+    - 不能移除自己
+    - 目标用户必须属于本部门
+    """
+    dept = db.query(Department).filter(Department.id == department_id).first()
+    if not dept:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+
+    if user.is_superuser:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能移除系统管理员")
+    if user.id == current_user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能移除自己")
+    if user.department_id != department_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="目标用户不属于本部门")
+
+    user.department_id = None
+    db.commit()
+
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "remove_department_member",
+        "user",
+        user.id,
+        f"from_dept_id={department_id}",
+        ip_address=get_client_ip(request),
+    )
 
 
 @router.get("/{department_id}/libraries", response_model=List[LibraryRead])

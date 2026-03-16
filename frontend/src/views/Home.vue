@@ -8,7 +8,8 @@
       :active-tab="tab"
       :active-dept-id="activeDeptId"
       :storage-stats="storageStats"
-      @nav="onNav"
+      :trash-mode="trashMode"
+      @nav="onSidebarNav"
       @dept-select="handleDeptSelect"
     />
 
@@ -111,14 +112,21 @@
         @open-shared-lib="openSharedLib"
       />
 
+
       <!-- 回收站 -->
       <TrashPage
         v-if="tab === 'trash'"
+        :mode="trashMode"
         :trash-items="trashItems"
         :trash-loading="trashLoading"
+        :dept-trash-list="deptTrashList"
+        :dept-trash-loading="deptTrashLoading"
+        :libraries="libraries"
         :format-date="formatDate"
         @restore-item="restoreTrashItem"
         @perm-delete-item="permDeleteTrashItem"
+        @restore-dept="restoreDeptFile"
+        @perm-delete-dept="permDeleteDeptFile"
       />
 
       <NotificationPanel
@@ -717,7 +725,9 @@ const mkdirPath = ref('')
 const err = ref('')
 const trashItems = ref([])
 const trashLoading = ref(false)
-const trashLibraryList = ref([])
+const trashMode = ref('personal')
+const deptTrashList = ref([])
+const deptTrashLoading = ref(false)
 const mySharesList = ref([])
 const mySharesLoading = ref(false)
 const sharedSubTab = ref('mine')
@@ -862,6 +872,9 @@ const sortedLibraries = computed(() => {
   return arr
 })
 
+const sortedFiles = computed(() => _sortFileList(files.value || []))
+const sortedSearchResults = computed(() => _sortFileList(searchResults.value || []))
+
 const breadcrumbSegments = computed(() => {
   const p = (pathPrefix.value || '').replace(/\/$/, '')
   if (!p) return [{ label: '全部文件' }]
@@ -895,15 +908,19 @@ function _sortFileList(list) {
   }
   return arr
 }
-const sortedFiles = computed(() => _sortFileList(files.value))
-const sortedSearchResults = computed(() => _sortFileList(searchResults.value))
 
-// ---- 导航事件 ----
-
-function onNav(newTab) {
-  if (newTab === 'lib') { tab.value = 'lib'; clearDeptView(); err.value = '' }
-  if (newTab === 'shared') { tab.value = 'shared'; sharedSubTab.value = 'mine'; err.value = ''; loadMyShares() }
-  if (newTab === 'trash') { tab.value = 'trash'; err.value = ''; loadCombinedTrash() }
+async function onSidebarNav(tabName) {
+  tab.value = tabName
+  if (tabName === 'lib') { clearDeptView(); err.value = '' }
+  if (tabName === 'shared') { sharedSubTab.value = 'mine'; err.value = ''; loadMyShares() }
+  if (tabName === 'trash') {
+    trashMode.value = 'personal'
+    err.value = ''
+    if (me.value?.role === 'dept_leader') {
+      await loadDeptTrash()
+    }
+    loadTrash()
+  }
 }
 
 function onSharedTab(subtab) {
@@ -1318,6 +1335,11 @@ async function startUploadOne(id) {
       uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, progress: p } : f)
     })
     uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, progress: 100, status: 'success' } : f)
+    // 单个文件上传成功后，立即刷新当前库文件列表和存储统计
+    if (currentLib.value?.id) {
+      await loadFiles()
+      await loadStorageStats()
+    }
   } catch (e) {
     uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, status: 'error', error: e.message } : f)
   }
@@ -1412,77 +1434,59 @@ function openSharedLib(row) {
   } else { err.value = '未找到该文件库，请刷新页面后重试' }
 }
 
-// ---- 回收站（统一列表） ----
+// ---- 回收站 ----
 
-async function loadCombinedTrash() {
-  if (tab.value !== 'trash') return
+// 单独的 loadLibraryTrash 已不再直接使用，统一由 loadTrash 聚合库+文件
+
+async function loadTrash() {
+  if (tab.value !== 'trash' || trashMode.value !== 'personal') return
   trashLoading.value = true
   err.value = ''
   try {
-    // 1. 已删除的文件库
-    const deletedLibs = await api.listLibraryTrash()
-    trashLibraryList.value = deletedLibs
-
-    // 2. 当前可访问的文件库（未删除的库里的文件也可能在回收站）
-    const activeLibs = await api.listLibraries()
-
-    const items = []
-
-    // 已删除的库 → 加入库条目，并拉取该库内回收站文件
-    for (const lib of deletedLibs) {
-      items.push({
-        id: lib.id,
-        type: 'library',
-        name: lib.name,
-        deleted_at: lib.deleted_at,
-      })
-    }
-    const deletedLibFilePromises = deletedLibs.map((lib) => api.listTrash(lib.id).catch(() => []))
-    const deletedLibFiles = await Promise.all(deletedLibFilePromises)
-    deletedLibFiles.forEach((files, idx) => {
-      const lib = deletedLibs[idx]
-      for (const f of files) {
-        items.push({
-          id: f.id,
-          type: 'file',
-          name: f.path && f.path.split('/').pop(),
-          path: f.path,
-          library_id: lib?.id,
-          library_name: lib?.name,
-          deleted_at: f.deleted_at,
-        })
-      }
-    })
-
-    // 3. 未删除的库里，回收站中的文件（只删文件、未删库的情况）
-    const activeLibFilePromises = activeLibs.map((lib) => api.listTrash(lib.id).catch(() => []))
-    const activeLibFiles = await Promise.all(activeLibFilePromises)
-    activeLibFiles.forEach((files, idx) => {
-      const lib = activeLibs[idx]
-      for (const f of files) {
-        items.push({
-          id: f.id,
-          type: 'file',
-          name: f.path && f.path.split('/').pop(),
-          path: f.path,
-          library_id: lib?.id,
-          library_name: lib?.name,
-          deleted_at: f.deleted_at,
-        })
-      }
-    })
-
-    trashItems.value = items.sort((a, b) => {
-      const ta = a.deleted_at ? new Date(a.deleted_at).getTime() : 0
-      const tb = b.deleted_at ? new Date(b.deleted_at).getTime() : 0
-      return tb - ta
-    })
+    // 统一改为后端聚合接口：我的回收站（库 + 文件）
+    trashItems.value = await api.listMyTrash()
   } catch (e) {
     err.value = e.message
     trashItems.value = []
-    trashLibraryList.value = []
   } finally {
     trashLoading.value = false
+  }
+}
+
+async function loadDeptTrash() {
+  if (!me.value?.department_id) return
+  deptTrashLoading.value = true
+  err.value = ''
+  try {
+    deptTrashList.value = await api.listDeptTrash(me.value.department_id)
+  } catch (e) {
+    err.value = e?.message || '加载失败'
+    deptTrashList.value = []
+  } finally {
+    deptTrashLoading.value = false
+  }
+}
+
+async function restoreDeptFile(item) {
+  err.value = ''
+  try {
+    await api.restoreFile(item.id)
+    showSuccess('文件已恢复')
+    await loadDeptTrash()
+  } catch (e) {
+    err.value = e?.message || '恢复失败'
+  }
+}
+
+async function permDeleteDeptFile(item) {
+  if (!confirm('确定从回收站彻底删除？此操作不可恢复。')) return
+  err.value = ''
+  try {
+    await api.permanentDelete(item.id)
+    showSuccess('文件已彻底删除')
+    await loadDeptTrash()
+  } catch (e) {
+    err.value = e?.message || '删除失败'
   }
 }
 
@@ -1498,7 +1502,7 @@ async function restoreTrashItem(item) {
       await api.restoreFile(item.id)
       showSuccess('文件已恢复')
     }
-    await loadCombinedTrash()
+    await loadTrash()
   } catch (e) {
     err.value = e.message
   }
@@ -1518,7 +1522,7 @@ async function permDeleteTrashItem(item) {
       await api.permanentDelete(item.id)
       showSuccess('文件已彻底删除')
     }
-    await loadCombinedTrash()
+    await loadTrash()
   } catch (e) {
     err.value = e.message
   }
@@ -1761,6 +1765,8 @@ async function loadUsers() {
     userList.value = await api.listUsers(params)
   } catch (e) { err.value = e.message }
 }
+
+// 部门成员管理逻辑现已迁移到 Admin.vue
 async function loadAudit() {
   if (tab.value !== 'sys') return
   try {
@@ -1802,7 +1808,7 @@ async function doCreateUserModal() {
   try {
     const isSuper = newUserRole.value === 'admin' || newUserIsSuperuser.value
     const deptId = newUserDeptId.value ? Number(newUserDeptId.value) : null
-    await api.createUser(newUserEmail.value.trim(), newUserUsername.value.trim(), newUserPassword.value, isSuper, deptId)
+    await api.createUser(newUserEmail.value.trim(), newUserUsername.value.trim(), newUserPassword.value, isSuper, deptId, 'staff')
     showSuccess('用户已创建：' + newUserUsername.value); closeCreateUser(); loadUsers()
   } catch (e) { err.value = e.message }
 }

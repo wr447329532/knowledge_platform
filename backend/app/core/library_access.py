@@ -12,11 +12,41 @@ from backend.app.models.library_member import LibraryMember
 from backend.app.models.user import User
 
 
+def is_executive(user: User) -> bool:
+    """高管角色：只读访问所有部门库 + 公开库 + 自己拥有的 + 自己作为成员的库（不能访问他人私人库、仅指定成员库）"""
+    return getattr(user, "role", "staff") == "executive"
+
+
+def is_dept_leader(user: User, db: Session, dept_id: int) -> bool:
+    """判断用户是否是指定部门的部长（role=dept_leader 且为该部门负责人）"""
+    if getattr(user, "role", "staff") != "dept_leader":
+        return False
+    dept = db.query(Department).filter(Department.id == dept_id).first()
+    if not dept:
+        return False
+    return getattr(dept, "leader_user_id", None) == user.id
+
+
+def _is_leader_of_department(db: Session, user: User, dept_id: int | None) -> bool:
+    """判断用户是否为指定部门的负责人（由 leader_user_id 指定，与 role 无关）"""
+    if dept_id is None:
+        return False
+    if user.is_superuser:
+        return False
+    dept = db.query(Department).filter(Department.id == dept_id).first()
+    if not dept:
+        return False
+    return getattr(dept, "leader_user_id", None) == user.id
+
+
 def _get_accessible_department_ids(db: Session, user: User) -> Set[int]:
-    """用户可访问的部门 ID（本人部门及所有子部门，超级管理员为全部）"""
+    """用户可访问的部门 ID（本人部门及所有子部门，超级管理员/高管为全部）"""
     all_depts = {d.id: d for d in db.query(Department).all()}
     # 超级管理员：可访问全部部门
     if user.is_superuser:
+        return set(all_depts.keys())
+    # 高管：可访问全部部门（用于只读查看所有部门文件库）
+    if is_executive(user):
         return set(all_depts.keys())
     # 普通用户未绑定部门：不自动放宽为全部，按「无部门访问权限」处理
     if user.department_id is None:
@@ -37,23 +67,6 @@ def _get_accessible_department_ids(db: Session, user: User) -> Set[int]:
         for cid in children_map.get(did, []):
             stack.append(cid)
     return accessible
-
-
-def is_dept_leader(db: Session, user: User, dept_id: int | None) -> bool:
-    """判断用户是否为指定部门的负责人。
-
-    规则：
-    - 若 dept_id 为空，则返回 False
-    - 若当前用户为该部门的 leader_user_id，则为负责人
-    """
-    if dept_id is None:
-        return False
-    if user.is_superuser:
-        return False  # 超管单独判断，不在此函数里重复逻辑
-    dept = db.query(Department).filter(Department.id == dept_id).first()
-    if not dept:
-        return False
-    return getattr(dept, "leader_user_id", None) == user.id
 
 
 def _get_library_member(db: Session, library_id: int, user_id: int) -> LibraryMember | None:
@@ -97,10 +110,10 @@ def has_library_access(db: Session, library_id: int, user: User, require_write: 
 
     visibility = getattr(lib, "visibility", "private") or "private"
 
-    # 库成员：始终优先于 visibility
+    # 库成员：始终优先于 visibility（高管恒为只读，不随成员 role 提升为写）
     member = _get_library_member(db, library_id, user.id)
     if member:
-        can_write = member.role == "write"
+        can_write = member.role == "write" and not is_executive(user)
         if require_write and not can_write:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -117,16 +130,24 @@ def has_library_access(db: Session, library_id: int, user: User, require_write: 
             )
         return lib, False
 
-    # 部门库：用户所在部门或其子部门的成员可读写
+    # 部门库：用户所在部门或其子部门的成员可读写；高管可访问全部部门库（只读）
     if getattr(lib, "department_id", None) is not None:
         acc_dept_ids = _get_accessible_department_ids(db, user)
         if lib.department_id in acc_dept_ids:
+            if is_executive(user):
+                if require_write:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="高管角色仅有只读权限",
+                    )
+                return lib, False
             return lib, True
 
-    # 指定成员库：除 Owner/库成员外无访问权限（库成员已在上方返回）
+    # 指定成员库 / 私人库：除 Owner/库成员外无访问权限（库成员已在上方返回）；高管也不得访问
     if visibility == "members":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该资料库")
 
+    # 私人库（private）且非拥有者、非库成员：拒绝；高管也不得访问
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该资料库")
 
 
@@ -138,6 +159,14 @@ def _library_not_deleted():
 def get_accessible_library_ids(db: Session, user: User) -> list[int]:
     """获取用户可访问的资料库 ID：拥有 + 部门库 + 库成员 + public 库（排除已软删除）"""
     not_deleted = _library_not_deleted()
+
+    # 超级管理员：返回所有库
+    if user.is_superuser:
+        return [r[0] for r in db.query(Library.id).filter(not_deleted).all()]
+
+    # 高管：仅返回 部门库 + 公开库 + 自己拥有的 + 自己作为成员的（不包含他人私人库、仅指定成员库）
+    # 通过下方 owned + dept_lib_ids + member_lib_ids + public_lib_ids 实现，其中 dept_lib_ids 依赖 _get_accessible_department_ids（高管已为全部部门）
+
     # 拥有的资料库
     owned = [
         r[0]
@@ -196,7 +225,7 @@ def check_can_manage_library(lib: Library, user: User, db: Session) -> None:
         return
     # 部门负责人：仅对部门库生效
     dept_id = getattr(lib, "department_id", None)
-    if dept_id is not None and is_dept_leader(db, user, dept_id):
+    if dept_id is not None and _is_leader_of_department(db, user, dept_id):
         return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -227,7 +256,7 @@ def can_access_file(db: Session, entry: FileEntry, user: User) -> bool:
     if visibility == "public":
         return True
 
-    # 部门库成员
+    # 部门库成员（含高管：_get_accessible_department_ids 对高管返回全部部门）
     if getattr(lib, "department_id", None) is not None:
         acc = _get_accessible_department_ids(db, user)
         if lib.department_id in acc:

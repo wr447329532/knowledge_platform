@@ -50,6 +50,7 @@ class LibraryRead(BaseModel):
 
 class LibraryTrashRead(LibraryRead):
     deleted_at: datetime
+    owner_username: str | None = None
 
     class Config:
         from_attributes = True
@@ -213,12 +214,40 @@ def list_library_trash(
 
     q = db.query(Library).filter(Library.deleted_at.isnot(None))
     if not current_user.is_superuser:
-        q = q.filter(Library.owner_id == current_user.id)
+        # 拥有者或对应部门负责人可见已删除的资料库
+        from sqlalchemy import or_
+        from backend.app.models.department import Department
+
+        q = (
+            q.outerjoin(Department, Library.department_id == Department.id)
+            .filter(
+                or_(
+                    Library.owner_id == current_user.id,
+                    Department.leader_user_id == current_user.id,
+                )
+            )
+        )
     libs = q.order_by(Library.deleted_at.desc()).all()
-    result = []
+
+    result: list[LibraryTrashRead] = []
     for l in libs:
-        r = _lib_to_read(db, l, current_user.id, is_owner=l.owner_id == current_user.id, is_write=True)
-        result.append(LibraryTrashRead(**r.model_dump(), deleted_at=l.deleted_at))
+        r = _lib_to_read(
+            db,
+            l,
+            current_user.id,
+            is_owner=l.owner_id == current_user.id,
+            is_write=True,
+        )
+        owner_username: str | None = None
+        if getattr(l, "owner", None):
+            owner_username = l.owner.username or l.owner.email or f"用户{l.owner.id}"
+        result.append(
+            LibraryTrashRead(
+                **r.model_dump(),
+                deleted_at=l.deleted_at,
+                owner_username=owner_username,
+            )
+        )
     return result
 
 

@@ -5,9 +5,17 @@
       <div class="trash-header-left">
         <Icons name="trash" class="trash-header-icon" />
         <div>
-          <h1 class="trash-title">回收站</h1>
-          <p class="trash-subtitle">已删除的文件库与文件统一展示，30 天后自动彻底删除</p>
+          <h1 class="trash-title">{{ mode === 'dept' ? '部门回收站' : '我的回收站' }}</h1>
+          <p class="trash-subtitle">{{
+            mode === 'dept'
+              ? '本部门所有文件库的删除记录，30 天后自动彻底删除'
+              : '仅显示您私人库中的删除记录，30 天后自动彻底删除'
+          }}</p>
         </div>
+      </div>
+      <!-- 部门回收站模式：提示范围 -->
+      <div v-if="mode === 'dept'" class="trash-header-right">
+        <span class="trash-header-tip">展示本部门所有部门库中的删除记录</span>
       </div>
     </div>
 
@@ -15,24 +23,29 @@
     <div class="trash-body">
       <section class="trash-section">
         <h2 class="trash-section-title">已删除的项目</h2>
-        <p v-if="trashLoading" class="empty-hint">加载中...</p>
-        <div v-else-if="trashItems?.length" class="trash-table-card">
+        <p v-if="displayLoading" class="empty-hint">加载中...</p>
+        <div v-else-if="displayList?.length" class="trash-table-card">
           <table class="trash-table">
             <thead>
               <tr>
+                <th v-if="mode === 'dept'">用户账号</th>
                 <th>类型</th>
                 <th>名称</th>
-                <th>所属文件库</th>
+                <th>所在库</th>
+                <th>路径</th>
                 <th>删除时间</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody>
               <tr
-                v-for="item in trashItems"
-                :key="item.type + '-' + item.id"
+                v-for="(item, idx) in displayList"
+                :key="(item.type || 'file') + '-' + item.id + '-' + idx"
                 class="trash-row"
               >
+                <td v-if="mode === 'dept'" class="trash-cell-user">
+                  {{ item.username || '-' }}
+                </td>
                 <td class="trash-cell-type">
                   <span class="trash-tag" :class="item.type === 'library' ? 'trash-tag-lib' : 'trash-tag-file'">
                     {{ item.type === 'library' ? '文件库' : '文件' }}
@@ -42,13 +55,18 @@
                   <div class="trash-name-wrap">
                     <Icons :name="item.type === 'library' ? 'folder' : 'file-text'" class="trash-file-icon" />
                     <span class="trash-file-name">
-                      {{ item.type === 'library' ? item.name : (item.name || (item.path && item.path.split('/').pop())) }}
+                      {{ item.type === 'library'
+                        ? (item.name || item.library_name || ('文件库 #' + item.id))
+                        : (item.name || (item.path && item.path.split('/').pop()) || '-') }}
                     </span>
                   </div>
                 </td>
                 <td class="trash-cell-path">
+                  {{ item.library_name || (item.type === 'library' ? '-' : '未知文件库') }}
+                </td>
+                <td class="trash-cell-path">
                   <span v-if="item.type === 'file'">
-                    {{ item.library_name || '未知文件库' }}
+                    {{ item.path || '-' }}
                   </span>
                   <span v-else>-</span>
                 </td>
@@ -56,12 +74,42 @@
                   {{ formatDate(item.deleted_at) }}
                 </td>
                 <td class="trash-cell-actions">
-                  <button type="button" class="trash-btn-secondary" @click="emit('restore-item', item)">
-                    恢复
-                  </button>
-                  <button type="button" class="trash-btn-danger" @click="emit('perm-delete-item', item)">
-                    永久删除
-                  </button>
+                  <template v-if="mode === 'dept'">
+                    <button
+                      type="button"
+                      class="trash-btn-secondary"
+                      @click="emit('restore-dept', item)"
+                    >
+                      恢复
+                    </button>
+                    <button
+                      type="button"
+                      class="trash-btn-danger"
+                      @click="emit('perm-delete-dept', item)"
+                    >
+                      永久删除
+                    </button>
+                  </template>
+                  <template v-else>
+                    <button
+                      type="button"
+                      class="trash-btn-secondary"
+                      :class="{ 'trash-btn-disabled': item.can_restore === false }"
+                      :disabled="item.can_restore === false"
+                      @click="item.can_restore === false ? null : emit('restore-item', item)"
+                    >
+                      恢复
+                    </button>
+                    <button
+                      type="button"
+                      class="trash-btn-danger"
+                      :class="{ 'trash-btn-disabled': item.can_delete === false }"
+                      :disabled="item.can_delete === false"
+                      @click="item.can_delete === false ? null : emit('perm-delete-item', item)"
+                    >
+                      永久删除
+                    </button>
+                  </template>
                 </td>
               </tr>
             </tbody>
@@ -70,7 +118,7 @@
         <div v-else class="trash-empty-card">
           <Icons name="trash" class="trash-empty-icon" />
           <p class="trash-empty-text">回收站为空</p>
-          <p class="trash-empty-hint">删除的文件库和文件会显示在这里，30 天后自动清理。</p>
+          <p class="trash-empty-hint">{{ mode === 'dept' ? '本部门暂无删除记录。' : '删除的文件库和文件会显示在这里，30 天后自动清理。' }}</p>
         </div>
       </section>
     </div>
@@ -78,17 +126,28 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import Icons from './Icons.vue'
 
-defineProps({
-  // 统一后的回收站条目列表：由父组件拼好传入
-  // item: { id, type: 'library' | 'file', name?, path?, library_name?, deleted_at }
+const props = defineProps({
+  mode: { type: String, default: 'personal' }, // 'personal' | 'dept'
+  // personal：统一列表（库+文件）；dept：由父组件传入的部门回收站文件列表
   trashItems: Array,
   trashLoading: Boolean,
+  deptTrashList: { type: Array, default: () => [] },
+  deptTrashLoading: { type: Boolean, default: false },
   formatDate: Function,
+  libraries: { type: Array, default: () => [] },
 })
 
-const emit = defineEmits(['restore-item', 'perm-delete-item'])
+const displayList = computed(() =>
+  props.mode === 'dept' ? (props.deptTrashList || []) : (props.trashItems || [])
+)
+const displayLoading = computed(() =>
+  props.mode === 'dept' ? props.deptTrashLoading : props.trashLoading
+)
+
+const emit = defineEmits(['restore-item', 'perm-delete-item', 'restore-dept', 'perm-delete-dept'])
 </script>
 
 <style scoped>
@@ -275,6 +334,11 @@ const emit = defineEmits(['restore-item', 'perm-delete-item'])
 
 .trash-btn-danger:hover {
   background: #fef2f2;
+}
+
+.trash-btn-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .trash-empty-card {

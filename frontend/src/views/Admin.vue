@@ -32,11 +32,28 @@
               用户管理
             </button>
             <button
+              v-if="me?.is_superuser"
               :class="['admin-nav-item', { active: subTab === 'departments' }]"
               @click="switchTab('departments')"
             >
               <Icons name="building" class="admin-nav-icon" />
               部门管理
+            </button>
+            <button
+              v-if="me?.is_department_leader && !me?.is_superuser"
+              :class="['admin-nav-item', { active: subTab === 'dept-members' }]"
+              @click="switchTab('dept-members')"
+            >
+              <Icons name="users" class="admin-nav-icon" />
+              部门成员
+            </button>
+            <button
+              v-if="me?.is_department_leader || me?.is_superuser"
+              :class="['admin-nav-item', { active: subTab === 'dept-trash' }]"
+              @click="switchTab('dept-trash')"
+            >
+              <Icons name="trash" class="admin-nav-icon" />
+              部门回收站
             </button>
             <button class="admin-nav-item disabled" disabled title="敬请期待">
               <Icons name="shield" class="admin-nav-icon" />
@@ -59,12 +76,28 @@
               系统日志
             </button>
             <button
+              v-if="me?.is_department_leader && !me?.is_superuser"
+              :class="['admin-nav-item', { active: subTab === 'dept-audit' }]"
+              @click="switchTab('dept-audit')"
+            >
+              <Icons name="file-text" class="admin-nav-icon" />
+              部门日志
+            </button>
+            <button
               v-if="me?.is_superuser"
               :class="['admin-nav-item', { active: subTab === 'notify' }]"
               @click="switchTab('notify')"
             >
               <Icons name="bell" class="admin-nav-icon" />
               通知设置
+            </button>
+            <button
+              v-if="me?.is_superuser"
+              :class="['admin-nav-item', { active: subTab === 'global-trash' }]"
+              @click="switchTab('global-trash')"
+            >
+              <Icons name="trash" class="admin-nav-icon" />
+              全局回收站
             </button>
           </nav>
         </aside>
@@ -149,13 +182,23 @@
                     <td class="admin-cell admin-cell-center">{{ u.department_name || '-' }}</td>
                     <td class="admin-role-status-cell admin-cell-center">
                       <div class="admin-role-status-wrap">
-                        <span :class="['admin-badge', u.is_superuser ? 'badge-admin' : 'badge-user']">
-                          {{ u.is_superuser ? '管理员' : '普通用户' }}
+                        <span :class="['admin-badge', u.is_superuser ? 'badge-admin' : (u.role === 'executive' ? 'badge-executive' : u.role === 'dept_leader' ? 'badge-dept-leader' : 'badge-user')]">
+                          {{ u.is_superuser ? '超级管理员' : (u.role === 'executive' ? '高管' : u.role === 'dept_leader' ? '部长' : '部员') }}
                         </span>
                         <span :class="['admin-badge', u.is_active ? 'badge-ok' : 'badge-disabled']">
                           {{ u.is_active ? '活跃' : '停用' }}
                         </span>
                       </div>
+                      <select
+                        v-if="!u.is_superuser"
+                        :value="u.role || 'staff'"
+                        class="admin-role-select"
+                        @change="onUserRoleChange(u, $event.target.value)"
+                      >
+                        <option value="staff">部员</option>
+                        <option value="dept_leader">部长</option>
+                        <option value="executive">高管</option>
+                      </select>
                     </td>
                     <td class="admin-cell-muted admin-cell-center">{{ formatDate(u.created_at) }}</td>
                     <td class="text-right">
@@ -174,6 +217,43 @@
                 </tbody>
               </table>
               <p v-if="!filteredUserList.length" class="admin-empty">暂无用户</p>
+            </div>
+
+            <!-- 添加成员弹窗 -->
+            <div v-if="showDeptMemberModal" class="modal">
+              <div class="card user-modal-card">
+                <h3>添加部门成员</h3>
+                <div class="user-modal-grid">
+                  <div class="form-group">
+                    <label>姓名 / 用户名 <span class="label-opt">必填</span></label>
+                    <input v-model="deptNewUserUsername" placeholder="如 张三" />
+                  </div>
+                  <div class="form-group">
+                    <label>邮箱（用于登录） <span class="label-opt">必填</span></label>
+                    <input v-model="deptNewUserEmail" type="email" placeholder="如 user@example.com" />
+                  </div>
+                  <div class="form-group">
+                    <label>密码 <span class="label-opt">必填</span></label>
+                    <input
+                      v-model="deptNewUserPassword"
+                      type="password"
+                      placeholder="8+ 位，含大小写、数字、特殊字符"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label>角色 <span class="label-opt">必填</span></label>
+                    <select v-model="deptNewUserRole" class="admin-select">
+                      <option value="staff">部员</option>
+                      <option value="dept_leader">部门负责人</option>
+                    </select>
+                  </div>
+                </div>
+                <p v-if="err" class="text-danger">{{ err }}</p>
+                <div class="modal-actions">
+                  <button class="primary" @click="createDeptMember">创建成员</button>
+                  <button @click="closeDeptMemberModal">取消</button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -244,6 +324,150 @@
               <p v-else-if="!filteredDeptTreeForTable?.length" class="admin-empty">
                 未找到匹配「{{ sysSearchKeyword }}」的部门。
               </p>
+            </div>
+
+          </div>
+
+          <!-- 部门回收站（部门负责人 + 管理员） -->
+          <div v-if="subTab === 'dept-trash'" class="admin-page">
+            <div class="admin-page-header">
+              <div>
+                <h2 class="admin-page-title">部门回收站</h2>
+                <p class="admin-page-desc">
+                  本部门所有部门库的删除记录（仅部门负责人和管理员可见），30 天后自动彻底删除。
+                </p>
+              </div>
+            </div>
+            <div class="card admin-table-wrap">
+              <p v-if="deptTrashLoading" class="admin-empty">加载中...</p>
+              <div v-else-if="deptTrashList.length" class="admin-table-scroll">
+                <table class="admin-table">
+                  <thead>
+                    <tr>
+                      <th>用户账号</th>
+                      <th>类型</th>
+                      <th>所在库</th>
+                      <th>原始路径</th>
+                      <th>删除时间</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="f in deptTrashList" :key="f.id" class="admin-table-row">
+                      <td>{{ f.username || '-' }}</td>
+                      <td>文件</td>
+                      <td>{{ f.library_name || '-' }}</td>
+                      <td>{{ f.path || '-' }}</td>
+                      <td>{{ formatDate(f.deleted_at) }}</td>
+                      <td>
+                        <button
+                          type="button"
+                          class="admin-btn-secondary"
+                          @click="restoreDeptTrashItem(f)"
+                        >
+                          恢复
+                        </button>
+                        <button
+                          type="button"
+                          class="admin-btn-danger"
+                          @click="permDeleteDeptTrashItem(f)"
+                        >
+                          永久删除
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p v-else class="admin-empty">本部门暂无删除记录。</p>
+            </div>
+          </div>
+
+          <!-- 部门成员管理（部门负责人视角，范围仅限本部门） -->
+          <div v-if="subTab === 'dept-members'" class="admin-page">
+            <div class="admin-page-header">
+              <div>
+                <h2 class="admin-page-title">部门成员</h2>
+                <p class="admin-page-desc">
+                  仅管理当前登录用户所属部门的成员，不能移除系统管理员或自己。
+                </p>
+              </div>
+              <button type="button" class="admin-btn-primary" @click="openDeptMemberModal">
+                <Icons name="plus" class="admin-btn-icon" />
+                添加成员
+              </button>
+            </div>
+
+            <div class="card admin-table-wrap">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>姓名</th>
+                    <th>邮箱</th>
+                    <th>角色</th>
+                    <th class="text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="u in deptMembers" :key="u.id">
+                    <td>{{ u.username || ('用户 #' + u.id) }}</td>
+                    <td>{{ u.email || '-' }}</td>
+                    <td>
+                      <span class="badge">
+                        {{ u.role === 'dept_leader' ? '部门负责人' : '部员' }}
+                      </span>
+                    </td>
+                    <td class="text-right">
+                      <button
+                        v-if="!u.is_superuser && u.id !== me?.id"
+                        type="button"
+                        class="admin-action-btn danger"
+                        @click="removeDeptMember(u)"
+                      >
+                        移出部门
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-if="!deptMembers.length" class="admin-empty">本部门暂无成员。</p>
+            </div>
+
+            <!-- 添加成员弹窗 -->
+            <div v-if="showDeptMemberModal" class="modal">
+              <div class="card user-modal-card">
+                <h3>添加部门成员</h3>
+                <div class="user-modal-grid">
+                  <div class="form-group">
+                    <label>姓名 / 用户名 <span class="label-opt">必填</span></label>
+                    <input v-model="deptNewUserUsername" placeholder="如 张三" />
+                  </div>
+                  <div class="form-group">
+                    <label>邮箱（用于登录） <span class="label-opt">必填</span></label>
+                    <input v-model="deptNewUserEmail" type="email" placeholder="如 user@example.com" />
+                  </div>
+                  <div class="form-group">
+                    <label>密码 <span class="label-opt">必填</span></label>
+                    <input
+                      v-model="deptNewUserPassword"
+                      type="password"
+                      placeholder="8+ 位，含大小写、数字、特殊字符"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label>角色 <span class="label-opt">必填</span></label>
+                    <select v-model="deptNewUserRole" class="admin-select">
+                      <option value="staff">部员</option>
+                      <option value="dept_leader">部门负责人</option>
+                    </select>
+                  </div>
+                </div>
+                <p v-if="err" class="text-danger">{{ err }}</p>
+                <div class="modal-actions">
+                  <button class="primary" @click="createDeptMember">创建成员</button>
+                  <button @click="closeDeptMemberModal">取消</button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -734,6 +958,136 @@
             </div>
           </div>
 
+          <!-- 部门系统日志（部门负责人） -->
+          <div v-if="subTab === 'dept-audit'" class="admin-page">
+            <div class="admin-page-header">
+              <div>
+                <h2 class="admin-page-title">部门日志</h2>
+                <p class="admin-page-desc">仅展示当前部门内用户产生的操作记录。</p>
+              </div>
+            </div>
+
+            <!-- 过滤和操作栏（复用系统日志 UI） -->
+            <div class="card audit-toolbar">
+              <div class="audit-toolbar-inner">
+                <div class="audit-filters-left">
+                  <div class="audit-search">
+                    <input
+                      v-model="auditSearch"
+                      type="text"
+                      placeholder="搜索用户、操作或详情..."
+                      class="audit-search-input"
+                    />
+                  </div>
+
+                  <select v-model="auditActionFilter" class="audit-select">
+                    <option value="all">全部操作</option>
+                    <option value="file">文件操作</option>
+                    <option value="user">用户管理</option>
+                    <option value="share">分享操作</option>
+                    <option value="permission">权限变更</option>
+                    <option value="login">登录日志</option>
+                    <option value="system">系统操作</option>
+                  </select>
+
+                  <select v-model="auditStatusFilter" class="audit-select">
+                    <option value="all">全部状态</option>
+                    <option value="success">成功</option>
+                    <option value="failed">失败</option>
+                  </select>
+
+                  <input
+                    v-model="auditStartDate"
+                    type="date"
+                    class="audit-date-input"
+                  />
+                  <input
+                    v-model="auditEndDate"
+                    type="date"
+                    class="audit-date-input"
+                  />
+
+                  <button type="button" class="admin-btn-secondary" @click="refreshDeptAuditFirstPage">
+                    查询
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 日志列表 -->
+            <div class="card audit-table-wrap">
+              <div class="audit-table-scroll">
+                <table class="audit-table">
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>用户</th>
+                      <th>部门</th>
+                      <th>操作</th>
+                      <th>目标</th>
+                      <th>IP 地址</th>
+                      <th>状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="log in filteredDeptAuditList"
+                      :key="log.id"
+                      class="audit-row"
+                    >
+                      <td class="audit-cell-muted">
+                        {{ formatDate(log.created_at) }}
+                      </td>
+                      <td class="audit-cell-strong">
+                        {{ log.username || '-' }}
+                      </td>
+                      <td class="audit-cell">
+                        {{ log.department_name || '-' }}
+                      </td>
+                      <td class="audit-cell audit-cell-op">
+                        <span
+                          :class="['audit-tag', auditActionTagClass(log)]"
+                        >
+                          {{ formatAuditActionLabel(log) }}
+                        </span>
+                      </td>
+                      <td class="audit-cell">
+                        {{ formatAuditDetailLabel(log) }}
+                      </td>
+                      <td class="audit-cell-muted">
+                        {{ log.ip_address || '-' }}
+                      </td>
+                      <td class="audit-cell">
+                        <span :class="['audit-status', auditStatusClass(log)]">
+                          {{ formatAuditStatusLabel(log) }}
+                        </span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="audit-pagination">
+                <button
+                  type="button"
+                  class="admin-btn-secondary"
+                  :disabled="deptAuditPage <= 1"
+                  @click="goPrevDeptAuditPage"
+                >
+                  上一页
+                </button>
+                <span class="audit-page-indicator">第 {{ deptAuditPage }} 页</span>
+                <button
+                  type="button"
+                  class="admin-btn-secondary"
+                  :disabled="!deptAuditHasMore"
+                  @click="goNextDeptAuditPage"
+                >
+                  下一页
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- 通知设置 / 通知管理 -->
           <div v-if="subTab === 'notify'" class="admin-page">
             <div class="admin-page-header">
@@ -1026,6 +1380,70 @@
               </div>
             </div>
           </div>
+
+          <!-- 全局回收站 -->
+          <div v-if="subTab === 'global-trash'" class="admin-page">
+            <div class="admin-page-header">
+              <div>
+                <h2 class="admin-page-title">全局回收站</h2>
+                <p class="admin-page-desc">全平台所有文件库的删除记录，30 天后自动彻底删除</p>
+              </div>
+            </div>
+            <!-- 操作结果提示条（与表格同时存在，不互斥） -->
+            <div v-if="globalTrashMessage" class="admin-global-trash-toast admin-global-trash-toast-success">
+              {{ globalTrashMessage }}
+            </div>
+            <div v-if="globalTrashError" class="admin-global-trash-toast admin-global-trash-toast-error">
+              {{ globalTrashError }}
+            </div>
+            <div class="card admin-table-wrap">
+              <p v-if="globalTrashLoading" class="admin-empty">加载中...</p>
+              <div v-else-if="globalTrashList.length" class="admin-table-scroll">
+                <table class="admin-table">
+                  <thead>
+                  <tr>
+                    <th>用户账号</th>
+                    <th>类型</th>
+                    <th>名称</th>
+                    <th>所在库</th>
+                    <th>原始路径</th>
+                    <th>删除时间</th>
+                    <th>操作</th>
+                  </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="f in globalTrashList" :key="f.type + '-' + f.id" class="admin-table-row">
+                      <td>{{ f.username || '-' }}</td>
+                      <td>{{ f.type === 'library' ? '文件库' : '文件' }}</td>
+                      <td>{{ f.type === 'library' ? (f.library_name || ('文件库 #' + f.id)) : (f.path && f.path.split('/').pop()) }}</td>
+                      <td>{{ f.type === 'library' ? '-' : (f.library_name || '-') }}</td>
+                      <td>{{ f.type === 'library' ? '-' : (f.path || '-') }}</td>
+                      <td>{{ formatDate(f.deleted_at) }}</td>
+                      <td>
+                        <template v-if="f.type === 'library'">
+                          <button type="button" class="admin-btn-secondary" @click="restoreGlobalLibrary(f)">
+                            恢复
+                          </button>
+                          <button type="button" class="admin-btn-danger" @click="permDeleteGlobalLibrary(f)">
+                            永久删除
+                          </button>
+                        </template>
+                        <template v-else>
+                          <button type="button" class="admin-btn-secondary" @click="restoreGlobalTrashItem(f)">
+                            恢复
+                          </button>
+                          <button type="button" class="admin-btn-danger" @click="permDeleteGlobalTrashItem(f)">
+                            永久删除
+                          </button>
+                        </template>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p v-else class="admin-empty">暂无删除记录</p>
+            </div>
+          </div>
         </main>
       </div>
     </template>
@@ -1180,11 +1598,18 @@
             </select>
           </div>
           <div class="form-group">
-            <label>角色 <span class="label-opt">选填</span></label>
-            <select v-model="newUserRole" class="admin-select">
-              <option value="user">普通用户</option>
-              <option value="admin">管理员</option>
+            <label>权限角色 <span class="label-opt">选填</span></label>
+            <select v-model="newUserRoleStaff" class="admin-select">
+              <option value="staff">部员</option>
+              <option value="dept_leader">部长</option>
+              <option value="executive">高管</option>
             </select>
+          </div>
+          <div class="form-group">
+            <label class="admin-checkbox-label">
+              <input v-model="newUserIsSuperuser" type="checkbox" />
+              系统管理员（超级管理员）
+            </label>
           </div>
         </div>
         <p v-if="err" class="text-danger">{{ err }}</p>
@@ -1252,6 +1677,11 @@ const auditPage = ref(1)
 const auditPageSize = 50
 const auditHasMore = ref(false)
 
+// 部门日志分页
+const deptAuditPage = ref(1)
+const deptAuditPageSize = 50
+const deptAuditHasMore = ref(false)
+
 const storageInnerTab = ref('departments')
 const storageSearchKeyword = ref('')
 const storageDeptStatus = ref('all')
@@ -1263,6 +1693,12 @@ const notifyTemplates = ref([])
 const notifyHistory = ref([])
 const notifySettings = ref([])
 const showSendDialog = ref(false)
+
+// 全局回收站
+const globalTrashList = ref([])
+const globalTrashLoading = ref(false)
+const globalTrashMessage = ref('')
+const globalTrashError = ref('')
 const sendingNotify = ref(false)
 const sendForm = ref({
   title: '',
@@ -1270,6 +1706,10 @@ const sendForm = ref({
   target: 'all',
   channels: ['system'],
 })
+
+// 部门回收站
+const deptTrashList = ref([])
+const deptTrashLoading = ref(false)
 
 // 部门弹窗相关
 const showAddRootDept = ref(false)
@@ -1297,7 +1737,8 @@ const newUserEmail = ref('')
 const newUserUsername = ref('')
 const newUserPassword = ref('')
 const newUserDeptId = ref(null)
-const newUserRole = ref('user')
+const newUserRoleStaff = ref('staff')  // staff | dept_leader | executive
+const newUserIsSuperuser = ref(false)
 
 // 重置密码相关
 const showResetPassword = ref(false)
@@ -1306,6 +1747,14 @@ const resetPasswordInput = ref('')
 const resetPasswordError = ref('')
 
 const err = ref('')
+
+// 部门成员管理（部门负责人视角）
+const deptMembers = ref([])
+const showDeptMemberModal = ref(false)
+const deptNewUserEmail = ref('')
+const deptNewUserUsername = ref('')
+const deptNewUserPassword = ref('')
+const deptNewUserRole = ref('staff') // staff | dept_leader
 
 const sysSearchPlaceholder = computed(() => {
   if (subTab.value === 'users') return '搜索用户、邮箱...'
@@ -1631,6 +2080,23 @@ const filteredAuditList = computed(() => {
   })
 })
 
+const filteredDeptAuditList = computed(() => {
+  const kw = (auditSearch.value || '').trim().toLowerCase()
+  return (auditList.value || []).filter(log => {
+    const type = auditInferType(log)
+    const matchesAction = auditActionFilter.value === 'all' || type === auditActionFilter.value
+    const matchesStatus = auditStatusFilter.value === 'all' || auditStatusFilter.value === 'success'
+    const text =
+      (log.username || '') +
+      (log.action || '') +
+      (log.detail || '') +
+      (log.resource_type || '') +
+      (log.resource_id || '')
+    const matchesSearch = !kw || text.toLowerCase().includes(kw)
+    return matchesAction && matchesStatus && matchesSearch
+  })
+})
+
 const totalFileCountDisplay = computed(() => {
   if (!fileTypeStorage.value?.length) return '0'
   const total = fileTypeStorage.value.reduce((sum, s) => sum + (s.count || 0), 0)
@@ -1663,6 +2129,121 @@ async function loadNotifyAll() {
     notifySettings.value = sets || []
   } catch (e) {
     console.error(e)
+  }
+}
+
+async function loadGlobalTrash() {
+  globalTrashLoading.value = true
+  try {
+    globalTrashList.value = await api.listGlobalTrash()
+  } catch (e) {
+    globalTrashError.value = _globalTrashErrMsg(e) || '加载全局回收站失败'
+    globalTrashList.value = []
+  } finally {
+    globalTrashLoading.value = false
+  }
+}
+
+async function loadDeptTrashAdmin() {
+  if (!me.value?.department_id) {
+    deptTrashList.value = []
+    return
+  }
+  deptTrashLoading.value = true
+  try {
+    deptTrashList.value = await api.listDeptTrash(me.value.department_id)
+  } catch (e) {
+    // 部门负责人视角：若接口报错，仅在表内提示为空即可
+    // eslint-disable-next-line no-console
+    console.error('loadDeptTrashAdmin error', e)
+    deptTrashList.value = []
+  } finally {
+    deptTrashLoading.value = false
+  }
+}
+
+function _globalTrashErrMsg(e) {
+  const d = e?.response?.data?.detail
+  const msg = Array.isArray(d) ? d[0] : (d ?? e?.message ?? (typeof e === 'string' ? e : ''))
+  return (msg && (typeof msg === 'string' ? msg : msg?.msg ?? String(msg))) || '操作失败'
+}
+
+async function restoreGlobalTrashItem(item) {
+  globalTrashMessage.value = ''
+  globalTrashError.value = ''
+  try {
+    await api.restoreFile(item.id)
+    globalTrashMessage.value = '文件已恢复'
+    await loadGlobalTrash()
+    setTimeout(() => { globalTrashMessage.value = '' }, 3000)
+  } catch (e) {
+    globalTrashError.value = _globalTrashErrMsg(e)
+    setTimeout(() => { globalTrashError.value = '' }, 5000)
+  }
+}
+
+async function permDeleteGlobalTrashItem(item) {
+  if (!confirm('确定从回收站彻底删除？此操作不可恢复。')) return
+  globalTrashMessage.value = ''
+  globalTrashError.value = ''
+  try {
+    await api.permanentDelete(item.id)
+    globalTrashMessage.value = '文件已彻底删除'
+    await loadGlobalTrash()
+    setTimeout(() => { globalTrashMessage.value = '' }, 3000)
+  } catch (e) {
+    globalTrashError.value = _globalTrashErrMsg(e)
+    setTimeout(() => { globalTrashError.value = '' }, 5000)
+  }
+}
+
+async function restoreGlobalLibrary(item) {
+  globalTrashMessage.value = ''
+  globalTrashError.value = ''
+  try {
+    await api.restoreLibrary(item.id)
+    globalTrashMessage.value = '文件库已恢复'
+    await loadGlobalTrash()
+    setTimeout(() => { globalTrashMessage.value = '' }, 3000)
+  } catch (e) {
+    globalTrashError.value = _globalTrashErrMsg(e)
+    setTimeout(() => { globalTrashError.value = '' }, 5000)
+  }
+}
+
+async function permDeleteGlobalLibrary(item) {
+  if (!confirm('确定从回收站彻底删除该文件库？此操作不可恢复。')) return
+  globalTrashMessage.value = ''
+  globalTrashError.value = ''
+  try {
+    await api.permanentDeleteLibrary(item.id)
+    globalTrashMessage.value = '文件库已彻底删除'
+    await loadGlobalTrash()
+    setTimeout(() => { globalTrashMessage.value = '' }, 3000)
+  } catch (e) {
+    globalTrashError.value = _globalTrashErrMsg(e)
+    setTimeout(() => { globalTrashError.value = '' }, 5000)
+  }
+}
+
+async function restoreDeptTrashItem(item) {
+  try {
+    await api.restoreFile(item.id)
+    await loadDeptTrashAdmin()
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('restoreDeptTrashItem error', e)
+  }
+}
+
+async function permDeleteDeptTrashItem(item) {
+  if (!confirm('确定从回收站彻底删除？此操作不可恢复。')) return
+  try {
+    await api.permanentDelete(item.id)
+    await loadDeptTrashAdmin()
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('permDeleteDeptTrashItem error', e)
   }
 }
 
@@ -1821,16 +2402,29 @@ function goBackHome() {
 }
 
 function switchTab(name) {
-  // 非超级管理员（如部门负责人）仅允许访问「部门管理」
-  if (!me.value?.is_superuser && name !== 'departments') {
+  // 非超级管理员（如部门负责人）仅允许访问「部门成员」「部门回收站」「部门日志」
+  if (
+    !me.value?.is_superuser &&
+    name !== 'dept-members' &&
+    name !== 'dept-trash' &&
+    name !== 'dept-audit'
+  ) {
     return
   }
   subTab.value = name
   if (name === 'users') loadUsers()
   if (name === 'departments') loadDepartments()
+  if (name === 'dept-members') loadDeptMembers()
+  if (name === 'dept-trash') loadDeptTrashAdmin()
+  if (name === 'dept-audit') refreshDeptAuditFirstPage()
   if (name === 'storage') loadStorageAll()
   if (name === 'audit') loadAudit()
   if (name === 'notify') loadNotifyAll()
+  if (name === 'global-trash') {
+    globalTrashMessage.value = ''
+    globalTrashError.value = ''
+    loadGlobalTrash()
+  }
 }
 
 async function loadStorageStats() {
@@ -1893,6 +2487,25 @@ async function loadDepartments() {
   } catch (e) {
     deptTreeForTable.value = []
   }
+  // 部门负责人或有部门的管理员：顺便刷新本部门成员列表
+  if (me.value?.department_id && (me.value?.is_superuser || me.value?.is_department_leader)) {
+    await loadDeptMembers()
+  }
+}
+
+async function loadDeptMembers() {
+  // 仅当当前用户绑定了部门时才加载成员列表；管理员无部门则不在此视图管理成员
+  if (!me.value?.department_id) {
+    deptMembers.value = []
+    return
+  }
+  try {
+    deptMembers.value = await api.listDepartmentMembersManage(me.value.department_id)
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error(e)
+    deptMembers.value = []
+  }
 }
 
 async function loadAudit() {
@@ -1909,6 +2522,39 @@ async function loadAudit() {
   } catch (e) {
     err.value = e.message
   }
+}
+
+async function loadDeptAudit() {
+  try {
+    const params = {
+      limit: deptAuditPageSize,
+      offset: (deptAuditPage.value - 1) * deptAuditPageSize,
+    }
+    if (auditStartDate.value) params.start_date = auditStartDate.value
+    if (auditEndDate.value) params.end_date = auditEndDate.value
+    const logs = await api.listDepartmentAuditLogs(params)
+    auditList.value = logs || []
+    deptAuditHasMore.value = (logs || []).length === deptAuditPageSize
+  } catch (e) {
+    err.value = e.message
+  }
+}
+
+function refreshDeptAuditFirstPage() {
+  deptAuditPage.value = 1
+  loadDeptAudit()
+}
+
+function goPrevDeptAuditPage() {
+  if (deptAuditPage.value <= 1) return
+  deptAuditPage.value -= 1
+  loadDeptAudit()
+}
+
+function goNextDeptAuditPage() {
+  if (!deptAuditHasMore.value) return
+  deptAuditPage.value += 1
+  loadDeptAudit()
 }
 
 function refreshAuditFirstPage() {
@@ -2110,6 +2756,17 @@ async function toggleUserActive(u) {
   }
 }
 
+async function onUserRoleChange(u, role) {
+  if (role === (u.role || 'staff')) return
+  err.value = ''
+  try {
+    await api.updateUser(u.id, { role })
+    await loadUsers()
+  } catch (e) {
+    err.value = e.message
+  }
+}
+
 async function resetUserPassword(u) {
   resettingUser.value = u
   resetPasswordInput.value = ''
@@ -2157,7 +2814,8 @@ function closeCreateUser() {
   newUserUsername.value = ''
   newUserPassword.value = ''
   newUserDeptId.value = null
-  newUserRole.value = 'user'
+  newUserRoleStaff.value = 'staff'
+  newUserIsSuperuser.value = false
   err.value = ''
 }
 
@@ -2176,16 +2834,96 @@ async function doCreateUserModal() {
     return
   }
   try {
-    const isSuper = newUserRole.value === 'admin'
     const deptId = newUserDeptId.value ? Number(newUserDeptId.value) : null
-    await api.createUser(newUserEmail.value.trim(), newUserUsername.value.trim(), newUserPassword.value, isSuper, deptId)
+    const role = newUserRoleStaff.value || 'staff'
+    await api.createUser(
+      newUserEmail.value.trim(),
+      newUserUsername.value.trim(),
+      newUserPassword.value,
+      newUserIsSuperuser.value,
+      deptId,
+      role,
+    )
     showCreateUser.value = false
     newUserEmail.value = ''
     newUserUsername.value = ''
     newUserPassword.value = ''
     newUserDeptId.value = null
-    newUserRole.value = 'user'
+    newUserRoleStaff.value = 'staff'
+    newUserIsSuperuser.value = false
     await loadUsers()
+  } catch (e) {
+    err.value = e.message
+  }
+}
+
+function openDeptMemberModal() {
+  deptNewUserEmail.value = ''
+  deptNewUserUsername.value = ''
+  deptNewUserPassword.value = ''
+  deptNewUserRole.value = 'staff'
+  err.value = ''
+  showDeptMemberModal.value = true
+}
+
+function closeDeptMemberModal() {
+  showDeptMemberModal.value = false
+  err.value = ''
+}
+
+function _checkStrongPasswordDept(pwd) {
+  if (pwd.length < 8) return '密码至少8位'
+  if (!/[A-Z]/.test(pwd)) return '密码须包含至少1个大写字母'
+  if (!/[a-z]/.test(pwd)) return '密码须包含至少1个小写字母'
+  if (!/\d/.test(pwd)) return '密码须包含至少1个数字'
+  if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/.test(pwd)) return '密码须包含至少1个特殊字符'
+  return ''
+}
+
+async function createDeptMember() {
+  err.value = ''
+  if (!deptNewUserEmail.value.trim()) {
+    err.value = '请填写邮箱（用于登录）'
+    return
+  }
+  if (!deptNewUserUsername.value.trim()) {
+    err.value = '请填写用户名（用于显示）'
+    return
+  }
+  if (!deptNewUserPassword.value) {
+    err.value = '请填写密码'
+    return
+  }
+  const pwdErr = _checkStrongPasswordDept(deptNewUserPassword.value)
+  if (pwdErr) {
+    err.value = pwdErr
+    return
+  }
+  if (!me.value?.department_id) {
+    err.value = '当前账号未绑定部门，无法创建成员'
+    return
+  }
+  try {
+    await api.createDepartmentMember(me.value.department_id, {
+      email: deptNewUserEmail.value.trim(),
+      username: deptNewUserUsername.value.trim(),
+      password: deptNewUserPassword.value,
+      role: deptNewUserRole.value,
+    })
+    showDeptMemberModal.value = false
+    await loadDeptMembers()
+  } catch (e) {
+    err.value = e.message
+  }
+}
+
+async function removeDeptMember(u) {
+  if (!me.value?.department_id || !u?.id) return
+  if (!confirm(`确定将成员「${u.username || u.email || ('用户 #' + u.id)}」移出本部门？`)) return
+  err.value = ''
+  try {
+    await api.removeDepartmentMember(me.value.department_id, u.id)
+    await loadDeptMembers()
   } catch (e) {
     err.value = e.message
   }
@@ -2218,7 +2956,10 @@ onMounted(async () => {
   // 部门负责人：仅加载部门管理相关数据，默认停留在「部门管理」标签
   if (me.value?.is_department_leader) {
     subTab.value = 'departments'
-    await loadDepartments()
+    await Promise.all([
+      loadDepartments(),
+      loadDeptMembers(),
+    ])
     return
   }
 
@@ -3124,6 +3865,21 @@ onMounted(async () => {
   height: 16px;
 }
 
+.admin-btn-danger {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid #dc2626;
+  background: #fff;
+  color: #dc2626;
+  font-size: 13px;
+  cursor: pointer;
+  margin-left: 8px;
+}
+
+.admin-btn-danger:hover {
+  background: #fef2f2;
+}
+
 .admin-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3294,6 +4050,32 @@ onMounted(async () => {
   color: #4b5563;
 }
 
+.badge-executive {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.badge-dept-leader {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.admin-role-select {
+  margin-top: 4px;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.admin-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: normal;
+  cursor: pointer;
+}
+
 .badge-ok {
   background: #ecfdf3;
   color: #16a34a;
@@ -3323,6 +4105,24 @@ onMounted(async () => {
   background: none;
   color: #2563eb;
   padding-inline: 4px;
+}
+
+.admin-global-trash-toast {
+  margin-bottom: 12px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.admin-global-trash-toast-success {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #86efac;
+}
+.admin-global-trash-toast-error {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
 }
 
 .admin-empty {

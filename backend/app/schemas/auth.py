@@ -30,6 +30,7 @@ class UserCreate(UserBase):
     email: EmailStr = Field(..., description="邮箱，登录时必填")
     password: str = Field(..., min_length=8, max_length=128)
     is_superuser: bool = False  # 仅管理员创建账号时可指定
+    role: str = "staff"  # staff | dept_leader | executive
     department_id: Optional[int] = None
 
     @field_validator("password")
@@ -42,6 +43,7 @@ class UserRead(UserBase):
     id: int
     is_active: bool
     is_superuser: bool
+    role: str = "staff"
     created_at: datetime
     department_id: Optional[int] = None
     department_name: Optional[str] = None
@@ -62,10 +64,11 @@ class ChangePassword(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    """管理员更新用户：禁用/启用、重置密码、所属部门"""
+    """管理员更新用户：禁用/启用、重置密码、所属部门、角色"""
     is_active: Optional[bool] = None
     new_password: Optional[str] = Field(None, min_length=8, max_length=128)
     department_id: Optional[int] = None
+    role: Optional[str] = None  # staff | dept_leader | executive
 
     @field_validator("new_password")
     @classmethod

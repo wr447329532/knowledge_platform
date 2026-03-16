@@ -29,12 +29,14 @@ def _user_to_read(user: User, is_superuser_override: bool | None = None) -> User
     is_superuser = is_superuser_override if is_superuser_override is not None else (user.username == "admin" or user.is_superuser)
     email = user.email if user.email and user.email not in ("admin@local", "admin@localhost") else "admin@example.com"
     dept_name = user.department.name if getattr(user, "department", None) and user.department else None
+    role = getattr(user, "role", "staff")
     return UserRead(
         id=user.id,
         username=user.username,
         email=email,
         is_active=user.is_active,
         is_superuser=is_superuser,
+        role=role,
         created_at=user.created_at,
         department_id=user.department_id,
         department_name=dept_name,
@@ -132,12 +134,16 @@ def register(
         dept = db.query(Department).filter(Department.id == user_in.department_id).first()
         if not dept:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="所选部门不存在")
+    role = getattr(user_in, "role", "staff") or "staff"
+    if role not in ("staff", "dept_leader", "executive"):
+        role = "staff"
     user = User(
         username=user_in.username,
         email=user_in.email,
         hashed_password=get_password_hash(user_in.password),
         is_active=True,
         is_superuser=user_in.is_superuser,
+        role=role,
         department_id=user_in.department_id,
     )
     db.add(user)
@@ -281,6 +287,20 @@ def update_user(
             "user",
             user.id,
             f"department_id={user.department_id}",
+            ip_address=get_client_ip(request),
+        )
+    if body.role is not None:
+        if body.role not in ("staff", "dept_leader", "executive"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="角色取值须为 staff、dept_leader 或 executive")
+        user.role = body.role
+        log_audit(
+            db,
+            current_user.id,
+            current_user.username,
+            "update_user",
+            "user",
+            user.id,
+            f"role={body.role}",
             ip_address=get_client_ip(request),
         )
     db.commit()

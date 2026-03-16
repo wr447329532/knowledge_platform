@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, Q
 from fastapi.responses import FileResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_user
@@ -45,6 +46,23 @@ class FileRead(BaseModel):
 
 class FileTrashRead(FileRead):
     deleted_at: datetime
+    library_name: Optional[str] = None
+    username: Optional[str] = None  # 删除人（若无则回退为文件创建人/库拥有者）
+
+
+class GlobalTrashItem(BaseModel):
+    """全局回收站条目：既包含文件也包含文件库"""
+
+    id: int
+    type: Literal["file", "library"]
+    library_id: Optional[int] = None
+    library_name: Optional[str] = None
+    username: Optional[str] = None  # 删除人（若无则回退为文件创建人/库拥有者）
+    path: Optional[str] = None
+    is_dir: Optional[bool] = None
+    deleted_at: datetime
+    can_restore: bool = True
+    can_delete: bool = True
 
 
 class FileVersionRead(BaseModel):
@@ -112,6 +130,29 @@ def _ensure_storage_root() -> Path:
 def _get_library_and_check(db: Session, library_id: int, user: User, require_write: bool = False) -> Library:
     """获取资料库并校验访问权限。require_write=True 时需读写权限。"""
     lib, _ = has_library_access(db, library_id, user, require_write=require_write)
+    return lib
+
+
+def _check_trash_permission(db: Session, library_id: int, user: User) -> Library:
+    """
+    回收站权限：仅允许库所有者（私人库）或部门负责人（部门库/公开库）操作。
+    用于 list_trash / restore_file / permanent_delete，不替换其他接口的 _get_library_and_check。
+    """
+    lib = db.query(Library).filter(Library.id == library_id).first()
+    if not lib or getattr(lib, "deleted_at", None) is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料库不存在")
+    if user.is_superuser:
+        return lib
+    visibility = getattr(lib, "visibility", "private") or "private"
+    if visibility in ("private", "members"):
+        if lib.owner_id != user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="私人库回收站仅库所有者可操作")
+    else:
+        if not getattr(lib, "department_id", None):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无回收站操作权限")
+        dept = db.query(Department).filter(Department.id == lib.department_id).first()
+        if not dept or getattr(dept, "leader_user_id", None) != user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="部门库回收站仅部门负责人可操作")
     return lib
 
 
@@ -744,7 +785,7 @@ def list_trash(
     current_user: User = Depends(get_current_user),
 ):
     """列出回收站中的文件/目录，并清理超过保留期的记录。"""
-    lib = _get_library_and_check(db, library_id, current_user)
+    lib = _check_trash_permission(db, library_id, current_user)
 
     # 自动清理超过 30 天的回收站记录，避免无限占用存储
     now = datetime.now(timezone.utc)
@@ -775,6 +816,316 @@ def list_trash(
     return entries
 
 
+def _trash_cleanup_old_in_libraries(db: Session, library_ids: List[int]) -> None:
+    """清理指定库中超过 30 天的回收站记录。"""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=30)
+    if not library_ids:
+        return
+    old_entries = (
+        db.query(FileEntry)
+        .filter(
+            FileEntry.library_id.in_(library_ids),
+            FileEntry.deleted_at != None,  # noqa: E711
+            FileEntry.deleted_at < cutoff,
+        )
+        .all()
+    )
+    for e in old_entries:
+        _permanent_delete_entry(db, e)
+    if old_entries:
+        db.commit()
+
+
+@router.get("/dept-trash", response_model=List[FileTrashRead])
+def list_dept_trash(
+    dept_id: int = Query(..., description="部门 ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """部门回收站：该部门下 visibility=department/public 的库的删除文件聚合列表。仅部门负责人或超级管理员可访问。"""
+    dept = db.query(Department).filter(Department.id == dept_id).first()
+    if not dept:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
+    if not current_user.is_superuser and getattr(dept, "leader_user_id", None) != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅部门负责人可查看部门回收站")
+
+    # 该部门下仅部门库（不含个人库）；部门库 visibility 恒为 department
+    libs = (
+        db.query(Library)
+        .filter(
+            Library.department_id == dept_id,
+            Library.deleted_at.is_(None),
+            Library.visibility == "department",
+        )
+        .all()
+    )
+    lib_ids = [lib.id for lib in libs]
+    lib_names = {lib.id: getattr(lib, "name", "") or "" for lib in libs}
+
+    # 预取库拥有者用于「删除人」回退
+    owner_ids = {lib.owner_id for lib in libs if getattr(lib, "owner_id", None)}
+    owners = db.query(User).filter(User.id.in_(owner_ids)).all() if owner_ids else []
+    owner_name_map: dict[int, str] = {}
+    for u in owners:
+        owner_name_map[u.id] = u.username or u.email or f"用户{u.id}"
+
+    _trash_cleanup_old_in_libraries(db, lib_ids)
+
+    entries = (
+        db.query(FileEntry)
+        .filter(
+            FileEntry.library_id.in_(lib_ids),
+            FileEntry.deleted_at != None,  # noqa: E711
+        )
+        .order_by(FileEntry.deleted_at.desc())
+        .all()
+    )
+    # 预取文件创建人
+    creator_ids = {e.created_by_id for e in entries if getattr(e, "created_by_id", None)}
+    creators = db.query(User).filter(User.id.in_(creator_ids)).all() if creator_ids else []
+    creator_name_map: dict[int, str] = {}
+    for u in creators:
+        creator_name_map[u.id] = u.username or u.email or f"用户{u.id}"
+
+    result: list[FileTrashRead] = []
+    for e in entries:
+        # 删除人优先：创建人，其次库拥有者
+        username: Optional[str] = None
+        if getattr(e, "created_by_id", None):
+            username = creator_name_map.get(e.created_by_id)
+        if not username:
+            lib_owner_id = next((lib.owner_id for lib in libs if lib.id == e.library_id), None)
+            if lib_owner_id:
+                username = owner_name_map.get(lib_owner_id)
+
+        result.append(
+            FileTrashRead(
+                id=e.id,
+                library_id=e.library_id,
+                path=e.path,
+                is_dir=e.is_dir,
+                size=None,
+                updated_at=e.updated_at,
+                can_download=None,
+                deleted_at=e.deleted_at,
+                library_name=lib_names.get(e.library_id) or None,
+                username=username,
+            )
+        )
+    return result
+
+
+@router.get("/global-trash", response_model=List[GlobalTrashItem])
+def list_global_trash(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """全局回收站：全平台所有库的删除文件与文件库聚合列表。仅超级管理员可访问。"""
+    if not current_user.is_superuser:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅系统管理员可查看全局回收站")
+
+    # 1) 对所有库执行「文件级」回收站清理（30 天以上的回收站文件会被彻底删除）
+    all_lib_ids = [r[0] for r in db.query(Library.id).all()]
+    _trash_cleanup_old_in_libraries(db, all_lib_ids)
+
+    # 2) 全平台文件级回收站
+    file_entries = (
+        db.query(FileEntry)
+        .filter(FileEntry.deleted_at != None)  # noqa: E711
+        .order_by(FileEntry.deleted_at.desc())
+        .all()
+    )
+    lib_ids = list({e.library_id for e in file_entries})
+    libs = db.query(Library).filter(Library.id.in_(lib_ids)).all() if lib_ids else []
+    lib_names = {lib.id: getattr(lib, "name", "") or "" for lib in libs}
+    lib_owner_ids = {lib.owner_id for lib in libs if getattr(lib, "owner_id", None)}
+
+    # 预取文件创建人和库拥有者
+    creator_ids = {e.created_by_id for e in file_entries if getattr(e, "created_by_id", None)}
+    user_ids = set(creator_ids) | set(lib_owner_ids)
+    users = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+    user_name_map: dict[int, str] = {}
+    for u in users:
+        user_name_map[u.id] = u.username or u.email or f"用户{u.id}"
+
+    # 映射 library_id -> owner_id
+    lib_owner_map: dict[int, Optional[int]] = {lib.id: lib.owner_id for lib in libs}
+
+    items: list[GlobalTrashItem] = []
+    for e in file_entries:
+        username: Optional[str] = None
+        if getattr(e, "created_by_id", None):
+            username = user_name_map.get(e.created_by_id)
+        if not username:
+            owner_id = lib_owner_map.get(e.library_id)
+            if owner_id:
+                username = user_name_map.get(owner_id)
+
+        items.append(
+            GlobalTrashItem(
+                id=e.id,
+                type="file",
+                library_id=e.library_id,
+                library_name=lib_names.get(e.library_id) or None,
+                path=e.path,
+                is_dir=e.is_dir,
+                deleted_at=e.deleted_at,
+                username=username,
+                can_restore=True,
+                can_delete=True,
+            )
+        )
+
+    # 3) 全平台文件库回收站（软删除的库）
+    #    这里不重复实现 30 天清理逻辑，沿用原有 /libraries/trash 的行为即可；
+    #    超过 30 天的库会在访问 /libraries/trash 时被彻底删除。
+    deleted_libs = (
+        db.query(Library)
+        .filter(Library.deleted_at != None)  # noqa: E711
+        .all()
+    )
+    # 预取库拥有者
+    lib_owner_ids2 = {lib.owner_id for lib in deleted_libs if getattr(lib, "owner_id", None)}
+    owners2 = db.query(User).filter(User.id.in_(lib_owner_ids2)).all() if lib_owner_ids2 else []
+    owner2_name_map: dict[int, str] = {}
+    for u in owners2:
+        owner2_name_map[u.id] = u.username or u.email or f"用户{u.id}"
+
+    for lib in deleted_libs:
+        username: Optional[str] = None
+        if getattr(lib, "owner_id", None):
+            username = owner2_name_map.get(lib.owner_id)
+
+        items.append(
+            GlobalTrashItem(
+                id=lib.id,
+                type="library",
+                library_id=lib.id,
+                library_name=getattr(lib, "name", "") or None,
+                path=getattr(lib, "name", "") or None,
+                is_dir=True,
+                deleted_at=getattr(lib, "deleted_at"),
+                username=username,
+                can_restore=True,
+                can_delete=True,
+            )
+        )
+
+    # 4) 统一按删除时间倒序返回
+    items.sort(key=lambda x: x.deleted_at, reverse=True)
+    return items
+
+
+@router.get("/my-trash", response_model=List[GlobalTrashItem])
+def list_my_trash(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    我的回收站视图（主页「回收站」）：
+    - 库：当前用户拥有的所有已软删资料库
+    - 文件：任意库中由当前用户创建的已删文件，或位于当前用户拥有的库中的已删文件
+    """
+    user_id = current_user.id
+
+    items: list[GlobalTrashItem] = []
+
+    # 1) 我拥有的已软删资料库（管理员在这里也只看“自己拥有的库”）
+    my_deleted_libs = (
+        db.query(Library)
+        .filter(
+            Library.deleted_at != None,  # noqa: E711
+            Library.owner_id == user_id,
+        )
+        .all()
+    )
+    owner_username = current_user.username or current_user.email or f"用户{user_id}"
+    # 预取部门信息用于权限判断
+    dept_ids = {lib.department_id for lib in my_deleted_libs if getattr(lib, "department_id", None)}
+    depts = (
+        db.query(Department).filter(Department.id.in_(dept_ids)).all() if dept_ids else []
+    )
+    dept_leader_map: dict[int, Optional[int]] = {
+        d.id: getattr(d, "leader_user_id", None) for d in depts
+    }
+
+    def _can_manage_library_soft(lib: Library, u: User) -> bool:
+        """用于回收站权限判断的轻量版：不抛异常，仅返回布尔值。"""
+        if u.is_superuser:
+            return True
+        # 个人库：仅拥有者
+        if getattr(lib, "department_id", None) is None:
+            return lib.owner_id == u.id
+        # 部门库：仅部门负责人
+        leader_id = dept_leader_map.get(lib.department_id)
+        return leader_id is not None and leader_id == u.id
+
+    for lib in my_deleted_libs:
+        # 仅当当前用户对该库有管理权限时，才允许在个人回收站中对库执行恢复/删除
+        can_manage = _can_manage_library_soft(lib, current_user)
+        items.append(
+            GlobalTrashItem(
+                id=lib.id,
+                type="library",
+                library_id=lib.id,
+                library_name=getattr(lib, "name", "") or None,
+                path=getattr(lib, "name", "") or None,
+                is_dir=True,
+                deleted_at=getattr(lib, "deleted_at"),
+                username=owner_username,
+                can_restore=can_manage,
+                can_delete=can_manage,
+            )
+        )
+
+    # 2) 文件级回收站：
+    #    - 我拥有的库中的任意已删文件
+    #    - 或由我创建的已删文件（无论库属于谁）
+    #
+    # 为避免重复（例如「我拥有的库」里也有我创建的文件），下面用 set 去重。
+    file_rows = (
+        db.query(FileEntry, Library)
+        .join(Library, Library.id == FileEntry.library_id)
+        .filter(
+            FileEntry.deleted_at != None,  # noqa: E711
+            Library.deleted_at.is_(None),  # 库仍存在时才列出文件；库已软删的情况以库为主
+            or_(
+                Library.owner_id == user_id,
+                FileEntry.created_by_id == user_id,
+            ),
+        )
+        .all()
+    )
+
+    seen_file_ids: set[int] = set()
+    for e, lib in file_rows:
+        if e.id in seen_file_ids:
+            continue
+        seen_file_ids.add(e.id)
+        # 是否允许当前用户对该文件执行恢复/删除：沿用库级回收站权限
+        can_manage = _can_manage_library_soft(lib, current_user)
+
+        items.append(
+            GlobalTrashItem(
+                id=e.id,
+                type="file",
+                library_id=e.library_id,
+                library_name=getattr(lib, "name", "") or None,
+                path=e.path,
+                is_dir=e.is_dir,
+                deleted_at=e.deleted_at,
+                username=owner_username,
+                can_restore=can_manage,
+                can_delete=can_manage,
+            )
+        )
+
+    # 3) 统一按删除时间倒序返回
+    items.sort(key=lambda x: x.deleted_at, reverse=True)
+    return items
+
+
 @router.post("/{entry_id}/restore", response_model=FileRead)
 def restore_file(
     entry_id: int,
@@ -786,7 +1137,7 @@ def restore_file(
     entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
     if not entry or not entry.deleted_at:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="回收站中无此项")
-    _get_library_and_check(db, entry.library_id, current_user, require_write=True)
+    _check_trash_permission(db, entry.library_id, current_user)
     entry.deleted_at = None
     log_audit(
         db,
@@ -840,7 +1191,7 @@ def permanent_delete(
     entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
     if not entry or not entry.deleted_at:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="回收站中无此项")
-    _get_library_and_check(db, entry.library_id, current_user, require_write=True)
+    _check_trash_permission(db, entry.library_id, current_user)
     if entry.is_dir:
         # 先彻底删除所有在回收站中的子项（同库、路径在其下）
         prefix = entry.path.rstrip("/") + "/"

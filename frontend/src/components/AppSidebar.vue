@@ -73,6 +73,7 @@ defineProps({
   activeTab: String,
   activeDeptId: { type: Number, default: null },
   storageStats: Object,
+  trashMode: { type: String, default: 'personal' },
 })
 
 const emit = defineEmits(['nav', 'dept-select'])

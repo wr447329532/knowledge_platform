@@ -77,12 +77,12 @@ export async function login(username, password, remember = true) {
   return data
 }
 
-/** 仅管理员可调用：创建新用户（平台不支持开放注册）。邮箱必填用于登录，用户名仅用于显示。 */
-export async function createUser(email, username, password, is_superuser = false, department_id = null) {
+/** 仅管理员可调用：创建新用户（平台不支持开放注册）。邮箱必填用于登录，用户名仅用于显示。role: staff | dept_leader | executive */
+export async function createUser(email, username, password, is_superuser = false, department_id = null, role = 'staff') {
   const data = await api('/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, username, password, is_superuser, department_id }),
+    body: JSON.stringify({ email, username, password, is_superuser, department_id, role }),
   })
   return data
 }
@@ -137,11 +137,13 @@ export async function listUsersForLibrary(search = '') {
   return api(`/auth/users/active${query ? '?' + query : ''}`)
 }
 
-/** 仅管理员：更新用户（禁用/启用、重置密码） */
-export async function updateUser(userId, { is_active, new_password }) {
+/** 仅管理员：更新用户（禁用/启用、重置密码、部门、角色） */
+export async function updateUser(userId, { is_active, new_password, department_id, role }) {
   const body = {}
   if (is_active !== undefined) body.is_active = is_active
   if (new_password !== undefined) body.new_password = new_password
+  if (department_id !== undefined) body.department_id = department_id
+  if (role !== undefined) body.role = role
   return api(`/auth/users/${userId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -233,6 +235,25 @@ export async function listDepartmentLibraries(id) {
 }
 export async function listDepartmentMembers(id) {
   return api(`/departments/${id}/members`)
+}
+
+/** 部门负责人：部门成员管理 */
+export async function listDepartmentMembersManage(id) {
+  return api(`/departments/${id}/members/manage`)
+}
+
+export async function createDepartmentMember(deptId, { email, username, password, role }) {
+  return api(`/departments/${deptId}/members`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, username, password, is_superuser: false, department_id: deptId, role }),
+  })
+}
+
+export async function removeDepartmentMember(deptId, userId) {
+  return api(`/departments/${deptId}/members/${userId}`, {
+    method: 'DELETE',
+  })
 }
 export async function createDepartment(name, parentId = null, sortOrder = 0) {
   return api('/departments/', {
@@ -531,9 +552,27 @@ export async function permanentDelete(entryId) {
   return api(`/files/trash/${entryId}`, { method: 'DELETE' })
 }
 
+export async function listMyTrash() {
+  return api('/files/my-trash')
+}
+
+export async function listDeptTrash(deptId) {
+  return api(`/files/dept-trash?dept_id=${deptId}`)
+}
+
+export async function listGlobalTrash() {
+  return api('/files/global-trash')
+}
+
 export async function listAuditLogs(params = {}) {
   const q = new URLSearchParams(params).toString()
   return api(`/audit/logs${q ? '?' + q : ''}`)
+}
+
+/** 部门负责人：部门系统日志（仅本部门） */
+export async function listDepartmentAuditLogs(params = {}) {
+  const q = new URLSearchParams(params).toString()
+  return api(`/audit/dept-logs${q ? '?' + q : ''}`)
 }
 
 /** 通知 */
