@@ -422,14 +422,18 @@ async def upload_file(
     if not relative_path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="路径不能为空")
 
-    # 查找或创建 FileEntry（含回收站内同路径的，找到则恢复并追加版本）
+    # 查找或创建 FileEntry
+    # 说明：
+    # - 若同路径文件尚未删除，则在原记录上追加新版本；
+    # - 若同路径文件已在回收站中，则视为“新文件”，保留旧回收站记录，新建一条 FileEntry。
     entry: FileEntry | None = (
         db.query(FileEntry)
         .filter(FileEntry.library_id == library_id, FileEntry.path == relative_path)
         .first()
     )
     if entry and entry.deleted_at:
-        entry.deleted_at = None  # 从回收站恢复
+        # 已在回收站中的旧文件，不复用；保留旧记录，重新创建一条新的 FileEntry
+        entry = None
     if not entry:
         entry = FileEntry(
             library_id=library_id,

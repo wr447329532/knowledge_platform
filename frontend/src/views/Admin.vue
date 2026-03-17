@@ -48,7 +48,7 @@
               部门成员
             </button>
             <button
-              v-if="me?.is_department_leader || me?.is_superuser"
+              v-if="me?.is_department_leader && !me?.is_superuser"
               :class="['admin-nav-item', { active: subTab === 'dept-trash' }]"
               @click="switchTab('dept-trash')"
             >
@@ -328,13 +328,13 @@
 
           </div>
 
-          <!-- 部门回收站（部门负责人 + 管理员） -->
-          <div v-if="subTab === 'dept-trash'" class="admin-page">
+          <!-- 部门回收站（仅部门负责人） -->
+          <div v-if="subTab === 'dept-trash' && me?.is_department_leader && !me?.is_superuser" class="admin-page">
             <div class="admin-page-header">
               <div>
                 <h2 class="admin-page-title">部门回收站</h2>
                 <p class="admin-page-desc">
-                  本部门所有部门库的删除记录（仅部门负责人和管理员可见），30 天后自动彻底删除。
+                  本部门所有部门库的删除记录（仅部门负责人可见），30 天后自动彻底删除。
                 </p>
               </div>
             </div>

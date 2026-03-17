@@ -433,16 +433,45 @@
 
     <!-- 版本历史 -->
     <div v-if="showVersions" class="modal">
-      <div class="card">
+      <div class="card versions-card">
         <h3>版本历史</h3>
-        <table>
-          <thead><tr><th>版本</th><th>大小</th><th>时间</th><th>操作</th></tr></thead>
+        <div class="versions-fileinfo">
+          <span class="versions-fileinfo-label">文件名</span>
+          <span class="versions-fileinfo-text">
+            {{ versionEntryFilename || versionEntryName || '当前文件' }}
+          </span>
+        </div>
+        <table class="versions-table">
+          <thead>
+            <tr>
+              <th style="width: 60px;">版本</th>
+              <th style="width: 90px;">大小</th>
+              <th style="width: 160px;">上传时间</th>
+              <th style="width: 150px; text-align: right;">操作</th>
+            </tr>
+          </thead>
           <tbody>
             <tr v-for="v in versions" :key="v.id">
               <td>{{ v.version_no }}</td>
               <td>{{ v.size }}</td>
               <td>{{ formatDate(v.uploaded_at) }}</td>
-              <td><button @click="download(versionEntryId, v.version_no)">下载</button></td>
+              <td style="width: 150px; text-align: right;">
+                <button
+                  type="button"
+                  class="btn-small"
+                  @click.stop.prevent="download(versionEntryId, v.version_no)"
+                >
+                  下载
+                </button>
+                <button
+                  type="button"
+                  class="btn-small"
+                  style="margin-left: 8px;"
+                  @click.stop.prevent="previewVersion(v)"
+                >
+                  预览
+                </button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -737,6 +766,8 @@ const auditList = ref([])
 const showVersions = ref(false)
 const versions = ref([])
 const versionEntryId = ref(null)
+const versionEntryName = ref('')
+const versionEntryFilename = ref('')
 const fileInput = ref(null)
 const newUserEmail = ref('')
 const newUserUsername = ref('')
@@ -1051,7 +1082,11 @@ async function download(entryId, versionNo = null) {
   catch (e) { err.value = e.message }
 }
 async function openVersions(f) {
-  versionEntryId.value = f.id; versions.value = await api.listVersions(f.id); showVersions.value = true
+  versionEntryId.value = f.id
+  versionEntryName.value = f.path || f.name || ''
+  versionEntryFilename.value = (versionEntryName.value || '').split('/').pop()
+  versions.value = await api.listVersions(f.id)
+  showVersions.value = true
 }
 function onFileClick(file) { if (file.is_dir) return; openPreview(file) }
 
@@ -1071,6 +1106,21 @@ async function openPreview(f) {
   catch (e) { err.value = e.message || '预览失败' }
 }
 function closePreview() { previewUrl.value = ''; showPreview.value = false; previewText.value = ''; previewErr.value = '' }
+
+async function previewVersion(v) {
+  if (!versionEntryId.value) return
+  // 版本之间扩展名一致，直接按当前文件路径判断是否支持预览
+  if (!previewTypeOf(versionEntryName.value)) {
+    err.value = '该文件类型暂不支持预览'
+    return
+  }
+  try {
+    const url = await api.previewUrl(versionEntryId.value, v.version_no)
+    window.open(url, '_blank', 'noopener,noreferrer')
+  } catch (e) {
+    err.value = e.message || '预览失败'
+  }
+}
 
 function openRename(f) { renameEntry.value = f; renameNewPath.value = f.path; showRename.value = true; err.value = '' }
 function closeRename() { showRename.value = false; renameEntry.value = null; renameNewPath.value = ''; err.value = '' }
@@ -1887,6 +1937,49 @@ async function resetUserPassword(u) {
 .preview-img { max-width: 100%; min-height: 50vh; max-height: 82vh; object-fit: contain; }
 .preview-iframe { width: 88vw; min-width: 50vw; min-height: 50vh; height: 82vh; border: 1px solid var(--border); border-radius: 6px; }
 .preview-text { margin: 0; padding: 12px; font-family: inherit; font-size: 13px; white-space: pre-wrap; word-break: break-all; min-width: 50vw; min-height: 50vh; max-width: 85vw; max-height: 82vh; overflow: auto; background: #f8f9fa; border-radius: 6px; border: 1px solid var(--border); text-align: left; }
+.versions-card {
+  width: 560px;
+  max-width: 92vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.versions-fileinfo {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #f3f4f6;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.versions-fileinfo-label {
+  color: #9ca3af;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.versions-fileinfo-text {
+  color: #374151;
+  word-break: break-all;
+}
+.versions-card .versions-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.versions-card th,
+.versions-card td {
+  padding: 8px 10px;
+  white-space: nowrap; /* 单行显示，内容本身较短，不做截断 */
+}
+.versions-card thead {
+  position: sticky;
+  top: 0;
+  background: #f9fafb;
+  z-index: 1;
+}
 .add-member-row { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
 .members-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
 .members-table th, .members-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }

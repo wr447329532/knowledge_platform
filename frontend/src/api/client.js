@@ -503,9 +503,12 @@ export async function getPreviewToken(entryId) {
 }
 
 /** 获取预览直链 URL（含 token，用于 iframe/img src） */
-export async function previewUrl(entryId) {
+export async function previewUrl(entryId, versionNo = null) {
   const { token } = await getPreviewToken(entryId)
   let url = BASE + `/files/preview-by-token?entry_id=${entryId}&token=${encodeURIComponent(token)}`
+  if (versionNo != null) {
+    url += `&version_no=${versionNo}`
+  }
   return url
 }
 
