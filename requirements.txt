@@ -11,4 +11,6 @@ bcrypt<4.1
 pydantic
 pydantic-settings
 email-validator
+Pillow
+PyMuPDF
 

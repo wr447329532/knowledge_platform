@@ -138,9 +138,10 @@ export async function listUsersForLibrary(search = '') {
 }
 
 /** 仅管理员：更新用户（禁用/启用、重置密码、部门、角色） */
-export async function updateUser(userId, { is_active, new_password, department_id, role }) {
+export async function updateUser(userId, { is_active, is_superuser, new_password, department_id, role }) {
   const body = {}
   if (is_active !== undefined) body.is_active = is_active
+  if (is_superuser !== undefined) body.is_superuser = is_superuser
   if (new_password !== undefined) body.new_password = new_password
   if (department_id !== undefined) body.department_id = department_id
   if (role !== undefined) body.role = role
@@ -338,6 +339,11 @@ export async function getStorageStats(libraryId = null) {
   return api(url)
 }
 
+/** 获取系统总存储容量统计（仅管理员使用） */
+export async function getSystemStorageStats() {
+  return api('/files/storage/system')
+}
+
 /** 存储管理：按部门统计 */
 export async function getDepartmentStorage() {
   return api('/files/storage/departments')
@@ -510,6 +516,61 @@ export async function previewUrl(entryId, versionNo = null) {
     url += `&version_no=${versionNo}`
   }
   return url
+}
+
+// -----------------------------
+// Rendered preview (controlled)
+// -----------------------------
+
+export async function getRenderedPreviewMeta(entryId, versionNo = null) {
+  const q = new URLSearchParams({ entry_id: String(entryId) })
+  if (versionNo != null) q.set('version_no', String(versionNo))
+  return api(`/files/rendered-preview/meta?${q.toString()}`)
+}
+
+function _getTokenForRawFetch() {
+  return sessionStorage.getItem('token') || localStorage.getItem('token')
+}
+
+/** 获取受控预览图片 Blob（PDF 页图/图片水印）。page 仅对 PDF 生效 */
+export async function fetchRenderedPreviewBlob(entryId, { version_no = null, page = null } = {}) {
+  const q = new URLSearchParams({ entry_id: String(entryId) })
+  if (version_no != null) q.set('version_no', String(version_no))
+  if (page != null) q.set('page', String(page))
+  const token = _getTokenForRawFetch()
+  const res = await fetch(BASE + `/files/rendered-preview?${q.toString()}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (res.status === 401) {
+    clearToken()
+    window.location.href = '/#/login'
+    throw new Error('未登录')
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || '预览失败')
+  }
+  return res.blob()
+}
+
+/** 获取受控预览文本内容（txt/md/json 等）。 */
+export async function fetchRenderedPreviewText(entryId, versionNo = null) {
+  const q = new URLSearchParams({ entry_id: String(entryId) })
+  if (versionNo != null) q.set('version_no', String(versionNo))
+  const token = _getTokenForRawFetch()
+  const res = await fetch(BASE + `/files/rendered-preview?${q.toString()}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (res.status === 401) {
+    clearToken()
+    window.location.href = '/#/login'
+    throw new Error('未登录')
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || '预览失败')
+  }
+  return res.text()
 }
 
 /** 获取预览 Blob URL（图片/PDF），调用方用完后需 revokeObjectURL（备用） */

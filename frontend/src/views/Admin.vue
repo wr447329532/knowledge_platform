@@ -168,7 +168,7 @@
                     <th class="admin-th-center">部门</th>
                     <th class="admin-th-center">角色 / 状态</th>
                     <th class="admin-th-center">创建时间</th>
-                    <th class="text-right">操作</th>
+                    <th class="admin-th-center">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -189,29 +189,19 @@
                           {{ u.is_active ? '活跃' : '停用' }}
                         </span>
                       </div>
-                      <select
-                        v-if="!u.is_superuser"
-                        :value="u.role || 'staff'"
-                        class="admin-role-select"
-                        @change="onUserRoleChange(u, $event.target.value)"
-                      >
-                        <option value="staff">部员</option>
-                        <option value="dept_leader">部长</option>
-                        <option value="executive">高管</option>
-                      </select>
                     </td>
                     <td class="admin-cell-muted admin-cell-center">{{ formatDate(u.created_at) }}</td>
-                    <td class="text-right">
-                      <button
-                        v-if="u.id !== me?.id"
-                        type="button"
-                        class="admin-action-btn"
-                        :class="{ danger: !u.is_active }"
-                        @click="toggleUserActive(u)"
-                      >
-                        {{ u.is_active ? '停用' : '启用' }}
-                      </button>
-                      <button type="button" class="admin-action-btn link" @click="resetUserPassword(u)">重置密码</button>
+                    <td class="admin-cell-center">
+                      <div class="admin-action-cell">
+                        <button
+                          type="button"
+                          class="admin-action-btn"
+                          @click="openEditUserPermission(u)"
+                        >
+                          权限修改
+                        </button>
+                        <button type="button" class="admin-action-btn" @click="resetUserPassword(u)">重置密码</button>
+                      </div>
                     </td>
                   </tr>
                 </tbody>
@@ -736,24 +726,24 @@
                       <h3 class="admin-storage-card-title">文件类型分布（按数量）</h3>
                       <div class="admin-storage-filetype-list">
                         <div
-                          v-for="stat in fileTypeStorage"
+                          v-for="(stat, idx) in fileTypeStorage"
                           :key="'count-' + stat.type"
                           class="admin-storage-filetype-row"
                         >
                           <div class="admin-storage-filetype-meta">
-                            <span class="admin-storage-dot" />
+                            <span class="admin-storage-dot" :style="{ backgroundColor: fileTypeColor(idx) }" />
                             <span class="admin-storage-filetype-name">{{ stat.type }}</span>
+                          </div>
+                          <div class="admin-storage-bar admin-storage-bar-inline">
+                            <div
+                              class="admin-storage-bar-inner"
+                              :style="{ width: stat.percent_count.toFixed(1) + '%', backgroundColor: fileTypeColor(idx) }"
+                            />
                           </div>
                           <div class="admin-storage-filetype-values">
                             <span class="admin-storage-filetype-count">
                               {{ stat.count.toLocaleString('zh-CN') }}
                             </span>
-                          </div>
-                          <div class="admin-storage-bar">
-                            <div
-                              class="admin-storage-bar-inner"
-                              :style="{ width: stat.percent_count.toFixed(1) + '%' }"
-                            />
                           </div>
                         </div>
                       </div>
@@ -762,24 +752,24 @@
                       <h3 class="admin-storage-card-title">文件类型分布（按大小）</h3>
                       <div class="admin-storage-filetype-list">
                         <div
-                          v-for="stat in fileTypeStorage"
+                          v-for="(stat, idx) in fileTypeStorage"
                           :key="'size-' + stat.type"
                           class="admin-storage-filetype-row"
                         >
                           <div class="admin-storage-filetype-meta">
-                            <span class="admin-storage-dot" />
+                            <span class="admin-storage-dot" :style="{ backgroundColor: fileTypeColor(idx) }" />
                             <span class="admin-storage-filetype-name">{{ stat.type }}</span>
+                          </div>
+                          <div class="admin-storage-bar admin-storage-bar-inline">
+                            <div
+                              class="admin-storage-bar-inner"
+                              :style="{ width: stat.percent_size.toFixed(1) + '%', backgroundColor: fileTypeColor(idx) }"
+                            />
                           </div>
                           <div class="admin-storage-filetype-values">
                             <span class="admin-storage-filetype-count">
                               {{ stat.size_display }}
                             </span>
-                          </div>
-                          <div class="admin-storage-bar">
-                            <div
-                              class="admin-storage-bar-inner"
-                              :style="{ width: stat.percent_size.toFixed(1) + '%' }"
-                            />
                           </div>
                         </div>
                       </div>
@@ -1606,10 +1596,15 @@
             </select>
           </div>
           <div class="form-group">
-            <label class="admin-checkbox-label">
-              <input v-model="newUserIsSuperuser" type="checkbox" />
-              系统管理员（超级管理员）
-            </label>
+            <label>系统管理员</label>
+            <div class="toggle-row">
+              <span class="toggle-label">授予超级管理员权限</span>
+              <label class="toggle">
+                <input v-model="newUserIsSuperuser" type="checkbox" />
+                <span class="toggle-track" aria-hidden="true"></span>
+              </label>
+            </div>
+            <p class="admin-hint warn">谨慎开启：系统管理员可查看全局日志、管理用户与全局回收站等。</p>
           </div>
         </div>
         <p v-if="err" class="text-danger">{{ err }}</p>
@@ -1639,6 +1634,70 @@
         <div class="modal-actions">
           <button class="primary" @click="confirmResetPassword">确定</button>
           <button @click="closeResetPassword">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 权限修改 -->
+    <div v-if="showEditUserPermission" class="modal">
+      <div class="card user-modal-card">
+        <h3>权限修改</h3>
+        <p style="margin-top:8px; margin-bottom:16px; color:#6b7280; font-size:14px;">
+          用户：{{ editingUserPerm?.username }}（{{ editingUserPerm?.email || '无邮箱' }}）
+        </p>
+
+        <div class="form-group">
+          <label>系统管理员</label>
+          <div class="toggle-row">
+            <span class="toggle-label">授予超级管理员权限</span>
+            <label class="toggle">
+              <input
+                v-model="editPermIsSuperuser"
+                type="checkbox"
+                :disabled="editingUserPerm?.username === 'admin' || editingUserPerm?.id === me?.id"
+              />
+              <span class="toggle-track" aria-hidden="true"></span>
+            </label>
+          </div>
+          <p v-if="editingUserPerm?.username === 'admin'" class="admin-hint warn">内置管理员账号不允许取消系统管理员权限。</p>
+          <p v-else-if="editingUserPerm?.id === me?.id" class="admin-hint warn">为避免误操作，当前登录账号不允许在此处取消自己的系统管理员权限。</p>
+          <p v-else class="admin-hint warn">谨慎开启：系统管理员可管理全局用户、日志与回收站等。</p>
+        </div>
+
+        <div class="form-group">
+          <label>角色</label>
+          <select v-model="editPermRole" class="admin-select" :disabled="editPermIsSuperuser">
+            <option value="staff">部员</option>
+            <option value="dept_leader">部长</option>
+            <option value="executive">高管</option>
+          </select>
+          <p v-if="editPermIsSuperuser" class="admin-hint">系统管理员不再区分部员/部长/高管。</p>
+        </div>
+
+        <div class="form-group">
+          <label>账号状态</label>
+          <div class="toggle-row">
+            <span class="toggle-label">{{ editPermIsActive ? '账号已启用' : '账号已停用' }}</span>
+            <label class="toggle">
+              <input
+                v-model="editPermIsActive"
+                type="checkbox"
+                :disabled="editingUserPerm?.username === 'admin' || editingUserPerm?.id === me?.id"
+              />
+              <span class="toggle-track" aria-hidden="true"></span>
+            </label>
+          </div>
+          <p v-if="editingUserPerm?.username === 'admin'" class="admin-hint warn">内置管理员账号不允许停用。</p>
+          <p v-else-if="editingUserPerm?.id === me?.id" class="admin-hint warn">不能停用自己。</p>
+          <p v-else class="admin-hint">停用后该用户将无法登录。</p>
+        </div>
+
+        <p v-if="editUserPermError" class="text-danger">{{ editUserPermError }}</p>
+        <div class="modal-actions">
+          <button class="primary" :disabled="savingUserPerm" @click="saveUserPermission">
+            {{ savingUserPerm ? '保存中...' : '保存' }}
+          </button>
+          <button @click="closeEditUserPermission">取消</button>
         </div>
       </div>
     </div>
@@ -1745,6 +1804,15 @@ const showResetPassword = ref(false)
 const resettingUser = ref(null)
 const resetPasswordInput = ref('')
 const resetPasswordError = ref('')
+
+// 权限修改弹窗
+const showEditUserPermission = ref(false)
+const editingUserPerm = ref(null)
+const editPermRole = ref('staff')
+const editPermIsActive = ref(true)
+const editPermIsSuperuser = ref(false)
+const savingUserPerm = ref(false)
+const editUserPermError = ref('')
 
 const err = ref('')
 
@@ -1890,6 +1958,7 @@ function auditActionTagClass(log) {
   const a = (log.action || '').toLowerCase()
   if (a.includes('upload')) return 'tag-file-upload'
   if (a.includes('download')) return 'tag-file-download'
+  if (a.includes('preview_rendered') || a.includes('preview')) return 'tag-file-preview'
   if (a.includes('restore')) return 'tag-file-restore'
   if (a.includes('permanent_delete') || (a.includes('delete') && !a.includes('restore'))) return 'tag-file-delete'
   if (a.includes('rename')) return 'tag-file-rename'
@@ -1919,6 +1988,8 @@ function formatAuditActionLabel(log) {
   if (!a) return '其他操作'
   if (a.includes('upload')) return '上传文件'
   if (a.includes('download')) return '下载文件'
+  if (a.includes('preview_rendered')) return '受控预览'
+  if (a.includes('preview')) return '预览文件'
   if (a.includes('restore')) return '恢复文件'
   if (a.includes('permanent_delete')) return '彻底删除'
   if (a.includes('rename')) return '重命名'
@@ -2429,7 +2500,7 @@ function switchTab(name) {
 
 async function loadStorageStats() {
   try {
-    storageStats.value = await api.getStorageStats()
+    storageStats.value = await api.getSystemStorageStats()
   } catch (e) {
     storageStats.value = null
   }
@@ -2466,6 +2537,21 @@ async function loadFileTypeStorage() {
   } catch (e) {
     fileTypeStorage.value = []
   }
+}
+
+function fileTypeColor(idx) {
+  const palette = [
+    '#3b82f6', // blue
+    '#10b981', // green
+    '#f59e0b', // amber
+    '#ef4444', // red
+    '#8b5cf6', // violet
+    '#0ea5e9', // sky
+    '#ec4899', // pink
+    '#14b8a6', // teal
+  ]
+  if (idx == null || Number.isNaN(idx)) return palette[0]
+  return palette[idx % palette.length]
 }
 
 async function loadUsers() {
@@ -2743,27 +2829,57 @@ async function doDeleteDept(node) {
   }
 }
 
-async function toggleUserActive(u) {
-  if (u.id === me.value?.id) return
-  const action = u.is_active ? '禁用' : '启用'
-  if (!confirm('确定' + action + '用户「' + u.username + '」？')) return
-  err.value = ''
-  try {
-    await api.updateUser(u.id, { is_active: !u.is_active })
-    await loadUsers()
-  } catch (e) {
-    err.value = e.message
-  }
+function openEditUserPermission(u) {
+  editingUserPerm.value = u
+  editPermRole.value = u.role || 'staff'
+  editPermIsActive.value = !!u.is_active
+  editPermIsSuperuser.value = !!u.is_superuser
+  editUserPermError.value = ''
+  savingUserPerm.value = false
+  showEditUserPermission.value = true
 }
 
-async function onUserRoleChange(u, role) {
-  if (role === (u.role || 'staff')) return
-  err.value = ''
+function closeEditUserPermission() {
+  showEditUserPermission.value = false
+  editingUserPerm.value = null
+  editUserPermError.value = ''
+  savingUserPerm.value = false
+}
+
+async function saveUserPermission() {
+  const u = editingUserPerm.value
+  if (!u) return
+  editUserPermError.value = ''
+  savingUserPerm.value = true
   try {
-    await api.updateUser(u.id, { role })
+    const patch = {}
+    const targetRole = editPermRole.value || 'staff'
+    const targetIsActive = !!editPermIsActive.value
+    const targetIsSuperuser = !!editPermIsSuperuser.value
+
+    // 角色：仅在非超管时生效（超管时不区分 staff/dept_leader/executive）
+    if (!targetIsSuperuser && targetRole !== (u.role || 'staff')) {
+      patch.role = targetRole
+    }
+    if (targetIsActive !== !!u.is_active) {
+      patch.is_active = targetIsActive
+    }
+    if (targetIsSuperuser !== !!u.is_superuser) {
+      patch.is_superuser = targetIsSuperuser
+      // 若从超管降级为普通用户，补一次 role，保证落库后角色确定
+      if (!targetIsSuperuser) patch.role = targetRole
+    }
+
+    if (!Object.keys(patch).length) {
+      closeEditUserPermission()
+      return
+    }
+    await api.updateUser(u.id, patch)
     await loadUsers()
+    closeEditUserPermission()
   } catch (e) {
-    err.value = e.message
+    editUserPermError.value = e.message || '保存失败'
+    savingUserPerm.value = false
   }
 }
 
@@ -3153,21 +3269,20 @@ onMounted(async () => {
 
 .admin-storage-filetype-row {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
 }
 
 .admin-storage-filetype-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .admin-storage-dot {
   width: 8px;
   height: 8px;
   border-radius: 999px;
-  background: #4b9fff;
 }
 
 .admin-storage-filetype-name {
@@ -3180,10 +3295,16 @@ onMounted(async () => {
   justify-content: flex-end;
   font-size: 12px;
   color: #6b7280;
+  min-width: 72px;
 }
 
 .admin-storage-filetype-count {
   font-variant-numeric: tabular-nums;
+}
+
+.admin-storage-bar-inline {
+  flex: 1;
+  max-width: 220px;
 }
 
 .badge-normal {
@@ -3567,6 +3688,11 @@ onMounted(async () => {
 .tag-file-rename {
   background: #ede9fe;
   color: #6d28d9;
+}
+
+.tag-file-preview {
+  background: #e0e7ff;
+  color: #3730a3;
 }
 
 .tag-library {
@@ -3975,6 +4101,7 @@ onMounted(async () => {
 .admin-table td {
   padding: 6px 12px;
   text-align: left;
+  vertical-align: middle;
 }
 
 .admin-table thead th {
@@ -4068,6 +4195,77 @@ onMounted(async () => {
   border: 1px solid var(--border);
 }
 
+.admin-hint {
+  margin: 6px 0 0 0;
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.4;
+}
+.admin-hint.warn {
+  color: #b45309;
+}
+
+/* Toggle switch (用于“系统管理员”开关) */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+.toggle-label {
+  font-size: 13px;
+  color: #111827;
+  font-weight: 500;
+}
+.toggle {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  flex-shrink: 0;
+}
+.toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: #e5e7eb;
+  transition: background-color 0.15s ease;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.06);
+}
+.toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+  transition: transform 0.15s ease;
+}
+.toggle input:checked + .toggle-track {
+  background: var(--primary);
+}
+.toggle input:checked + .toggle-track::after {
+  transform: translateX(20px);
+}
+.toggle input:focus-visible + .toggle-track {
+  box-shadow: 0 0 0 3px rgba(26, 86, 176, 0.18);
+}
+.toggle input:disabled + .toggle-track {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .admin-checkbox-label {
   display: flex;
   align-items: center;
@@ -4093,6 +4291,14 @@ onMounted(async () => {
   font-size: 12px;
   background: #fff;
   cursor: pointer;
+}
+
+.admin-action-cell {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .admin-action-btn.danger {

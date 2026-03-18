@@ -303,7 +303,7 @@ const emit = defineEmits(['restore-item', 'perm-delete-item', 'restore-dept', 'p
 }
 
 .trash-cell-actions {
-  text-align: right;
+  text-align: left;
   white-space: nowrap;
 }
 

@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # 文件存储根目录
     STORAGE_ROOT: Path = Path(__file__).resolve().parents[3] / "storage"
 
+    # 系统级总存储配额（字节），用于统计视角的“系统总容量”。
+    # 默认 500GB，可通过环境变量 STORAGE_SYSTEM_TOTAL_BYTES 或 STORAGE_SYSTEM_TOTAL_GB 覆盖。
+    STORAGE_SYSTEM_TOTAL_BYTES: int = 500 * 1024 * 1024 * 1024
+
     class Config:
         env_file = ".env"
         case_sensitive = True

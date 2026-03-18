@@ -287,7 +287,11 @@ def can_download_file(db: Session, entry: FileEntry, user: User) -> bool:
     用户是否可下载该文件。
     规则：
     - 超级管理员 / 拥有者：始终可下载
-    - 其他用户：需先通过库级访问控制，且库 allow_download=True
+    - 其他用户：必须可访问该文件，且资料库 allow_download=True
+
+    说明：
+    - “受控预览（rendered-preview）”与“下载原文件”分离：即使可预览，也不等于可下载原文件。
+    - allow_download=false 视为“硬禁下载”（仅 Owner/管理员可下载原文件），避免通过部门成员/文件分享绕过。
     """
     lib = db.query(Library).filter(Library.id == entry.library_id).first()
     if not lib or getattr(lib, "deleted_at", None) is not None:
@@ -297,30 +301,11 @@ def can_download_file(db: Session, entry: FileEntry, user: User) -> bool:
     if user.is_superuser or lib.owner_id == user.id:
         return True
 
-    # 文件级分享：permission=download 的用户始终可下载该文件
-    share = (
-        db.query(FileShare)
-        .filter(
-            FileShare.file_entry_id == entry.id,
-            FileShare.user_id == user.id,
-        )
-        .first()
-    )
-    if share is not None and share.permission == "download":
-        return True
-
-    visibility = getattr(lib, "visibility", "private") or "private"
-
-    # 部门库成员
-    if getattr(lib, "department_id", None) is not None:
-        acc = _get_accessible_department_ids(db, user)
-        if lib.department_id in acc:
-            return True
-
-    # 指定成员库 / public / private / department：只要是库成员、部门成员或 public 访问者且库允许下载，即可下载
-    # 复用 can_access_file 进行访问判断
-    if not can_access_file(db, entry, user):
+    # 库级禁下载：仅 Owner/管理员可下载原文件
+    if getattr(lib, "allow_download", True) is False:
         return False
 
-    # 库级访问通过后，再看库是否允许下载
-    return getattr(lib, "allow_download", True)
+    # 必须先具备访问权限（库级/部门库/public/成员/文件分享）
+    if not can_access_file(db, entry, user):
+        return False
+    return True

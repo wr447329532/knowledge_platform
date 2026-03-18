@@ -66,6 +66,7 @@ class ChangePassword(BaseModel):
 class UserUpdate(BaseModel):
     """管理员更新用户：禁用/启用、重置密码、所属部门、角色"""
     is_active: Optional[bool] = None
+    is_superuser: Optional[bool] = None
     new_password: Optional[str] = Field(None, min_length=8, max_length=128)
     department_id: Optional[int] = None
     role: Optional[str] = None  # staff | dept_leader | executive

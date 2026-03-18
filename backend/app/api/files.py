@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, Query, Request, status
+from fastapi.responses import Response
 from fastapi.responses import FileResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
@@ -1282,10 +1283,13 @@ def search_files(
     return result
 
 
+SYSTEM_DEFAULT_TOTAL_QUOTA_BYTES = int(getattr(settings, "STORAGE_SYSTEM_TOTAL_BYTES", 500 * 1024 * 1024 * 1024))
+
+
 class StorageStats(BaseModel):
     used_bytes: int
     used_display: str
-    total_bytes: int = 500 * 1024 * 1024 * 1024  # 500GB 默认
+    total_bytes: int = SYSTEM_DEFAULT_TOTAL_QUOTA_BYTES
     total_display: str = "500 GB"
     percent: float
 
@@ -1332,7 +1336,7 @@ def get_storage_stats(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取存储空间使用量"""
+    """获取当前用户视角下的存储空间使用量（个人配额视角）。"""
     from sqlalchemy import func
 
     q = (
@@ -1352,23 +1356,54 @@ def get_storage_stats(
             q = q.filter(FileEntry.library_id == -1)
     row = q.first()
     used = int(row[0]) if row and row[0] else 0
-    total = 500 * 1024 * 1024 * 1024
+    # 个人视角总容量：优先使用当前用户的个人配额；未配置时回退到系统默认 500GB
+    total = int(getattr(current_user, "storage_quota_bytes", None) or SYSTEM_DEFAULT_TOTAL_QUOTA_BYTES)
     pct = (used / total * 100) if total > 0 else 0
-
-    def _fmt(b: int) -> str:
-        if b < 1024:
-            return f"{b} B"
-        if b < 1024 * 1024:
-            return f"{b / 1024:.1f} KB"
-        if b < 1024 * 1024 * 1024:
-            return f"{b / (1024 * 1024):.1f} MB"
-        return f"{b / (1024 * 1024 * 1024):.1f} GB"
 
     return StorageStats(
         used_bytes=used,
-        used_display=_fmt(used),
+        used_display=_format_bytes(used),
         total_bytes=total,
-        total_display="500 GB",
+        total_display=_format_bytes(total),
+        percent=round(pct, 1),
+    )
+
+
+@router.get("/storage/system", response_model=StorageStats)
+def get_system_storage_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    获取系统总存储容量视角的统计数据（与单个用户配额解耦）。
+
+    - used: 全平台所有未删除文件的总占用
+    - total: 系统级总配额（当前为固定默认值，可后续改为配置项）
+    """
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="仅管理员可查看系统总存储容量"
+        )
+
+    from sqlalchemy import func
+
+    row = (
+        db.query(func.sum(FileVersion.size).label("total"))
+        .join(FileEntry, FileVersion.file_entry_id == FileEntry.id)
+        .filter(
+            FileEntry.deleted_at.is_(None),
+        )
+        .first()
+    )
+    used = int(row[0]) if row and row[0] else 0
+    total = SYSTEM_DEFAULT_TOTAL_QUOTA_BYTES
+    pct = (used / total * 100) if total > 0 else 0
+
+    return StorageStats(
+        used_bytes=used,
+        used_display=_format_bytes(used),
+        total_bytes=total,
+        total_display=_format_bytes(total),
         percent=round(pct, 1),
     )
 
@@ -1630,53 +1665,92 @@ def get_storage_by_file_type(
             status_code=status.HTTP_403_FORBIDDEN, detail="仅管理员可查看存储统计"
         )
 
-    # 最新版本的文件（不含目录）
+    # 最新版本的文件（不含目录），用于按扩展名聚合
     latest_rows = _iter_latest_files(db)
-    file_count = len(latest_rows)
-    total_file_size = sum(int(r[3] or 0) for r in latest_rows)
 
-    # 目录数量（不计入大小）
-    dir_count = (
-        db.query(FileEntry)
-        .join(Library, Library.id == FileEntry.library_id)
-        .filter(
-            FileEntry.is_dir.is_(True),
-            FileEntry.deleted_at.is_(None),
-            Library.deleted_at.is_(None),
-        )
-        .count()
-    )
+    # 仅统计文件（排除目录），按扩展名聚合
+    from collections import defaultdict
+    import os
 
-    total_count = (file_count + dir_count) or 1
-    total_size = total_file_size or 1
+    type_count: dict[str, int] = defaultdict(int)
+    type_size: dict[str, int] = defaultdict(int)
+
+    for (
+        _entry_id,
+        path,
+        _lib_id,
+        size,
+        _uploaded_at,
+        _uploaded_by_id,
+        _dept_id,
+        _owner_id,
+    ) in latest_rows:
+        # path 为空时跳过
+        if not path:
+            ext = "other"
+        else:
+            name = path.split("/")[-1]
+            _root, extname = os.path.splitext(name)
+            if extname:
+                ext = extname.lower().lstrip(".")  # .PDF -> pdf
+            else:
+                ext = "other"
+        b = int(size or 0)
+        type_count[ext] += 1
+        type_size[ext] += b
+
+    # 若没有任何文件，返回空列表
+    if not type_count:
+        return []
+
+    total_count = sum(type_count.values()) or 1
+    total_size = sum(type_size.values()) or 1
+
+    # 取按大小排序前 N 个类型，其余归为 other
+    MAX_TYPES = 8
+    # 按 size 降序
+    sorted_items = sorted(type_size.items(), key=lambda kv: kv[1], reverse=True)
+
+    top_keys: list[str] = [k for k, _ in sorted_items[:MAX_TYPES]]
+    other_keys: list[str] = [k for k in type_count.keys() if k not in top_keys]
 
     rows_out: list[FileTypeStat] = []
 
-    # 文件
-    rows_out.append(
-        FileTypeStat(
-            type="文件",
-            count=file_count,
-            size_bytes=total_file_size,
-            size_display=_format_bytes(total_file_size),
-            percent_count=round(file_count / total_count * 100, 1),
-            percent_size=round(total_file_size / total_size * 100, 1),
-        )
-    )
+    def _label(key: str) -> str:
+        if key == "other":
+            return "其他"
+        # 展示为大写扩展名，例如 PDF、DOCX
+        return key.upper()
 
-    # 文件夹（目录）：只统计数量，大小为 0
-    rows_out.append(
-        FileTypeStat(
-            type="文件夹",
-            count=dir_count,
-            size_bytes=0,
-            size_display=_format_bytes(0),
-            percent_count=round(dir_count / total_count * 100, 1),
-            percent_size=0.0,
+    for key in top_keys:
+        cnt = type_count.get(key, 0)
+        size_b = type_size.get(key, 0)
+        rows_out.append(
+            FileTypeStat(
+                type=_label(key),
+                count=cnt,
+                size_bytes=size_b,
+                size_display=_format_bytes(size_b),
+                percent_count=round(cnt / total_count * 100, 1),
+                percent_size=round(size_b / total_size * 100, 1),
+            )
         )
-    )
 
-    # 仍按大小占用降序（文件在前，文件夹在后）
+    if other_keys:
+        cnt = sum(type_count[k] for k in other_keys)
+        size_b = sum(type_size[k] for k in other_keys)
+        rows_out.append(
+            FileTypeStat(
+                type="其他",
+                count=cnt,
+                size_bytes=size_b,
+                size_display=_format_bytes(size_b),
+                percent_count=round(cnt / total_count * 100, 1),
+                percent_size=round(size_b / total_size * 100, 1),
+            )
+        )
+
+    # 按大小占用降序展示
     rows_out.sort(key=lambda r: r.size_bytes, reverse=True)
     return rows_out
 
@@ -1714,7 +1788,7 @@ def download_file(
     if not entry or entry.is_dir or entry.deleted_at:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
     if not can_download_file(db, entry, current_user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无下载权限（需被分享且权限为「下载」）")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无下载权限（该文件库已禁止下载或未被授予下载权限）")
 
     q = db.query(FileVersion).filter(FileVersion.file_entry_id == entry.id)
     if version_no is not None:
@@ -1902,6 +1976,250 @@ def preview_file(
     )
     db.commit()
     return _serve_preview_file(version_no, db, entry)
+
+
+# -----------------------------
+# Rendered preview (controlled)
+# -----------------------------
+
+class RenderedPreviewMeta(BaseModel):
+    entry_id: int
+    version_no: int
+    filename: str
+    preview_type: Literal["pdf", "image", "text", "unsupported"]
+    page_count: int = 1  # pdf only
+    can_download: bool = False
+
+
+def _get_version_storage_path(db: Session, entry_id: int, version_no: Optional[int]) -> tuple[FileEntry, FileVersion, Path]:
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.is_dir or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    # 访问权限：预览 = 可访问即可（不等于可下载）
+    # 受控预览不直接返回原文件，仅返回渲染产物
+    # 因此这里统一走 can_access_file
+    # 调用处会传 current_user 并校验
+    q = db.query(FileVersion).filter(FileVersion.file_entry_id == entry.id)
+    if version_no is not None:
+        q = q.filter(FileVersion.version_no == version_no)
+    else:
+        q = q.order_by(FileVersion.version_no.desc())
+    version: FileVersion | None = q.first()
+    if not version:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件版本不存在")
+    storage_path = Path(version.storage_path)
+    if not storage_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件物理数据缺失")
+    return entry, version, storage_path
+
+
+def _preview_type_by_filename(filename: str) -> str:
+    ext = Path(filename).suffix.lower()
+    if ext == ".pdf":
+        return "pdf"
+    if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
+        return "image"
+    if ext in {".txt", ".md", ".json", ".xml", ".html", ".htm", ".css", ".js", ".yaml", ".yml"}:
+        return "text"
+    return "unsupported"
+
+
+def _watermark_text(user: User) -> str:
+    """
+    受控预览水印文本（MVP 版本）。
+
+    口径：仅展示用户邮箱（作为后续“唯一标识”的基础），避免中文字体兼容问题。
+    """
+    if getattr(user, "email", None):
+        return str(user.email)
+    # 兜底：邮箱缺失时退回 username
+    return user.username or f"user-{user.id}"
+
+
+def _apply_watermark_to_image(img_bytes: bytes, wm: str, *, max_side: int = 1600, quality: int = 75) -> tuple[bytes, str]:
+    """
+    将图片加水印并（可选）降清晰，返回 (out_bytes, content_type)。
+    说明：MVP 版本使用简单半透明斜纹文字水印，避免引入复杂渲染依赖。
+    """
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    im = Image.open(BytesIO(img_bytes)).convert("RGBA")
+    w, h = im.size
+    scale = min(1.0, max_side / max(w, h)) if max(w, h) > 0 else 1.0
+    if scale < 1.0:
+        im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+
+    # 受控预览水印：满屏铺斜纹（小字号、低透明度），用于可追溯且不直接下发原文件
+    overlay = Image.new("RGBA", im.size, (255, 255, 255, 0))
+    short_side = min(im.size[0], im.size[1])
+    font_size = max(12, int(short_side * 0.018))
+    font = None
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", font_size)
+    except Exception:
+        try:
+            font = ImageFont.truetype("Arial.ttf", font_size)
+        except Exception:
+            try:
+                font = ImageFont.load_default()
+            except Exception:
+                font = None
+
+    draw = ImageDraw.Draw(overlay)
+    # 半透明斜纹水印（不遮挡正文）
+    text_color = (0, 0, 0, 75)
+    try:
+        bbox = draw.textbbox((0, 0), wm, font=font)
+        tw = max(1, bbox[2] - bbox[0])
+        th = max(1, bbox[3] - bbox[1])
+    except Exception:
+        tw, th = 220, 18
+
+    # 按文字尺寸决定铺设密度
+    step_x = max(180, int(tw * 1.6))
+    step_y = max(140, int(th * 4.0))
+
+    for y in range(-im.size[1], im.size[1] * 2, step_y):
+        for x in range(-im.size[0], im.size[0] * 2, step_x):
+            draw.text((x, y), wm, fill=text_color, font=font)
+            # 交错一层填补空隙
+            draw.text((x + step_x // 2, y + step_y // 2), wm, fill=text_color, font=font)
+
+    overlay = overlay.rotate(30, expand=False)
+    out = Image.alpha_composite(im, overlay).convert("RGB")
+    buf = BytesIO()
+    out.save(buf, format="JPEG", quality=quality, optimize=True)
+    return buf.getvalue(), "image/jpeg"
+
+
+def _render_pdf_page_with_watermark(pdf_path: Path, page: int, wm: str) -> tuple[bytes, str, int]:
+    """
+    将 PDF 指定页渲染为图片（JPEG），并叠加水印。
+    返回 (out_bytes, content_type, page_count)。
+    """
+    import fitz  # PyMuPDF
+
+    doc = fitz.open(str(pdf_path))
+    try:
+        page_count = doc.page_count
+        if page < 1 or page > page_count:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="页码超出范围")
+        p = doc.load_page(page - 1)
+        # 适度清晰度（约 144dpi），MVP 不做缓存先控制 CPU
+        mat = fitz.Matrix(2.0, 2.0)
+        pix = p.get_pixmap(matrix=mat, alpha=False)
+        img_bytes = pix.tobytes("png")
+        out_bytes, ct = _apply_watermark_to_image(img_bytes, wm, max_side=1600, quality=75)
+        return out_bytes, ct, page_count
+    finally:
+        doc.close()
+
+
+@router.get("/rendered-preview/meta", response_model=RenderedPreviewMeta)
+def get_rendered_preview_meta(
+    entry_id: int,
+    version_no: Optional[int] = Query(None),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    受控预览 meta：用于前端判断类型、PDF 页数、是否支持预览，以及是否允许下载。
+    注意：该接口不会返回原文件内容。
+    """
+    entry, version, storage_path = _get_version_storage_path(db, entry_id, version_no)
+    if not can_access_file(db, entry, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问")
+
+    filename = storage_path.name
+    ptype = _preview_type_by_filename(filename)
+    page_count = 1
+    if ptype == "pdf":
+        try:
+            import fitz  # PyMuPDF
+
+            doc = fitz.open(str(storage_path))
+            page_count = doc.page_count
+            doc.close()
+        except Exception:
+            ptype = "unsupported"
+            page_count = 1
+
+    return RenderedPreviewMeta(
+        entry_id=entry.id,
+        version_no=version.version_no,
+        filename=filename,
+        preview_type=ptype,  # type: ignore[arg-type]
+        page_count=page_count,
+        can_download=can_download_file(db, entry, current_user),
+    )
+
+
+@router.get("/rendered-preview")
+def get_rendered_preview(
+    entry_id: int,
+    version_no: Optional[int] = Query(None),
+    page: int = Query(1, ge=1, description="PDF 页码（从 1 开始），非 PDF 忽略"),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    受控预览内容：返回“渲染产物”（图片或文本），用于只读预览与权限控制。
+    - PDF：按页渲染为 JPEG（含水印）
+    - 图片：返回降清晰 + 水印后的 JPEG
+    - 文本：返回截断后的 text/plain（含水印抬头）
+    """
+    entry, version, storage_path = _get_version_storage_path(db, entry_id, version_no)
+    if not can_access_file(db, entry, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问")
+
+    wm = _watermark_text(current_user)
+    ptype = _preview_type_by_filename(storage_path.name)
+
+    # 记录审计：受控预览
+    try:
+        detail = f"path={entry.path} version={version.version_no} type={ptype}"
+        if ptype == "pdf":
+            detail += f" page={page}"
+        log_audit(
+            db,
+            current_user.id,
+            current_user.username,
+            "preview_rendered",
+            "file",
+            entry.id,
+            detail,
+            ip_address=get_client_ip(request),
+        )
+        db.commit()
+    except Exception:
+        pass
+
+    if ptype == "pdf":
+        out_bytes, ct, _page_count = _render_pdf_page_with_watermark(storage_path, page, wm)
+        return Response(content=out_bytes, media_type=ct)
+
+    if ptype == "image":
+        raw = storage_path.read_bytes()
+        out_bytes, ct = _apply_watermark_to_image(raw, wm, max_side=1600, quality=75)
+        return Response(content=out_bytes, media_type=ct)
+
+    if ptype == "text":
+        # 只读预览不返回原文件：截断（不在内容中注入水印，水印由前端叠加层实现）
+        MAX_CHARS = 200_000
+        try:
+            txt = storage_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            # 二进制或其他编码：回退为 latin-1 近似
+            txt = storage_path.read_text(encoding="latin-1", errors="replace")
+        if len(txt) > MAX_CHARS:
+            txt = txt[:MAX_CHARS] + "\n\n...(内容过长，已截断)...\n"
+        return Response(content=txt, media_type="text/plain; charset=utf-8")
+
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该文件类型暂不支持受控预览")
 
 
 

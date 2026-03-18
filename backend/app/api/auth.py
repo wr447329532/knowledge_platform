@@ -245,6 +245,12 @@ def update_user(
     user = db.query(User).options(joinedload(User.department)).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    # 内置账号保护：避免误操作导致无法登录/丢失超管
+    if user.username == "admin":
+        if body.is_active is False:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能禁用内置管理员账号")
+        if body.is_superuser is False:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能取消内置管理员账号的系统管理员权限")
     if body.is_active is False and user.id == current_user.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能禁用自己")
     if body.is_active is not None:
@@ -257,6 +263,20 @@ def update_user(
             "user",
             user.id,
             f"is_active={body.is_active}",
+            ip_address=get_client_ip(request),
+        )
+    if body.is_superuser is not None:
+        if body.is_superuser is False and user.id == current_user.id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能取消自己的系统管理员权限")
+        user.is_superuser = body.is_superuser
+        log_audit(
+            db,
+            current_user.id,
+            current_user.username,
+            "update_user",
+            "user",
+            user.id,
+            f"is_superuser={body.is_superuser}",
             ip_address=get_client_ip(request),
         )
     if body.new_password is not None:

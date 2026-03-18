@@ -205,6 +205,17 @@
             </template>
           </div>
         </div>
+        <div class="form-group">
+          <label>导出权限</label>
+          <div class="toggle-row">
+            <span class="toggle-label">允许导出原文件（下载）</span>
+            <label class="toggle">
+              <input type="checkbox" v-model="newLibAllowDownload" />
+              <span class="toggle-track" aria-hidden="true"></span>
+            </label>
+          </div>
+          <p class="form-hint">关闭后，成员仅可受控预览（带水印），不可下载原文件。</p>
+        </div>
         <p v-if="err" class="text-danger">{{ err }}</p>
         <div class="modal-actions">
           <button class="primary" @click="createLib">确定</button>
@@ -686,6 +697,17 @@
             </template>
           </div>
         </div>
+        <div class="form-group" style="margin-bottom: 8px;">
+          <label>导出权限</label>
+          <div class="toggle-row">
+            <span class="toggle-label">允许导出原文件（下载）</span>
+            <label class="toggle">
+              <input type="checkbox" v-model="editLibAllowDownload" />
+              <span class="toggle-track" aria-hidden="true"></span>
+            </label>
+          </div>
+          <p class="form-hint">关闭后，成员仅可受控预览（带水印），不可下载原文件。</p>
+        </div>
         <p v-if="err" class="text-danger">{{ err }}</p>
         <div class="modal-actions">
           <button class="primary" @click="saveEditLib">保存</button>
@@ -787,6 +809,7 @@ const editLibId = ref(null)
 const editLibName = ref('')
 const editLibDesc = ref('')
 const editLibMode = ref('self')
+const editLibAllowDownload = ref(true)
 const editLibUsers = ref([])
 const editLibMembers = ref([])
 const editLibMembersLoading = ref(false)
@@ -1102,8 +1125,10 @@ function previewTypeOf(path) {
 async function openPreview(f) {
   err.value = ''
   if (!previewTypeOf(f.path)) { err.value = '该文件类型暂不支持预览'; return }
-  try { const url = await api.previewUrl(f.id); window.open(url, '_blank', 'noopener,noreferrer') }
-  catch (e) { err.value = e.message || '预览失败' }
+  try {
+    // 受控预览：站内预览页通过鉴权接口获取“渲染产物”，不直接打开原文件直链
+    router.push({ path: '/preview', query: { entry_id: String(f.id) } })
+  } catch (e) { err.value = e.message || '预览失败' }
 }
 function closePreview() { previewUrl.value = ''; showPreview.value = false; previewText.value = ''; previewErr.value = '' }
 
@@ -1115,8 +1140,8 @@ async function previewVersion(v) {
     return
   }
   try {
-    const url = await api.previewUrl(versionEntryId.value, v.version_no)
-    window.open(url, '_blank', 'noopener,noreferrer')
+    // 受控预览：带版本号跳转
+    router.push({ path: '/preview', query: { entry_id: String(versionEntryId.value), version_no: String(v.version_no) } })
   } catch (e) {
     err.value = e.message || '预览失败'
   }
@@ -1694,6 +1719,7 @@ async function doConfirmDeleteLib() {
 }
 async function openEditLib(lib) {
   editLibId.value = lib.id; editLibName.value = lib.name; editLibDesc.value = lib.description || ''
+  editLibAllowDownload.value = lib.allow_download !== false
   const vis = lib.visibility || 'private'
   const hasMembers = (lib.member_count || 0) > 0
   const isDeptLib = !!lib.department_id
@@ -1734,7 +1760,13 @@ async function saveEditLib() {
     }
     const memberIds = (editLibMembers.value || []).map(id => Number(id)).filter(id => !Number.isNaN(id))
     if (['self_plus', 'dept_plus', 'members_only'].includes(mode) && memberIds.length === 0) { err.value = '请选择至少一位指定成员'; return }
-    await api.updateLibrary(editLibId.value, editLibName.value.trim(), editLibDesc.value.trim(), visibility)
+    await api.updateLibrary(
+      editLibId.value,
+      editLibName.value.trim(),
+      editLibDesc.value.trim(),
+      visibility,
+      editLibAllowDownload.value
+    )
     libraries.value = await api.listLibraries()
     if (currentLib.value?.id === editLibId.value) currentLib.value = libraries.value.find(l => l.id === editLibId.value)
     if (editLibId.value) {
@@ -1998,6 +2030,67 @@ async function resetUserPassword(u) {
 .member-name { font-weight: 500; }
 .member-email { font-size: 12px; color: var(--text-secondary); }
 .member-panel-actions { margin-top: 6px; text-align: right; }
+
+/* Toggle switch (导出权限开关) */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+.toggle-label {
+  font-size: 13px;
+  color: #111827;
+  font-weight: 500;
+}
+.toggle {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  flex-shrink: 0;
+}
+.toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: #e5e7eb;
+  transition: background-color 0.15s ease;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.06);
+}
+.toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+  transition: transform 0.15s ease;
+}
+.toggle input:checked + .toggle-track {
+  background: var(--primary);
+}
+.toggle input:checked + .toggle-track::after {
+  transform: translateX(20px);
+}
+.toggle input:focus-visible + .toggle-track {
+  box-shadow: 0 0 0 3px rgba(26, 86, 176, 0.18);
+}
+.toggle input:disabled + .toggle-track {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 .user-modal-card { max-width: 520px; }
 .user-modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; margin-top: 12px; }
 @media (max-width: 640px) { .user-modal-grid { grid-template-columns: 1fr; } }
