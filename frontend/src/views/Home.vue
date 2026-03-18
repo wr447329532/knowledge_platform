@@ -1031,6 +1031,8 @@ onMounted(async () => {
   libraries.value = await api.listLibraries()
   loadStorageStats()
   await loadDepartments()
+  // 页面进入时就拉取未读通知，用于顶部通知图标的角标显示
+  await loadNotifications(true)
 })
 
 watch(subTab, val => { if (val === 'departments') loadDepartments() })
@@ -1609,7 +1611,21 @@ async function loadNotifications(unreadOnly = false) {
   try {
     const list = await api.listNotifications(unreadOnly)
     notifications.value = Array.isArray(list) ? list : []
-    unreadNotifyCount.value = notifications.value.filter(n => !n.is_read).length
+    // unreadOnly=true 时后端已过滤未读，直接用长度避免 is_read 类型差异造成误判
+    if (unreadOnly) {
+      unreadNotifyCount.value = notifications.value.length
+      return
+    }
+
+    // 容错：兼容 is_read 可能为 0/1 或字符串等情况
+    unreadNotifyCount.value = notifications.value.filter(n => {
+      const v = n?.is_read ?? n?.isRead
+      if (v === false || v === 0 || v === '0') return true
+      if (v === true || v === 1 || v === '1') return false
+      // 兜底：null/undefined 当已读处理；其他值按 JS 真值判断
+      if (v === null || v === undefined) return false
+      return !Boolean(v)
+    }).length
   } catch (e) {
     // 通知失败不影响主流程，仅在控制台输出
     // eslint-disable-next-line no-console
