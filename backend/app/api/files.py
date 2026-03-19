@@ -923,10 +923,15 @@ def list_dept_trash(
 
 @router.get("/global-trash", response_model=List[GlobalTrashItem])
 def list_global_trash(
+    limit: int = Query(50, ge=1, le=500, description="每页数量"),
+    offset: int = Query(0, ge=0, description="起始偏移量"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """全局回收站：全平台所有库的删除文件与文件库聚合列表。仅超级管理员可访问。"""
+    """全局回收站：全平台所有库的删除文件与文件库聚合列表。仅超级管理员可访问。
+
+    目前使用简单的 limit/offset 分页，不返回总数，前端通过本页数量是否达到 limit 来判断是否还有下一页。
+    """
     if not current_user.is_superuser:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅系统管理员可查看全局回收站")
 
@@ -934,13 +939,13 @@ def list_global_trash(
     all_lib_ids = [r[0] for r in db.query(Library.id).all()]
     _trash_cleanup_old_in_libraries(db, all_lib_ids)
 
-    # 2) 全平台文件级回收站
-    file_entries = (
+    # 2) 全平台文件级回收站（支持简单分页）
+    file_q = (
         db.query(FileEntry)
         .filter(FileEntry.deleted_at != None)  # noqa: E711
         .order_by(FileEntry.deleted_at.desc())
-        .all()
     )
+    file_entries = file_q.offset(offset).limit(limit).all()
     lib_ids = list({e.library_id for e in file_entries})
     libs = db.query(Library).filter(Library.id.in_(lib_ids)).all() if lib_ids else []
     lib_names = {lib.id: getattr(lib, "name", "") or "" for lib in libs}

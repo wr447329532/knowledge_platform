@@ -152,8 +152,9 @@ export async function updateUser(userId, { is_active, is_superuser, new_password
   })
 }
 
-export async function listLibraries() {
-  return api('/libraries/')
+export async function listLibraries(params = {}) {
+  const q = new URLSearchParams(params).toString()
+  return api(`/libraries/${q ? '?' + q : ''}`)
 }
 
 export async function getLibrary(id) {
@@ -624,8 +625,9 @@ export async function listDeptTrash(deptId) {
   return api(`/files/dept-trash?dept_id=${deptId}`)
 }
 
-export async function listGlobalTrash() {
-  return api('/files/global-trash')
+export async function listGlobalTrash(params = {}) {
+  const q = new URLSearchParams(params).toString()
+  return api(`/files/global-trash${q ? '?' + q : ''}`)
 }
 
 export async function listAuditLogs(params = {}) {

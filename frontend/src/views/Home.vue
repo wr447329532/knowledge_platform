@@ -51,8 +51,10 @@
       <!-- 部门视图：选中部门时显示 -->
       <DepartmentFiles
         v-if="tab === 'lib' && activeDeptId"
+        :key="deptFilesReloadKey"
         :me="me"
         :active-dept-id="activeDeptId"
+        :reload-key="deptFilesReloadKey"
         @back="clearDeptView"
         @open-lib="openDeptLib"
       />
@@ -98,6 +100,11 @@
         :close-action-menu="closeActionMenu"
         :on-drag-over="onDragOver"
         :on-drag-leave="onDragLeave"
+        :libraries-limit="librariesLimit"
+        :libraries-offset="librariesOffset"
+        :libraries-has-more="librariesHasMore"
+        @prev-page="goPrevLibrariesPage"
+        @next-page="goNextLibrariesPage"
       />
 
       <!-- 共享文件 -->
@@ -743,6 +750,9 @@ const showNewDropdown = ref(false)
 const newDropdownRef = ref(null)
 const deptTreeRefreshKey = ref(0)
 const libraries = ref([])
+const librariesLimit = ref(20)
+const librariesOffset = ref(0)
+const librariesHasMore = ref(false)
 const currentLib = ref(null)
 const pathPrefix = ref('')
 const fileSortOrder = ref('modified')
@@ -857,6 +867,7 @@ const activeDeptInfo = ref(null)
 const activeDeptLibraries = ref([])
 const activeDeptLoading = ref(false)
 const activeDeptErr = ref('')
+const deptFilesReloadKey = ref(0)
 const uploadErr = ref('')
 
 const uploadStep = ref('list')  // 'list' | 'confirm'
@@ -1028,12 +1039,28 @@ function showError(msg) {
 
 onMounted(async () => {
   me.value = await api.getMe()
-  libraries.value = await api.listLibraries()
+  await loadLibraries()
   loadStorageStats()
   await loadDepartments()
   // 页面进入时就拉取未读通知，用于顶部通知图标的角标显示
   await loadNotifications(true)
 })
+
+async function loadLibraries() {
+  try {
+    const params = {
+      limit: librariesLimit.value,
+      offset: librariesOffset.value,
+    }
+    const list = await api.listLibraries(params)
+    libraries.value = list || []
+    librariesHasMore.value = (list || []).length === librariesLimit.value
+  } catch (e) {
+    err.value = e.message || '加载文件库失败'
+    libraries.value = []
+    librariesHasMore.value = false
+  }
+}
 
 watch(subTab, val => { if (val === 'departments') loadDepartments() })
 watch([currentLib, pathPrefix], () => { if (currentLib.value) loadFiles(); searchResults.value = [] })
@@ -1094,6 +1121,18 @@ function enterDir(entry) {
 }
 function toggleActionMenu(id) { openActionMenuId.value = openActionMenuId.value === id ? null : id }
 function closeActionMenu() { openActionMenuId.value = null }
+
+function goPrevLibrariesPage() {
+  if (librariesOffset.value <= 0) return
+  librariesOffset.value = Math.max(0, librariesOffset.value - librariesLimit.value)
+  loadLibraries()
+}
+
+function goNextLibrariesPage() {
+  if (!librariesHasMore.value) return
+  librariesOffset.value = librariesOffset.value + librariesLimit.value
+  loadLibraries()
+}
 
 async function delFile(f) {
   if (!confirm('确定删除到回收站？')) return
@@ -1707,7 +1746,11 @@ async function createLib() {
     }
     showNewLib.value = false; newLibName.value = ''; newLibDesc.value = ''; newLibDepartmentId.value = null
     newLibVisibility.value = 'private'; newLibMembers.value = []; newLibUsers.value = []
-    if (deptId && activeDeptId.value === deptId) activeDeptLibraries.value = await api.listDepartmentLibraries(deptId)
+    if (deptId != null && Number(activeDeptId.value) === Number(deptId)) {
+      // 触发 DepartmentFiles 重新拉取部门文件库列表
+      deptFilesReloadKey.value += 1
+      activeDeptLibraries.value = await api.listDepartmentLibraries(deptId)
+    }
     else if (!deptId) clearDeptView()
     showSuccess(deptId ? '部门文件库已创建' : '文件库已创建')
   } catch (e) { err.value = e.message }

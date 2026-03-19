@@ -27,6 +27,8 @@ class LibraryCreate(BaseModel):
     department_id: int | None = None  # 指定则创建为部门库
     # 可见性：private=私有；department=部门可见；public=全员可见（仅个人库）
     visibility: str = "private"
+    # 是否允许非拥有者下载库中文件（拥有者/超级管理员始终可下载）
+    allow_download: bool | None = None
     # 指定成员列表（无论可见性为何，均可用于补充访问权限）
     member_user_ids: list[int] | None = None
 
@@ -144,7 +146,7 @@ def create_library(
         owner_id=current_user.id,
         department_id=dept_id,
         visibility=visibility,
-        allow_download=True,
+        allow_download=True if lib_in.allow_download is None else bool(lib_in.allow_download),
     )
     db.add(lib)
     db.flush()
@@ -253,12 +255,19 @@ def list_library_trash(
 
 @router.get("/", response_model=List[LibraryRead])
 def list_libraries(
+    limit: int = Query(50, ge=1, le=200, description="每页数量"),
+    offset: int = Query(0, ge=0, description="起始偏移量"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """列出当前用户可访问的资料库（拥有、分享、部门库）。"""
+    """列出当前用户可访问的资料库（拥有、分享、部门库）。支持简单 limit/offset 分页。"""
     ids = get_accessible_library_ids(db, current_user)
-    libs = db.query(Library).filter(Library.id.in_(ids)).order_by(Library.created_at.desc()).all()
+    q = (
+        db.query(Library)
+        .filter(Library.id.in_(ids))
+        .order_by(Library.created_at.desc())
+    )
+    libs = q.offset(offset).limit(limit).all()
     result = []
     for l in libs:
         _, is_write = has_library_access(db, l.id, current_user)

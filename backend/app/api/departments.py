@@ -399,7 +399,14 @@ def list_department_members_manage(
         .order_by(User.id.asc())
         .all()
     )
-    return [UserRead.from_orm(u) for u in users]
+    leader_user_id = getattr(dept, "leader_user_id", None)
+    out: list[UserRead] = []
+    for u in users:
+        ur = UserRead.from_orm(u)
+        # 部门负责人由 Department.leader_user_id 决定；role 字段不一定同步更新
+        ur.is_department_leader = leader_user_id is not None and u.id == leader_user_id
+        out.append(ur)
+    return out
 
 
 @router.post("/{department_id}/members", response_model=UserRead)

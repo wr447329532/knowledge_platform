@@ -98,6 +98,7 @@ import * as api from '../api/client'
 const props = defineProps({
   me: { type: Object, default: null },
   activeDeptId: { type: Number, default: null },
+  reloadKey: { type: Number, default: 0 },
 })
 
 const emit = defineEmits(['back', 'open-lib'])
@@ -148,6 +149,14 @@ watch(
     loadDept(id)
   },
   { immediate: true },
+)
+
+// 创建文件库成功后不一定会改变 activeDeptId，这里用 reloadKey 强制刷新列表
+watch(
+  () => props.reloadKey,
+  () => {
+    if (props.activeDeptId) loadDept(props.activeDeptId)
+  },
 )
 </script>
 

@@ -404,7 +404,7 @@
                     <td>{{ u.email || '-' }}</td>
                     <td>
                       <span class="badge">
-                        {{ u.role === 'dept_leader' ? '部门负责人' : '部员' }}
+                        {{ u.is_department_leader || u.role === 'dept_leader' ? '部门负责人' : '部员' }}
                       </span>
                     </td>
                     <td class="text-right">
@@ -923,9 +923,6 @@
                 暂无审计记录，或调整筛选条件后查询。
               </p>
               <div class="audit-pagination" v-else>
-                <div class="audit-pagination-info">
-                  第 {{ auditPage }} 页，每页 {{ auditPageSize }} 条
-                </div>
                 <div class="audit-pagination-actions">
                   <button
                     type="button"
@@ -943,6 +940,9 @@
                   >
                     下一页
                   </button>
+                </div>
+                <div class="audit-pagination-info">
+                  第 {{ auditPage }} 页，每页 {{ auditPageSize }} 条
                 </div>
               </div>
             </div>
@@ -1432,6 +1432,29 @@
                 </table>
               </div>
               <p v-else class="admin-empty">暂无删除记录</p>
+              <div v-if="globalTrashList.length" class="audit-pagination">
+                <div class="audit-pagination-actions">
+                  <button
+                    type="button"
+                    class="admin-btn-secondary"
+                    :disabled="!globalTrashHasPrev"
+                    @click="gotoGlobalTrashPrevPage"
+                  >
+                    上一页
+                  </button>
+                  <button
+                    type="button"
+                    class="admin-btn-secondary"
+                    :disabled="!globalTrashHasNext"
+                    @click="gotoGlobalTrashNextPage"
+                  >
+                    下一页
+                  </button>
+                </div>
+                <div class="audit-pagination-info">
+                  第 {{ Math.floor(globalTrashOffset / globalTrashLimit) + 1 }} 页，每页 {{ globalTrashLimit }} 条
+                </div>
+              </div>
             </div>
           </div>
         </main>
@@ -1758,6 +1781,8 @@ const globalTrashList = ref([])
 const globalTrashLoading = ref(false)
 const globalTrashMessage = ref('')
 const globalTrashError = ref('')
+const globalTrashLimit = ref(50)
+const globalTrashOffset = ref(0)
 const sendingNotify = ref(false)
 const sendForm = ref({
   title: '',
@@ -2206,13 +2231,42 @@ async function loadNotifyAll() {
 async function loadGlobalTrash() {
   globalTrashLoading.value = true
   try {
-    globalTrashList.value = await api.listGlobalTrash()
+    globalTrashList.value = await api.listGlobalTrash({
+      limit: globalTrashLimit.value,
+      offset: globalTrashOffset.value,
+    })
   } catch (e) {
     globalTrashError.value = _globalTrashErrMsg(e) || '加载全局回收站失败'
     globalTrashList.value = []
   } finally {
     globalTrashLoading.value = false
   }
+}
+
+const globalTrashHasPrev = computed(() => globalTrashOffset.value > 0)
+const globalTrashHasNext = computed(
+  () => globalTrashList.value.length >= globalTrashLimit.value,
+)
+
+async function gotoGlobalTrashFirstPage() {
+  if (!globalTrashHasPrev.value) return
+  globalTrashOffset.value = 0
+  await loadGlobalTrash()
+}
+
+async function gotoGlobalTrashPrevPage() {
+  if (!globalTrashHasPrev.value) return
+  globalTrashOffset.value = Math.max(
+    0,
+    globalTrashOffset.value - globalTrashLimit.value,
+  )
+  await loadGlobalTrash()
+}
+
+async function gotoGlobalTrashNextPage() {
+  if (!globalTrashHasNext.value) return
+  globalTrashOffset.value = globalTrashOffset.value + globalTrashLimit.value
+  await loadGlobalTrash()
 }
 
 async function loadDeptTrashAdmin() {
@@ -3776,8 +3830,10 @@ onMounted(async () => {
   padding-top: 8px;
   border-top: 1px solid #e5e7eb;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: flex-end;
+  gap: 6px;
   font-size: 12px;
   color: #6b7280;
 }

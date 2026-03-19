@@ -155,6 +155,29 @@
         </div>
       </template>
       <p v-else class="empty-hint">暂无文件库，请点击「新建文件库」。</p>
+      <div v-if="libraries.length" class="audit-pagination">
+        <div class="audit-pagination-actions">
+          <button
+            type="button"
+            class="admin-btn-secondary"
+            :disabled="librariesOffset <= 0"
+            @click="$emit('prev-page')"
+          >
+            上一页
+          </button>
+          <button
+            type="button"
+            class="admin-btn-secondary"
+            :disabled="!librariesHasMore"
+            @click="$emit('next-page')"
+          >
+            下一页
+          </button>
+        </div>
+        <div class="audit-pagination-info">
+          第 {{ Math.floor(librariesOffset / librariesLimit) + 1 }} 页，每页 {{ librariesLimit }} 条
+        </div>
+      </div>
     </div>
 
     <!-- 当前库文件视图 -->
@@ -519,6 +542,9 @@ const props = defineProps({
   closeActionMenu: { type: Function, required: true },
   onDragOver: { type: Function, required: true },
   onDragLeave: { type: Function, required: true },
+  librariesLimit: { type: Number, default: 20 },
+  librariesOffset: { type: Number, default: 0 },
+  librariesHasMore: { type: Boolean, default: false },
 })
 </script>
 
@@ -527,6 +553,24 @@ const props = defineProps({
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.audit-pagination {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: flex-end;
+  gap: 6px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.audit-pagination-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .lib-header {
