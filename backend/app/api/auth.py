@@ -207,7 +207,18 @@ def list_users(
     if is_active is not None:
         q = q.filter(User.is_active == is_active)
     users = q.all()
-    return [_user_to_read(u) for u in users]
+    leader_rows = (
+        db.query(Department.leader_user_id)
+        .filter(Department.leader_user_id.isnot(None))
+        .all()
+    )
+    leader_ids = {r[0] for r in leader_rows if r[0] is not None}
+    out: list[UserRead] = []
+    for u in users:
+        ur = _user_to_read(u)
+        ur.is_department_leader = u.id in leader_ids
+        out.append(ur)
+    return out
 
 
 @router.get("/users/active", response_model=List[UserRead])

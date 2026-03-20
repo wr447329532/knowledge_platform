@@ -287,6 +287,7 @@ def can_download_file(db: Session, entry: FileEntry, user: User) -> bool:
     用户是否可下载该文件。
     规则：
     - 超级管理员 / 拥有者：始终可下载
+    - 高管：只要可访问该文件（可预览）即默认可下载
     - 其他用户：必须可访问该文件，且资料库 allow_download=True
 
     说明：
@@ -300,6 +301,10 @@ def can_download_file(db: Session, entry: FileEntry, user: User) -> bool:
     # 超级管理员 / 拥有者
     if user.is_superuser or lib.owner_id == user.id:
         return True
+
+    # 高管：默认可下载（以可访问为前提），不受 allow_download 限制
+    if is_executive(user):
+        return can_access_file(db, entry, user)
 
     # 库级禁下载：仅 Owner/管理员可下载原文件
     if getattr(lib, "allow_download", True) is False:

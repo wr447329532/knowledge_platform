@@ -71,6 +71,7 @@ class FileVersionRead(BaseModel):
     version_no: int
     size: int
     uploaded_at: datetime
+    uploaded_by: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -842,34 +843,35 @@ def _trash_cleanup_old_in_libraries(db: Session, library_ids: List[int]) -> None
         db.commit()
 
 
-@router.get("/dept-trash", response_model=List[FileTrashRead])
+@router.get("/dept-trash", response_model=List[GlobalTrashItem])
 def list_dept_trash(
     dept_id: int = Query(..., description="部门 ID"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """部门回收站：该部门下 visibility=department/public 的库的删除文件聚合列表。仅部门负责人或超级管理员可访问。"""
+    """部门回收站：该部门下部门库的删除记录（已删文件库 + 已删文件）。仅部门负责人或超级管理员可访问。"""
     dept = db.query(Department).filter(Department.id == dept_id).first()
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
     if not current_user.is_superuser and getattr(dept, "leader_user_id", None) != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅部门负责人可查看部门回收站")
 
-    # 该部门下仅部门库（不含个人库）；部门库 visibility 恒为 department
-    libs = (
+    # 该部门下所有部门库（含已删除），用于同时汇总“已删文件库 + 已删文件”
+    all_dept_libs = (
         db.query(Library)
         .filter(
             Library.department_id == dept_id,
-            Library.deleted_at.is_(None),
             Library.visibility == "department",
         )
         .all()
     )
-    lib_ids = [lib.id for lib in libs]
-    lib_names = {lib.id: getattr(lib, "name", "") or "" for lib in libs}
+    deleted_libs = [lib for lib in all_dept_libs if getattr(lib, "deleted_at", None) is not None]
+    active_libs = [lib for lib in all_dept_libs if getattr(lib, "deleted_at", None) is None]
+    lib_ids = [lib.id for lib in active_libs]
+    lib_names = {lib.id: getattr(lib, "name", "") or "" for lib in active_libs}
 
     # 预取库拥有者用于「删除人」回退
-    owner_ids = {lib.owner_id for lib in libs if getattr(lib, "owner_id", None)}
+    owner_ids = {lib.owner_id for lib in all_dept_libs if getattr(lib, "owner_id", None)}
     owners = db.query(User).filter(User.id.in_(owner_ids)).all() if owner_ids else []
     owner_name_map: dict[int, str] = {}
     for u in owners:
@@ -893,32 +895,55 @@ def list_dept_trash(
     for u in creators:
         creator_name_map[u.id] = u.username or u.email or f"用户{u.id}"
 
-    result: list[FileTrashRead] = []
+    items: list[GlobalTrashItem] = []
+
+    # 1) 已删除部门库
+    for lib in deleted_libs:
+        username: Optional[str] = None
+        if getattr(lib, "owner_id", None):
+            username = owner_name_map.get(lib.owner_id)
+        items.append(
+            GlobalTrashItem(
+                id=lib.id,
+                type="library",
+                library_id=lib.id,
+                library_name=getattr(lib, "name", "") or None,
+                path=getattr(lib, "name", "") or None,
+                is_dir=True,
+                deleted_at=getattr(lib, "deleted_at"),
+                username=username,
+                can_restore=True,
+                can_delete=True,
+            )
+        )
+
+    # 2) 活跃部门库中的已删文件
     for e in entries:
         # 删除人优先：创建人，其次库拥有者
         username: Optional[str] = None
         if getattr(e, "created_by_id", None):
             username = creator_name_map.get(e.created_by_id)
         if not username:
-            lib_owner_id = next((lib.owner_id for lib in libs if lib.id == e.library_id), None)
+            lib_owner_id = next((lib.owner_id for lib in active_libs if lib.id == e.library_id), None)
             if lib_owner_id:
                 username = owner_name_map.get(lib_owner_id)
 
-        result.append(
-            FileTrashRead(
+        items.append(
+            GlobalTrashItem(
                 id=e.id,
+                type="file",
                 library_id=e.library_id,
+                library_name=lib_names.get(e.library_id) or None,
                 path=e.path,
                 is_dir=e.is_dir,
-                size=None,
-                updated_at=e.updated_at,
-                can_download=None,
                 deleted_at=e.deleted_at,
-                library_name=lib_names.get(e.library_id) or None,
                 username=username,
+                can_restore=True,
+                can_delete=True,
             )
         )
-    return result
+    items.sort(key=lambda x: x.deleted_at, reverse=True)
+    return items
 
 
 @router.get("/global-trash", response_model=List[GlobalTrashItem])
@@ -1778,7 +1803,30 @@ def list_versions(
         .order_by(FileVersion.version_no.desc())
         .all()
     )
-    return versions
+    user_ids = {int(v.uploaded_by_id) for v in versions if getattr(v, "uploaded_by_id", None)}
+    user_map: dict[int, User] = {}
+    if user_ids:
+        rows = db.query(User).filter(User.id.in_(user_ids)).all()
+        user_map = {u.id: u for u in rows}
+
+    out: list[FileVersionRead] = []
+    for v in versions:
+        uploader_name: Optional[str] = None
+        uid = getattr(v, "uploaded_by_id", None)
+        if uid is not None:
+            u = user_map.get(int(uid))
+            if u is not None:
+                uploader_name = u.username or u.email or f"用户{u.id}"
+        out.append(
+            FileVersionRead(
+                id=v.id,
+                version_no=v.version_no,
+                size=v.size,
+                uploaded_at=v.uploaded_at,
+                uploaded_by=uploader_name,
+            )
+        )
+    return out
 
 
 @router.get("/download")

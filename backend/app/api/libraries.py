@@ -38,6 +38,7 @@ class LibraryRead(BaseModel):
     name: str
     description: str | None
     owner_id: int | None = None
+    owner_username: str | None = None
     department_id: int | None = None
     department_name: str | None = None
     visibility: str | None = None
@@ -94,12 +95,18 @@ def _lib_to_read(
     if dept_name is None and getattr(lib, "department_id", None) is not None:
         d = db.query(Department).filter(Department.id == lib.department_id).first()
         dept_name = d.name if d else None
+    owner_name: str | None = None
+    if getattr(lib, "owner_id", None):
+        owner = db.query(User).filter(User.id == lib.owner_id).first()
+        if owner:
+            owner_name = owner.username or owner.email or f"用户{owner.id}"
     member_count = len(getattr(lib, "members", []) or [])
     return LibraryRead(
         id=lib.id,
         name=lib.name,
         description=lib.description,
         owner_id=lib.owner_id,
+        owner_username=owner_name,
         department_id=getattr(lib, "department_id", None),
         department_name=dept_name,
         visibility=getattr(lib, "visibility", "private"),

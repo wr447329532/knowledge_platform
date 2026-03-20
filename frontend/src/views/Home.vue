@@ -464,6 +464,7 @@
             <tr>
               <th style="width: 60px;">版本</th>
               <th style="width: 90px;">大小</th>
+              <th style="width: 120px;">上传者</th>
               <th style="width: 160px;">上传时间</th>
               <th style="width: 150px; text-align: right;">操作</th>
             </tr>
@@ -472,6 +473,7 @@
             <tr v-for="v in versions" :key="v.id">
               <td>{{ v.version_no }}</td>
               <td>{{ v.size }}</td>
+              <td>{{ v.uploaded_by || '-' }}</td>
               <td>{{ formatDate(v.uploaded_at) }}</td>
               <td style="width: 150px; text-align: right;">
                 <button
@@ -981,7 +983,7 @@ async function onSidebarNav(tabName) {
   if (tabName === 'trash') {
     trashMode.value = 'personal'
     err.value = ''
-    if (me.value?.role === 'dept_leader') {
+    if (me.value?.is_department_leader) {
       await loadDeptTrash()
     }
     loadTrash()
@@ -1586,8 +1588,14 @@ async function loadDeptTrash() {
 async function restoreDeptFile(item) {
   err.value = ''
   try {
-    await api.restoreFile(item.id)
-    showSuccess('文件已恢复')
+    if (item?.type === 'library') {
+      await api.restoreLibrary(item.id)
+      await refreshLibrariesKeepPage()
+      showSuccess('资料库已恢复')
+    } else {
+      await api.restoreFile(item.id)
+      showSuccess('文件已恢复')
+    }
     await loadDeptTrash()
   } catch (e) {
     err.value = e?.message || '恢复失败'
@@ -1598,8 +1606,14 @@ async function permDeleteDeptFile(item) {
   if (!confirm('确定从回收站彻底删除？此操作不可恢复。')) return
   err.value = ''
   try {
-    await api.permanentDelete(item.id)
-    showSuccess('文件已彻底删除')
+    if (item?.type === 'library') {
+      await api.permanentDeleteLibrary(item.id)
+      await refreshLibrariesKeepPage()
+      showSuccess('资料库已彻底删除')
+    } else {
+      await api.permanentDelete(item.id)
+      showSuccess('文件已彻底删除')
+    }
     await loadDeptTrash()
   } catch (e) {
     err.value = e?.message || '删除失败'

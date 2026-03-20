@@ -55,10 +55,6 @@
               <Icons name="trash" class="admin-nav-icon" />
               部门回收站
             </button>
-            <button class="admin-nav-item disabled" disabled title="敬请期待">
-              <Icons name="shield" class="admin-nav-icon" />
-              权限管理
-            </button>
             <button
               v-if="me?.is_superuser"
               :class="['admin-nav-item', { active: subTab === 'storage' }]"
@@ -182,8 +178,8 @@
                     <td class="admin-cell admin-cell-center">{{ u.department_name || '-' }}</td>
                     <td class="admin-role-status-cell admin-cell-center">
                       <div class="admin-role-status-wrap">
-                        <span :class="['admin-badge', u.is_superuser ? 'badge-admin' : (u.role === 'executive' ? 'badge-executive' : u.role === 'dept_leader' ? 'badge-dept-leader' : 'badge-user')]">
-                          {{ u.is_superuser ? '超级管理员' : (u.role === 'executive' ? '高管' : u.role === 'dept_leader' ? '部长' : '部员') }}
+                        <span :class="['admin-badge', u.is_superuser ? 'badge-admin' : (u.role === 'executive' ? 'badge-executive' : (u.is_department_leader ? 'badge-dept-leader' : 'badge-user'))]">
+                          {{ u.is_superuser ? '超级管理员' : (u.role === 'executive' ? '高管' : (u.is_department_leader ? '部长' : '部员')) }}
                         </span>
                         <span :class="['admin-badge', u.is_active ? 'badge-ok' : 'badge-disabled']">
                           {{ u.is_active ? '活跃' : '停用' }}
@@ -343,11 +339,11 @@
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="f in deptTrashList" :key="f.id" class="admin-table-row">
+                    <tr v-for="f in deptTrashList" :key="(f.type || 'file') + '-' + f.id" class="admin-table-row">
                       <td>{{ f.username || '-' }}</td>
-                      <td>文件</td>
-                      <td>{{ f.library_name || '-' }}</td>
-                      <td>{{ f.path || '-' }}</td>
+                      <td>{{ f.type === 'library' ? '文件库' : '文件' }}</td>
+                      <td>{{ f.type === 'library' ? (f.library_name || ('文件库 #' + f.id)) : (f.library_name || '-') }}</td>
+                      <td>{{ f.type === 'library' ? '-' : (f.path || '-') }}</td>
                       <td>{{ formatDate(f.deleted_at) }}</td>
                       <td>
                         <button
@@ -2353,7 +2349,8 @@ async function permDeleteGlobalLibrary(item) {
 
 async function restoreDeptTrashItem(item) {
   try {
-    await api.restoreFile(item.id)
+    if (item?.type === 'library') await api.restoreLibrary(item.id)
+    else await api.restoreFile(item.id)
     await loadDeptTrashAdmin()
   } catch (e) {
     // eslint-disable-next-line no-console
@@ -2364,7 +2361,8 @@ async function restoreDeptTrashItem(item) {
 async function permDeleteDeptTrashItem(item) {
   if (!confirm('确定从回收站彻底删除？此操作不可恢复。')) return
   try {
-    await api.permanentDelete(item.id)
+    if (item?.type === 'library') await api.permanentDeleteLibrary(item.id)
+    else await api.permanentDelete(item.id)
     await loadDeptTrashAdmin()
   } catch (e) {
     // eslint-disable-next-line no-console

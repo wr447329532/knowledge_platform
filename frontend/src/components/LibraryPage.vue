@@ -57,6 +57,7 @@
               <div class="lib-col-name">名称</div>
               <div class="lib-col-desc">描述</div>
               <div class="lib-col-type">类型</div>
+              <div class="lib-col-source">来源</div>
               <div class="lib-col-actions">操作</div>
             </div>
             <div
@@ -90,7 +91,21 @@
                 {{ lib.description || '-' }}
               </div>
               <div class="lib-col-type">
-                {{ lib.is_owner ? '我的库' : '共享库' }}
+                <template v-if="lib.is_owner">
+                  我的库
+                </template>
+                <template v-else>
+                  {{ lib.department_name ? '部门库' : '个人库' }}
+                </template>
+              </div>
+              <div class="lib-col-source">
+                <template v-if="lib.is_owner">-</template>
+                <template v-else>
+                  分享者：{{ lib.owner_username || '-' }}
+                  <template v-if="lib.department_name">
+                    · 来源部门：{{ lib.department_name }}
+                  </template>
+                </template>
               </div>
               <div class="lib-col-actions">
                 <div class="lib-actions">
@@ -150,6 +165,10 @@
             <div class="lib-card-meta">
               <span v-if="!lib.is_owner" class="lib-badge-shared">共享给我</span>
               <span v-else class="lib-badge-owner">我的库</span>
+              <div v-if="!lib.is_owner" class="lib-card-share-meta">
+                <span>分享者：{{ lib.owner_username || '-' }}</span>
+                <span v-if="lib.department_name">来源：{{ lib.department_name }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -257,11 +276,6 @@
                       @click="download(r.id); closeActionMenu()"
                     >下载</button>
                     <button
-                      v-if="currentLib?.is_owner"
-                      class="btn-small"
-                      @click="openShare(r); closeActionMenu()"
-                    >分享</button>
-                    <button
                       v-if="currentLib?.is_writeable"
                       class="btn-small"
                       @click="openRename(r); closeActionMenu()"
@@ -306,11 +320,6 @@
                   class="btn-small"
                   @click="download(r.id); closeActionMenu()"
                 >下载</button>
-                <button
-                  v-if="currentLib?.is_owner"
-                  class="btn-small"
-                  @click="openShare(r); closeActionMenu()"
-                >分享</button>
                 <button
                   v-if="currentLib?.is_writeable"
                   class="btn-small"
@@ -399,11 +408,6 @@
                       class="btn-small"
                       @click="openVersions(f); closeActionMenu()"
                     >版本</button>
-                    <button
-                      v-if="currentLib?.is_owner"
-                      class="btn-small"
-                      @click="openShare(f); closeActionMenu()"
-                    >分享</button>
                   </template>
                   <button
                     v-if="currentLib?.is_writeable"
@@ -468,11 +472,6 @@
                   class="btn-small"
                   @click="openVersions(f); closeActionMenu()"
                 >版本</button>
-                <button
-                  v-if="currentLib?.is_owner"
-                  class="btn-small"
-                  @click="openShare(f); closeActionMenu()"
-                >分享</button>
               </template>
               <button
                 v-if="currentLib?.is_writeable"
@@ -593,7 +592,7 @@ const props = defineProps({
 
 .lib-list-head {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 3fr) minmax(0, 1.5fr) 120px;
+  grid-template-columns: minmax(0, 2.8fr) minmax(0, 2.6fr) minmax(0, 1.2fr) minmax(0, 2fr) 120px;
   padding: 10px 16px;
   background: #f9fafb;
   border-bottom: 1px solid #e5e7eb;
@@ -605,7 +604,7 @@ const props = defineProps({
 
 .lib-list-row {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 3fr) minmax(0, 1.5fr) 120px;
+  grid-template-columns: minmax(0, 2.8fr) minmax(0, 2.6fr) minmax(0, 1.2fr) minmax(0, 2fr) 120px;
   padding: 10px 16px;
   font-size: 14px;
   align-items: center;
@@ -620,6 +619,7 @@ const props = defineProps({
 .lib-col-name,
 .lib-col-desc,
 .lib-col-type,
+.lib-col-source,
 .lib-col-actions {
   overflow: hidden;
 }
@@ -669,6 +669,14 @@ const props = defineProps({
 
 .lib-col-type {
   color: #4b5563;
+}
+
+.lib-col-source {
+  color: #6b7280;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .lib-actions {
@@ -833,6 +841,16 @@ const props = defineProps({
 
 .lib-card-meta {
   margin-top: 2px;
+}
+
+.lib-card-share-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #6b7280;
+  text-align: center;
 }
 
 /* 文件列表（当前库「全部文件」） */

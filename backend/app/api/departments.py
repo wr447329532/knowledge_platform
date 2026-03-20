@@ -184,6 +184,33 @@ def _compute_accessible_department_ids(
     return accessible
 
 
+def _compute_shared_department_ids_by_library_access(
+    db: Session,
+    current_user: User,
+) -> Set[int]:
+    """
+    基于“资料库可访问权限”补充部门访问范围：
+    - 当用户被跨部门共享了某个部门库（指定成员）时，该部门应在部门树中可进入
+    - 同时兼容 owner/public/executive 等通过库访问获得的部门可见性
+    """
+    from backend.app.core.library_access import get_accessible_library_ids
+
+    lib_ids = get_accessible_library_ids(db, current_user)
+    if not lib_ids:
+        return set()
+    rows = (
+        db.query(Library.department_id)
+        .filter(
+            Library.id.in_(lib_ids),
+            Library.department_id.isnot(None),
+            Library.deleted_at.is_(None),
+        )
+        .distinct()
+        .all()
+    )
+    return {int(r[0]) for r in rows if r and r[0] is not None}
+
+
 @router.get("/tree", response_model=List[DepartmentNode])
 def get_department_tree(
     db: Session = Depends(get_db),
@@ -202,6 +229,8 @@ def get_department_tree(
     )
     user_counts = _compute_user_counts(all_depts)
     accessible_ids = _compute_accessible_department_ids(all_depts, current_user)
+    shared_dept_ids = _compute_shared_department_ids_by_library_access(db, current_user)
+    accessible_ids = set(accessible_ids) | set(shared_dept_ids)
     return _build_tree(all_depts, parent_id=None, user_counts=user_counts, accessible_ids=accessible_ids)
 
 
@@ -348,12 +377,14 @@ def get_department_info(
     # 复用与树接口一致的访问控制规则
     all_depts: List[Department] = db.query(Department).all()
     accessible_ids = _compute_accessible_department_ids(all_depts, current_user)
+    shared_dept_ids = _compute_shared_department_ids_by_library_access(db, current_user)
+    effective_access_ids = set(accessible_ids) | set(shared_dept_ids)
 
     return DepartmentInfo(
         id=dept.id,
         name=dept.name,
         path=_build_department_path(dept),
-        has_access=dept.id in accessible_ids,
+        has_access=dept.id in effective_access_ids,
         user_count=len(getattr(dept, "users", []) or []),
     )
 
@@ -531,7 +562,9 @@ def list_department_libraries(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
     all_depts = db.query(Department).all()
     accessible_ids = _compute_accessible_department_ids(all_depts, current_user)
-    if department_id not in accessible_ids:
+    shared_dept_ids = _compute_shared_department_ids_by_library_access(db, current_user)
+    effective_access_ids = set(accessible_ids) | set(shared_dept_ids)
+    if department_id not in effective_access_ids:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该部门")
 
     from backend.app.core.library_access import has_library_access
@@ -547,10 +580,16 @@ def list_department_libraries(
     )
     result = []
     for lib in libs:
-        _, is_write = has_library_access(db, lib.id, current_user)
-        result.append(
-            _lib_to_read(db, lib, current_user.id, is_owner=lib.owner_id == current_user.id, is_write=is_write)
-        )
+        try:
+            _, is_write = has_library_access(db, lib.id, current_user)
+            result.append(
+                _lib_to_read(db, lib, current_user.id, is_owner=lib.owner_id == current_user.id, is_write=is_write)
+            )
+        except HTTPException as e:
+            # 仅展示当前用户有访问权限的部门库
+            if e.status_code in (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND):
+                continue
+            raise
     return result
 
 

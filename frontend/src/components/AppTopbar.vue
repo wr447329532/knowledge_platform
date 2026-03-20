@@ -154,7 +154,6 @@ const avatarLetter = computed(() => {
 const showDeptManage = computed(() => {
   const m = props.me
   if (!m) return false
-  if (m.role === 'dept_leader') return true
   return !!m.is_department_leader
 })
 

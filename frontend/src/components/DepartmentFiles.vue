@@ -51,7 +51,7 @@
                 <th>名称</th>
                 <th>类型</th>
                 <th>描述</th>
-                <th>所有者 / 共享</th>
+                <th>创建者</th>
               </tr>
             </thead>
             <tbody>
@@ -129,9 +129,7 @@ async function loadDept(id) {
             name: lib.name,
             type: 'folder',
             description: lib.description || '',
-            owner: lib.is_owner
-              ? (props.me?.username || lib.department_name || '我的库')
-              : (lib.department_name || '部门共享'),
+            owner: lib.owner_username || (lib.is_owner ? (props.me?.username || '我') : '-'),
             raw: lib,
           }))
         : []
