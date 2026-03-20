@@ -119,6 +119,10 @@ export async function changePassword(oldPassword, newPassword) {
   })
 }
 
+export async function getMySecurityInfo() {
+  return api('/auth/security-info')
+}
+
 /** 仅管理员：用户列表，可选 search（用户名/邮箱）、is_active（true/false） */
 export async function listUsers(params = {}) {
   const q = new URLSearchParams()

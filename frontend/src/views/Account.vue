@@ -137,20 +137,25 @@
               <div class="security-row">
                 <div>
                   <p class="security-label">账户状态</p>
-                  <p class="security-text">您的账户安全状态良好</p>
+                  <p class="security-text">您的账户当前状态：{{ securityInfo.accountStatus }}</p>
                 </div>
-                <span class="security-badge">正常</span>
+                <span class="security-badge">{{ securityInfo.accountStatus }}</span>
               </div>
               <div class="security-row">
                 <div>
                   <p class="security-label">上次登录时间</p>
-                  <p class="security-text">——</p>
+                  <p class="security-text">
+                    {{ formatSecurityTime(securityInfo.lastLoginAt) }}
+                    <template v-if="securityInfo.lastLoginIp">
+                      （IP：{{ securityInfo.lastLoginIp }}）
+                    </template>
+                  </p>
                 </div>
               </div>
               <div class="security-row">
                 <div>
                   <p class="security-label">上次修改密码</p>
-                  <p class="security-text">——</p>
+                  <p class="security-text">{{ formatSecurityTime(securityInfo.lastPasswordChangeAt) }}</p>
                 </div>
               </div>
             </div>
@@ -189,6 +194,12 @@ const showNew = ref(false)
 const showConfirm = ref(false)
 const err = ref('')
 const profileSuccess = ref('')
+const securityInfo = ref({
+  accountStatus: '正常',
+  lastLoginAt: null,
+  lastLoginIp: null,
+  lastPasswordChangeAt: null,
+})
 
 const initials = computed(() => {
   if (profile.value.name) return profile.value.name.slice(0, 2)
@@ -208,6 +219,33 @@ async function loadMe() {
     department: me.department_name || '',
   }
   originalProfile.value = { ...profile.value }
+}
+
+async function loadSecurityInfo() {
+  try {
+    const info = await api.getMySecurityInfo()
+    securityInfo.value = {
+      accountStatus: info?.account_status || '正常',
+      lastLoginAt: info?.last_login_at || null,
+      lastLoginIp: info?.last_login_ip || null,
+      lastPasswordChangeAt: info?.last_password_change_at || null,
+    }
+  } catch (_) {
+    // 安全信息加载失败不阻断账户页主流程
+  }
+}
+
+function formatSecurityTime(v) {
+  if (!v) return '——'
+  try {
+    let raw = String(v)
+    if (!raw.endsWith('Z') && !raw.includes('+')) raw = raw.replace(' ', 'T') + 'Z'
+    const d = new Date(raw)
+    if (Number.isNaN(d.getTime())) return String(v)
+    return d.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
+  } catch (_) {
+    return String(v)
+  }
 }
 
 function resetProfile() {
@@ -247,6 +285,7 @@ async function changePassword() {
   try {
     await api.changePassword(password.value.oldPassword, password.value.newPassword)
     password.value = { oldPassword: '', newPassword: '', confirmPassword: '' }
+    await loadSecurityInfo()
     alert('密码修改成功，请使用新密码重新登录。')
   } catch (e) {
     err.value = e.message || '修改密码失败'
@@ -255,6 +294,7 @@ async function changePassword() {
 
 onMounted(() => {
   loadMe()
+  loadSecurityInfo()
 })
 </script>
 

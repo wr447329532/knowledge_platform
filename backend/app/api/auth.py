@@ -10,6 +10,7 @@ from backend.app.api.deps import get_current_user, get_current_active_superuser
 from backend.app.core.audit import get_client_ip, log_audit
 from backend.app.core.security import create_access_token, get_password_hash, verify_password
 from backend.app.db.session import get_db
+from backend.app.models.audit import AuditLog
 from backend.app.models.department import Department
 from backend.app.models.user import User
 from backend.app.schemas.auth import ChangePassword, Token, UserCreate, UserRead, UserUpdate
@@ -22,6 +23,13 @@ class ProfileUpdate(BaseModel):
     """当前用户自助修改的基本资料（仅允许修改用户名用于显示）。"""
 
     username: Optional[str] = Field(None, min_length=1, max_length=50, description="显示名称")
+
+
+class SecurityInfoRead(BaseModel):
+    account_status: str
+    last_login_at: Optional[str] = None
+    last_login_ip: Optional[str] = None
+    last_password_change_at: Optional[str] = None
 
 
 def _user_to_read(user: User, is_superuser_override: bool | None = None) -> UserRead:
@@ -61,6 +69,36 @@ def get_me(
     user_read = _user_to_read(current_user, is_superuser_override=is_super)
     user_read.is_department_leader = is_leader
     return user_read
+
+
+@router.get("/security-info", response_model=SecurityInfoRead)
+def get_security_info(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """当前用户安全信息：账户状态、上次登录时间/IP、上次改密时间。"""
+    last_login = (
+        db.query(AuditLog)
+        .filter(AuditLog.user_id == current_user.id, AuditLog.action == "login")
+        .order_by(AuditLog.created_at.desc())
+        .first()
+    )
+    last_change_password = (
+        db.query(AuditLog)
+        .filter(AuditLog.user_id == current_user.id, AuditLog.action == "change_password")
+        .order_by(AuditLog.created_at.desc())
+        .first()
+    )
+    return SecurityInfoRead(
+        account_status="正常" if current_user.is_active else "停用",
+        last_login_at=last_login.created_at.isoformat() if last_login and last_login.created_at else None,
+        last_login_ip=last_login.ip_address if last_login else None,
+        last_password_change_at=(
+            last_change_password.created_at.isoformat()
+            if last_change_password and last_change_password.created_at
+            else None
+        ),
+    )
 
 
 @router.patch("/me", response_model=Token)
