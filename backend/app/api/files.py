@@ -1448,6 +1448,31 @@ def _format_bytes(b: int) -> str:
     return f"{b / (1024 * 1024 * 1024):.1f} GB"
 
 
+def _to_utc_naive(dt: datetime | None) -> datetime | None:
+    """
+    将 datetime 统一为“UTC 下的 naive datetime”用于跨数据库比较。
+    SQLite 常见为 naive，PostgreSQL 常见为 aware，统一后可避免比较异常。
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _format_growth_trend(recent_count: int, previous_count: int) -> str:
+    """
+    计算增长趋势（最近 7 天 vs 前 7 天），并格式化为带符号百分比字符串。
+    """
+    if previous_count <= 0:
+        if recent_count <= 0:
+            return "0.0%"
+        return "+100.0%"
+    delta_pct = ((recent_count - previous_count) / previous_count) * 100.0
+    sign = "+" if delta_pct > 0 else ""
+    return f"{sign}{delta_pct:.1f}%"
+
+
 def _iter_latest_files(db: Session):
     """返回所有未删除文件的最新版本行，用于存储统计。"""
     from sqlalchemy import func
@@ -1512,7 +1537,7 @@ def get_storage_by_department(
         if row[0] is not None
     }
 
-    # 文件级别统计
+    # 文件级别统计（当前使用量、文件总数）
     latest_rows = _iter_latest_files(db)
     dept_used: dict[int, int] = {}
     dept_file_count: dict[int, int] = {}
@@ -1531,6 +1556,35 @@ def get_storage_by_department(
         dept_used[dept_id] = dept_used.get(dept_id, 0) + int(size or 0)
         dept_file_count[dept_id] = dept_file_count.get(dept_id, 0) + 1
 
+    # 增长趋势：最近 7 天新增文件数 vs 前 7 天新增文件数
+    now_utc_naive = _to_utc_naive(datetime.now(timezone.utc)) or datetime.utcnow()
+    recent_start = now_utc_naive - timedelta(days=7)
+    previous_start = now_utc_naive - timedelta(days=14)
+
+    active_file_rows = (
+        db.query(FileEntry.created_at, Library.department_id)
+        .join(Library, Library.id == FileEntry.library_id)
+        .filter(
+            FileEntry.deleted_at.is_(None),
+            FileEntry.is_dir.is_(False),
+            Library.deleted_at.is_(None),
+            Library.department_id.isnot(None),
+        )
+        .all()
+    )
+    dept_recent_new_files: dict[int, int] = {}
+    dept_previous_new_files: dict[int, int] = {}
+    for created_at, dept_id in active_file_rows:
+        if dept_id is None:
+            continue
+        created_naive = _to_utc_naive(created_at)
+        if created_naive is None:
+            continue
+        if created_naive >= recent_start:
+            dept_recent_new_files[dept_id] = dept_recent_new_files.get(dept_id, 0) + 1
+        elif created_naive >= previous_start:
+            dept_previous_new_files[dept_id] = dept_previous_new_files.get(dept_id, 0) + 1
+
     rows_out: list[DepartmentStorageRow] = []
     for dept_id, dept in depts.items():
         used = dept_used.get(dept_id, 0)
@@ -1545,6 +1599,10 @@ def get_storage_by_department(
             status_str = "warning"
         else:
             status_str = "normal"
+        trend = _format_growth_trend(
+            dept_recent_new_files.get(dept_id, 0),
+            dept_previous_new_files.get(dept_id, 0),
+        )
         rows_out.append(
             DepartmentStorageRow(
                 id=dept_id,
@@ -1557,6 +1615,7 @@ def get_storage_by_department(
                 users=users,
                 file_count=file_cnt,
                 status=status_str,
+                trend=trend,
             )
         )
 

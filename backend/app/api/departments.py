@@ -104,6 +104,22 @@ def _get_leader_name(dept: Department) -> Optional[str]:
     return None
 
 
+def _ensure_dept_scope_access(dept: Department, current_user: User) -> None:
+    """
+    部门管理范围校验：
+    - 系统管理员可访问任意部门
+    - 部门负责人仅可访问自己负责的部门
+    """
+    if current_user.is_superuser or current_user.username == "admin":
+        return
+    if getattr(dept, "leader_user_id", None) == current_user.id:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="仅系统管理员或该部门负责人可访问",
+    )
+
+
 def _build_tree(
     nodes: List[Department],
     parent_id: Optional[int],
@@ -273,6 +289,7 @@ def update_department(
     dept = db.query(Department).filter(Department.id == department_id).first()
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
+    _ensure_dept_scope_access(dept, current_user)
     if body.name is not None:
         dept.name = body.name.strip()
     if body.parent_id is not None:
@@ -399,6 +416,7 @@ def list_department_members(
     dept = db.query(Department).filter(Department.id == department_id).first()
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
+    _ensure_dept_scope_access(dept, current_user)
     users = (
         db.query(User)
         .filter(User.department_id == department_id, User.is_active.is_(True))
@@ -423,6 +441,7 @@ def list_department_members_manage(
     dept = db.query(Department).filter(Department.id == department_id).first()
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
+    _ensure_dept_scope_access(dept, current_user)
     users = (
         db.query(User)
         .options(joinedload(User.department))
@@ -457,6 +476,7 @@ def create_department_member(
     dept = db.query(Department).filter(Department.id == department_id).first()
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
+    _ensure_dept_scope_access(dept, current_user)
 
     existing = (
         db.query(User)
@@ -523,6 +543,7 @@ def remove_department_member(
     dept = db.query(Department).filter(Department.id == department_id).first()
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
+    _ensure_dept_scope_access(dept, current_user)
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:

@@ -2,7 +2,7 @@
 =================================
 
 本项目是在 `vscode` 目录下从 0 开发的**文件共享和知识管理平台**，采用 **Python + FastAPI** 后端与 **Vue 3 + Vite** 前端。  
-**最后更新：2026 年 3 月 20 日**
+**最后更新：2026 年 3 月 21 日**
 
 **当前已实现：**
 
@@ -31,7 +31,7 @@
 - 系统管理：
   - **用户管理**：启用/停用、重置密码、分配部门、管理员标记
   - **部门管理**：树形表格、存储统计占位、部门负责人
-  - **存储管理（新）**：按部门 / 用户 / 文件类型聚合存储使用，支持配额调整
+  - **存储管理（新）**：按部门 / 用户 / 文件类型聚合存储使用，支持配额调整；部门维度“增长趋势”已改为动态计算（最近 7 天新增文件数 vs 前 7 天），并在存储页自动刷新
   - **通知管理（新）**：通知模板、发送历史、通知开关、管理员一键群发通知
 
 **后续规划：** 新建资料库更细粒度权限设置（角色 / 继承策略）、全文搜索、本地 LLM 知识问答等。
@@ -50,6 +50,13 @@
 
 功能与更新记录
 --------------
+
+### 2026-03-21 开发日志
+
+| 时间 | 功能说明 |
+|------|----------|
+| 2026-03-21 | **存储管理趋势动态化**：系统管理 → 存储管理中的“部门存储-增长趋势”不再固定显示，改为按部门动态计算：`(最近7天新增文件数 - 前7天新增文件数) / 前7天新增文件数`；当前口径为“文件数量增长率”（仅统计未删除文件、排除目录），并处理前值为 0 的除零场景。 |
+| 2026-03-21 | **存储页实时性优化**：管理员停留在“存储管理”页时，前端每 15 秒自动刷新系统/部门/用户/文件类型统计，确保“使用率、文件数量、增长趋势”可随上传与文件变化及时更新。 |
 
 ### 2026-03-20 开发日志
 
@@ -403,6 +410,10 @@ npm run dev
 ### 2) 配置与环境
 
 - [ ] 生产环境变量已确认（数据库路径、存储根目录、系统总配额等）
+- [ ] CORS 白名单已配置（`CORS_ALLOW_ORIGINS`，禁止生产使用 `*`）
+- [ ] 默认管理员启动策略已确认（`RESET_DEFAULT_ADMIN_PASSWORD_ON_STARTUP=false`）
+- [ ] 数据库迁移已通过 Alembic 执行（`alembic upgrade head`）
+- [ ] 生产环境已关闭启动时自动建表/兼容补丁（`DB_AUTO_CREATE_TABLES_ON_STARTUP=false`、`DB_COMPAT_PATCH_ON_STARTUP=false`）
 - [ ] `STORAGE_SYSTEM_TOTAL_BYTES` 按实际磁盘容量与预留空间配置
 - [ ] 时区策略统一（后端 UTC 存储，前端按 `Asia/Shanghai` 展示）
 - [ ] 关闭开发模式配置（如 `--reload`），改为进程守护启动
@@ -467,6 +478,111 @@ npm run dev
 - ⏳ 日志落盘与轮转、监控与告警接入
 - ⏳ 默认管理员密码是否已改、弱账号清理
 - ⏳ 实机并发与大文件/多页 PDF 预览性能压测结果
+
+生产部署资料（已准备）
+----------------
+
+- 环境变量模板：`deploy/.env.example.prod`
+- systemd 服务模板：`deploy/systemd/knowledge-platform.service`
+- nginx 站点模板：`deploy/nginx/knowledge-platform.conf`
+- 备份脚本：
+  - `scripts/backup_db.sh`
+  - `scripts/backup_storage.sh`
+- 运维文档：
+  - `docs/PROD_DEPLOY.md`
+  - `docs/ROLLBACK.md`
+  - `docs/OPS_CHECKLIST.md`
+- 数据库迁移目录：
+  - `alembic/`
+  - `alembic.ini`
+
+两种部署方式说明
+----------------
+
+### 方式 A：传统部署（Python + systemd + Nginx）
+
+适用场景：
+
+- 服务器环境以系统服务运维为主（不使用容器编排）
+- 运维团队更熟悉 `systemd` / `nginx`
+- 希望直接在宿主机管理 Python 虚拟环境与进程
+
+对应资料：
+
+- `deploy/.env.example.prod`
+- `deploy/systemd/knowledge-platform.service`
+- `deploy/nginx/knowledge-platform.conf`
+- `docs/PROD_DEPLOY.md`
+
+核心流程（简版）：
+
+1. 拉代码并创建 `.venv`，安装依赖  
+2. 配置 `.env`（JWT、数据库、存储、CORS）  
+3. 执行 `alembic upgrade head`  
+4. 启动 `systemd` 后端服务 + 配置 `nginx` 反代  
+5. 验证 `GET /health`、登录、上传、预览、回收站
+
+### 方式 B：镜像部署（Docker Compose）
+
+适用场景：
+
+- 希望环境一致、迁移简单、发布回滚更快
+- 后续计划扩容或迁移到 K8s/容器平台
+- 需要把应用、数据库、Nginx 以统一编排管理
+
+对应资料：
+
+- `docker/backend.Dockerfile`
+- `docker/nginx.Dockerfile`
+- `docker/entrypoint.sh`
+- `docker/nginx.conf`
+- `docker-compose.yml`
+- `deploy/.env.example.docker`
+
+核心流程（简版）：
+
+1. 复制 Docker 环境变量模板：`cp deploy/.env.example.docker .env`  
+2. 构建并启动：`docker compose up -d --build`  
+3. 容器启动时自动执行 `alembic upgrade head`  
+4. 通过 `http://服务器IP` 验证访问与核心功能
+
+### 选型建议（当前项目）
+
+- **优先建议**：方式 B（Docker Compose），更利于你后续“镜像部署到服务器”目标。
+- 若当前运维限制无法容器化，可先用方式 A，上线稳定后再切换到方式 B。
+
+镜像部署（Docker Compose）
+----------------
+
+已提供容器化部署文件：
+
+- `docker/backend.Dockerfile`（后端镜像）
+- `docker/nginx.Dockerfile`（前端静态构建 + Nginx）
+- `docker/entrypoint.sh`（启动前自动 `alembic upgrade head`）
+- `docker/nginx.conf`（Nginx 反代 `/api` 到后端）
+- `docker-compose.yml`（`db + app + nginx`）
+- `deploy/.env.example.docker`（Docker 环境变量模板）
+
+快速启动（无域名可直接用 IP）：
+
+```bash
+cp deploy/.env.example.docker .env
+docker compose up -d --build
+```
+
+访问方式：
+
+- 浏览器：`http://服务器IP`
+- 后端健康检查（容器内）：`http://app:8000/health`
+
+无域名上线说明（IP 方式）
+----------------
+
+- 当前没有域名时，可先通过 `http://服务器IP` 上线（`nginx server_name _;`）。
+- 暂不启用 HTTPS 证书，但建议：
+  - 仅内网访问，或对公网访问做 IP 白名单限制；
+  - 在 `.env` 中严格配置 `CORS_ALLOW_ORIGINS` 为可信地址；
+  - 取得域名后再切换 HTTPS（Let’s Encrypt）。
 
 后续规划（简要）
 ----------------

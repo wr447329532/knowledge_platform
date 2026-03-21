@@ -610,7 +610,7 @@
                           {{ row.file_count.toLocaleString('zh-CN') }}
                         </td>
                         <td class="admin-cell-center">
-                          <span class="text-green">{{ row.trend }}</span>
+                          <span :class="trendTextClass(row.trend)">{{ row.trend }}</span>
                         </td>
                         <td class="text-right">
                           <button
@@ -1724,7 +1724,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import * as XLSX from 'xlsx'
 import * as api from '../api/client'
@@ -1764,6 +1764,7 @@ const storageInnerTab = ref('departments')
 const storageSearchKeyword = ref('')
 const storageDeptStatus = ref('all')
 const storageUserSort = ref('usage-desc')
+let storageRefreshTimer = null
 
 // 通知管理
 const notifyInnerTab = ref('templates')
@@ -2266,13 +2267,14 @@ async function gotoGlobalTrashNextPage() {
 }
 
 async function loadDeptTrashAdmin() {
-  if (!me.value?.department_id) {
+  const deptId = _getManagedDepartmentId()
+  if (!deptId) {
     deptTrashList.value = []
     return
   }
   deptTrashLoading.value = true
   try {
-    deptTrashList.value = await api.listDeptTrash(me.value.department_id)
+    deptTrashList.value = await api.listDeptTrash(deptId)
   } catch (e) {
     // 部门负责人视角：若接口报错，仅在表内提示为空即可
     // eslint-disable-next-line no-console
@@ -2535,6 +2537,11 @@ function switchTab(name) {
     return
   }
   subTab.value = name
+  if (name === 'storage') {
+    startStorageAutoRefresh()
+  } else {
+    stopStorageAutoRefresh()
+  }
   if (name === 'users') loadUsers()
   if (name === 'departments') loadDepartments()
   if (name === 'dept-members') loadDeptMembers()
@@ -2565,6 +2572,22 @@ async function loadStorageAll() {
     loadUserStorage(),
     loadFileTypeStorage(),
   ])
+}
+
+function startStorageAutoRefresh() {
+  stopStorageAutoRefresh()
+  storageRefreshTimer = setInterval(() => {
+    if (subTab.value === 'storage') {
+      loadStorageAll()
+    }
+  }, 15000)
+}
+
+function stopStorageAutoRefresh() {
+  if (storageRefreshTimer) {
+    clearInterval(storageRefreshTimer)
+    storageRefreshTimer = null
+  }
 }
 
 async function loadDeptStorage() {
@@ -2606,6 +2629,14 @@ function fileTypeColor(idx) {
   return palette[idx % palette.length]
 }
 
+function trendTextClass(trend) {
+  const t = String(trend || '').trim()
+  if (!t) return ''
+  if (t.startsWith('-')) return 'text-danger'
+  if (t === '0.0%' || t === '0%') return 'text-secondary'
+  return 'text-green'
+}
+
 async function loadUsers() {
   try {
     const params = {}
@@ -2626,19 +2657,39 @@ async function loadDepartments() {
     deptTreeForTable.value = []
   }
   // 部门负责人或有部门的管理员：顺便刷新本部门成员列表
-  if (me.value?.department_id && (me.value?.is_superuser || me.value?.is_department_leader)) {
+  if (_getManagedDepartmentId() && (me.value?.is_superuser || me.value?.is_department_leader)) {
     await loadDeptMembers()
   }
 }
 
+function _findLeaderDeptId(nodes, uid) {
+  if (!Array.isArray(nodes) || uid == null) return null
+  for (const n of nodes) {
+    if (Number(n?.leader_user_id) === Number(uid)) return n.id
+    const child = _findLeaderDeptId(n?.children || [], uid)
+    if (child != null) return child
+  }
+  return null
+}
+
+function _getManagedDepartmentId() {
+  if (!me.value) return null
+  if (me.value.is_superuser) return me.value.department_id ?? null
+  if (me.value.is_department_leader) {
+    const byTree = _findLeaderDeptId(deptTreeForTable.value, me.value.id)
+    if (byTree != null) return byTree
+  }
+  return me.value.department_id ?? null
+}
+
 async function loadDeptMembers() {
-  // 仅当当前用户绑定了部门时才加载成员列表；管理员无部门则不在此视图管理成员
-  if (!me.value?.department_id) {
+  const deptId = _getManagedDepartmentId()
+  if (!deptId) {
     deptMembers.value = []
     return
   }
   try {
-    deptMembers.value = await api.listDepartmentMembersManage(me.value.department_id)
+    deptMembers.value = await api.listDepartmentMembersManage(deptId)
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error(e)
@@ -3067,12 +3118,13 @@ async function createDeptMember() {
     err.value = pwdErr
     return
   }
-  if (!me.value?.department_id) {
+  const deptId = _getManagedDepartmentId()
+  if (!deptId) {
     err.value = '当前账号未绑定部门，无法创建成员'
     return
   }
   try {
-    await api.createDepartmentMember(me.value.department_id, {
+    await api.createDepartmentMember(deptId, {
       email: deptNewUserEmail.value.trim(),
       username: deptNewUserUsername.value.trim(),
       password: deptNewUserPassword.value,
@@ -3086,11 +3138,12 @@ async function createDeptMember() {
 }
 
 async function removeDeptMember(u) {
-  if (!me.value?.department_id || !u?.id) return
+  const deptId = _getManagedDepartmentId()
+  if (!deptId || !u?.id) return
   if (!confirm(`确定将成员「${u.username || u.email || ('用户 #' + u.id)}」移出本部门？`)) return
   err.value = ''
   try {
-    await api.removeDepartmentMember(me.value.department_id, u.id)
+    await api.removeDepartmentMember(deptId, u.id)
     await loadDeptMembers()
   } catch (e) {
     err.value = e.message
@@ -3107,7 +3160,9 @@ onMounted(async () => {
 
   // URL 指定了 tab 时（如从顶部栏「部门管理」进入）
   if (route.query?.tab === 'departments') {
-    subTab.value = 'departments'
+    subTab.value = me.value?.is_department_leader && !me.value?.is_superuser
+      ? 'dept-members'
+      : 'departments'
   }
 
   // 超级管理员：加载全部系统管理数据
@@ -3118,21 +3173,23 @@ onMounted(async () => {
       loadStorageAll(),
       loadAudit(),
     ])
+    if (subTab.value === 'storage') startStorageAutoRefresh()
     return
   }
 
-  // 部门负责人：仅加载部门管理相关数据，默认停留在「部门管理」标签
+  // 部门负责人：仅加载本部门可管理数据，默认停留在「部门成员」标签
   if (me.value?.is_department_leader) {
-    subTab.value = 'departments'
-    await Promise.all([
-      loadDepartments(),
-      loadDeptMembers(),
-    ])
+    subTab.value = 'dept-members'
+    await loadDepartments()
     return
   }
 
   // 既不是管理员也不是部门负责人：不允许访问该页面，返回首页
   router.push('/')
+})
+
+onUnmounted(() => {
+  stopStorageAutoRefresh()
 })
 </script>
 
@@ -4472,6 +4529,10 @@ onMounted(async () => {
   color: #b91c1c;
   font-size: 13px;
   margin: 8px 0 0;
+}
+
+.text-secondary {
+  color: #6b7280;
 }
 
 .modal .form-group {

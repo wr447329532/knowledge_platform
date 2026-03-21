@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: kp_db
+    restart: always
+    environment:
+      POSTGRES_DB: knowledge_platform
+      POSTGRES_USER: kp_user
+      POSTGRES_PASSWORD: kp_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kp_user -d knowledge_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: kp_app
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-REPLACE_WITH_STRONG_RANDOM_SECRET}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
+      DATABASE_URL: postgresql+psycopg2://kp_user:kp_password@db:5432/knowledge_platform
+      STORAGE_ROOT: /app/storage
+      STORAGE_SYSTEM_TOTAL_BYTES: ${STORAGE_SYSTEM_TOTAL_BYTES:-1099511627776}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://127.0.0.1}
+      BOOTSTRAP_DEFAULT_ADMIN: "true"
+      RESET_DEFAULT_ADMIN_PASSWORD_ON_STARTUP: "false"
+      DB_AUTO_CREATE_TABLES_ON_STARTUP: "false"
+      DB_COMPAT_PATCH_ON_STARTUP: "false"
+    volumes:
+      - storage_data:/app/storage
+    expose:
+      - "8000"
+
+  nginx:
+    build:
+      context: .
+      dockerfile: docker/nginx.Dockerfile
+    container_name: kp_nginx
+    restart: always
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+
+volumes:
+  postgres_data:
+  storage_data:

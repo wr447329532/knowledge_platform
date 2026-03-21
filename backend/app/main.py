@@ -153,8 +153,8 @@ def _ensure_audit_logs_has_ip_address() -> None:
         conn.commit()
 
 
-def _ensure_default_admin() -> None:
-    """启动时确保存在默认管理员：用户名 admin，密码 admin123"""
+def _ensure_default_admin(reset_password_on_startup: bool = False) -> None:
+    """启动时确保存在默认管理员。默认不重置既有账号密码。"""
     db = SessionLocal()
     try:
         # 兼容：如果已经存在 admin@example.com，则复用该账号并规范为 admin
@@ -163,18 +163,17 @@ def _ensure_default_admin() -> None:
             .filter(or_(User.username == DEFAULT_ADMIN_USERNAME, User.email == "admin@example.com"))
             .first()
         )
-        pwd_hash = get_password_hash(DEFAULT_ADMIN_PASSWORD)
         if user:
-            user.hashed_password = pwd_hash
-            user.email = "admin@example.com"
+            if reset_password_on_startup:
+                user.hashed_password = get_password_hash(DEFAULT_ADMIN_PASSWORD)
+            # 仅确保管理员能力，不覆盖用户名/邮箱等用户已维护信息
             user.is_superuser = True
             user.is_active = True
-            # 不覆盖 username，保留用户自行修改的显示名（如「超级管理员」）
         else:
             user = User(
                 username=DEFAULT_ADMIN_USERNAME,
                 email="admin@example.com",
-                hashed_password=pwd_hash,
+                hashed_password=get_password_hash(DEFAULT_ADMIN_PASSWORD),
                 is_active=True,
                 is_superuser=True,
             )
@@ -198,18 +197,23 @@ def create_app() -> FastAPI:
     if settings.JWT_SECRET_KEY == "change_this_secret_in_env":
         raise RuntimeError("请在 .env 中设置真实的 JWT_SECRET_KEY（不可使用默认示例值）")
 
-    # 初始化数据库表（开发期使用，生产建议使用迁移工具）
-    Base.metadata.create_all(bind=engine)
-    _ensure_file_entries_has_deleted_at()
-    _ensure_users_has_department_id()
-    _ensure_users_has_role()
-    _ensure_libraries_has_department_id()
-    _ensure_libraries_has_visibility()
-    _ensure_libraries_has_allow_download()
-    _ensure_libraries_has_deleted_at()
-    _ensure_departments_has_leader_user_id()
-    _ensure_audit_logs_has_ip_address()
-    _ensure_default_admin()
+    # 数据库初始化与兼容补丁（开发期默认开启；生产建议关闭并使用 Alembic）
+    if settings.DB_AUTO_CREATE_TABLES_ON_STARTUP:
+        Base.metadata.create_all(bind=engine)
+    if settings.DB_COMPAT_PATCH_ON_STARTUP:
+        _ensure_file_entries_has_deleted_at()
+        _ensure_users_has_department_id()
+        _ensure_users_has_role()
+        _ensure_libraries_has_department_id()
+        _ensure_libraries_has_visibility()
+        _ensure_libraries_has_allow_download()
+        _ensure_libraries_has_deleted_at()
+        _ensure_departments_has_leader_user_id()
+        _ensure_audit_logs_has_ip_address()
+    if settings.BOOTSTRAP_DEFAULT_ADMIN:
+        _ensure_default_admin(
+            reset_password_on_startup=settings.RESET_DEFAULT_ADMIN_PASSWORD_ON_STARTUP
+        )
 
     app = FastAPI(
         title=settings.PROJECT_NAME,
@@ -217,9 +221,10 @@ def create_app() -> FastAPI:
         version=settings.VERSION,
     )
 
+    cors_origins = settings.cors_allow_origins_list()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins if cors_origins else [],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
