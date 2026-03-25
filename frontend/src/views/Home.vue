@@ -28,7 +28,7 @@
         :breadcrumb-segments="breadcrumbSegments"
         :notify-count="unreadNotifyCount"
         :me="me"
-        @search="doSearch"
+        @search="doSearchNow"
         @new-lib="openNewLib"
         @upload="openUploadModal"
         @clear-lib="currentLib = null; pathPrefix = ''"
@@ -77,6 +77,9 @@
         :sorted-search-results="sortedSearchResults"
         :sorted-files="sortedFiles"
         :search-keyword="searchKeyword"
+        :search-applied="searchApplied"
+        :root-search-libraries="rootSearchLibraries"
+        :root-search-files="rootSearchFiles"
         :path-prefix="pathPrefix"
         :open-action-menu-id="openActionMenuId"
         :format-date="formatDate"
@@ -88,6 +91,8 @@
         :on-file-drop="onFileDrop"
         :go-to-path="goToPath"
         :on-file-click="onFileClick"
+        :open-global-search-file-result="openGlobalSearchFileResult"
+        :open-global-search-file-preview="openGlobalSearchFilePreview"
         :toggle-action-menu="toggleActionMenu"
         :download="download"
         :open-share="openShare"
@@ -729,7 +734,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import * as api from '../api/client'
 import Icons from '../components/Icons.vue'
@@ -834,6 +839,9 @@ const auditStartDate = ref('')
 const auditEndDate = ref('')
 const searchKeyword = ref('')
 const searchResults = ref([])
+const searchApplied = ref(false)
+const rootSearchLibraries = ref([])
+const rootSearchFiles = ref([])
 const storageStats = ref(null)
 const showRename = ref(false)
 const renameEntry = ref(null)
@@ -871,6 +879,7 @@ const activeDeptLoading = ref(false)
 const activeDeptErr = ref('')
 const deptFilesReloadKey = ref(0)
 const uploadErr = ref('')
+let searchDebounceTimer = null
 
 const uploadStep = ref('list')  // 'list' | 'confirm'
 const vmQueue = ref([])        // 待确认队列：{ file, ufId, searchResults }
@@ -1048,6 +1057,13 @@ onMounted(async () => {
   await loadNotifications(true)
 })
 
+onUnmounted(() => {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+})
+
 async function loadLibraries() {
   try {
     const params = {
@@ -1065,7 +1081,28 @@ async function loadLibraries() {
 }
 
 watch(subTab, val => { if (val === 'departments') loadDepartments() })
-watch([currentLib, pathPrefix], () => { if (currentLib.value) loadFiles(); searchResults.value = [] })
+watch(searchKeyword, () => {
+  if (tab.value !== 'lib') return
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  const kw = searchKeyword.value?.trim()
+  if (!kw) {
+    clearSearch()
+    return
+  }
+  searchDebounceTimer = setTimeout(() => {
+    doSearch()
+  }, 300)
+})
+watch([currentLib, pathPrefix], () => {
+  if (currentLib.value) loadFiles()
+  searchResults.value = []
+  rootSearchLibraries.value = []
+  rootSearchFiles.value = []
+  searchApplied.value = false
+})
 watch(showNewDropdown, open => {
   if (!open) return
   const onDocClick = () => { showNewDropdown.value = false; document.removeEventListener('click', onDocClick) }
@@ -1089,17 +1126,113 @@ async function loadStorageStats() {
 
 // ---- 搜索 ----
 
-function clearSearch() { searchResults.value = []; searchKeyword.value = '' }
+function clearSearch() {
+  searchResults.value = []
+  rootSearchLibraries.value = []
+  rootSearchFiles.value = []
+  searchKeyword.value = ''
+  searchApplied.value = false
+}
 async function doSearch() {
-  if (!currentLib.value || !searchKeyword.value?.trim()) { searchResults.value = []; return }
-  try { searchResults.value = await api.searchFiles(currentLib.value.id, searchKeyword.value.trim()) }
-  catch (e) { err.value = e.message; searchResults.value = [] }
+  if (!currentLib.value || !searchKeyword.value?.trim()) {
+    if (!searchKeyword.value?.trim()) {
+      clearSearch()
+      return
+    }
+  }
+
+  const kw = searchKeyword.value.trim()
+  if (currentLib.value) {
+    try {
+      searchResults.value = await api.searchFiles(currentLib.value.id, kw)
+      rootSearchLibraries.value = []
+      rootSearchFiles.value = []
+      searchApplied.value = true
+    }
+    catch (e) {
+      err.value = e.message
+      searchResults.value = []
+      rootSearchLibraries.value = []
+      rootSearchFiles.value = []
+      searchApplied.value = true
+    }
+    return
+  }
+
+  try {
+    const [libs, files] = await Promise.all([
+      searchLibrariesGlobal(kw),
+      api.searchFilesGlobal(kw, null),
+    ])
+    rootSearchLibraries.value = libs
+    rootSearchFiles.value = files || []
+    searchResults.value = []
+    searchApplied.value = true
+  } catch (e) {
+    err.value = e.message
+    rootSearchLibraries.value = []
+    rootSearchFiles.value = []
+    searchResults.value = []
+    searchApplied.value = true
+  }
+}
+
+function doSearchNow() {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  doSearch()
+}
+
+async function searchLibrariesGlobal(keyword) {
+  const limit = 200
+  let offset = 0
+  const all = []
+  // 逐页拉取可访问库，避免仅搜索当前分页数据
+  while (offset <= 2000) {
+    const rows = await api.listLibraries({ limit, offset })
+    const list = rows || []
+    all.push(...list)
+    if (list.length < limit) break
+    offset += limit
+  }
+  const kw = String(keyword || '').trim().toLowerCase()
+  if (!kw) return []
+  return all.filter(lib =>
+    (lib?.name || '').toLowerCase().includes(kw) ||
+    (lib?.description || '').toLowerCase().includes(kw)
+  )
+}
+
+async function openGlobalSearchFileResult(file) {
+  if (!file?.library_id) return
+  let lib = (libraries.value || []).find(l => Number(l.id) === Number(file.library_id))
+  if (!lib) {
+    lib = await api.getLibrary(file.library_id)
+  }
+  currentLib.value = lib
+  const fullPath = String(file.path || '')
+  const idx = fullPath.lastIndexOf('/')
+  pathPrefix.value = idx >= 0 ? fullPath.slice(0, idx + 1) : ''
+  searchResults.value = []
+  rootSearchLibraries.value = []
+  rootSearchFiles.value = []
+  searchApplied.value = false
+  await loadFiles()
+}
+
+async function openGlobalSearchFilePreview(file) {
+  if (!file || file.is_dir) return
+  await openPreview(file)
 }
 function goToPath(path) {
   const dir = path.endsWith('/') ? path.slice(0, -1) : path
   const i = dir.lastIndexOf('/')
   pathPrefix.value = i >= 0 ? dir.slice(0, i + 1) : ''
-  searchResults.value = []; searchKeyword.value = ''
+  searchResults.value = []
+  searchKeyword.value = ''
+  searchApplied.value = false
 }
 
 // ---- 文件操作 ----
@@ -1119,7 +1252,10 @@ function goUp() {
 }
 function enterDir(entry) {
   if (!entry?.is_dir) return
-  pathPrefix.value = entry.path + '/'; searchResults.value = []; searchKeyword.value = ''
+  pathPrefix.value = entry.path + '/'
+  searchResults.value = []
+  searchKeyword.value = ''
+  searchApplied.value = false
 }
 function toggleActionMenu(id) { openActionMenuId.value = openActionMenuId.value === id ? null : id }
 function closeActionMenu() { openActionMenuId.value = null }

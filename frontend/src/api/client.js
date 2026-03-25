@@ -330,10 +330,12 @@ export async function searchFiles(libraryId, keyword) {
   return api(`/files/search?library_id=${libraryId}&keyword=${encodeURIComponent(keyword.trim())}`)
 }
 
-/** 全局/库内搜索（用于版本匹配）：libraryId 为 null 时返回 [] */
+/** 全局/库内搜索：libraryId 存在时库内搜索；为空时跨可访问资料库搜索 */
 export async function searchFilesGlobal(keyword, libraryId) {
   if (!keyword || !keyword.trim()) return []
-  if (libraryId == null) return []
+  if (libraryId == null) {
+    return api(`/files/search-global?keyword=${encodeURIComponent(keyword.trim())}`)
+  }
   return api(`/files/search?library_id=${libraryId}&keyword=${encodeURIComponent(keyword.trim())}`)
 }
 

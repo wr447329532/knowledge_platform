@@ -49,7 +49,15 @@
 
     <!-- 我的文件库：库列表（行视图 / 卡片视图） -->
     <div class="lib-grid-wrap" v-else-if="!currentLib">
-      <template v-if="libraries.length">
+      <div v-if="searchApplied" class="search-results-section">
+        <div class="search-results-header">
+          <span>
+            全局搜索「{{ searchKeyword }}」
+            （文件库 {{ rootSearchLibraries.length }} 项，文件 {{ rootSearchFiles.length }} 项）
+          </span>
+        </div>
+      </div>
+      <template v-if="displayLibraries.length">
         <!-- 行视图：类 Finder / OneDrive 表格风格 -->
         <div v-if="fileViewMode === 'list'" class="lib-list-container">
           <div class="lib-list-table">
@@ -61,7 +69,7 @@
               <div class="lib-col-actions">操作</div>
             </div>
             <div
-              v-for="lib in libraries"
+              v-for="lib in displayLibraries"
               :key="lib.id"
               class="lib-list-row"
             >
@@ -134,7 +142,7 @@
         <!-- 网格视图：卡片宫格风格 -->
         <div v-else class="lib-grid">
           <div
-            v-for="lib in libraries"
+            v-for="lib in displayLibraries"
             :key="lib.id"
             class="lib-card"
             @click="selectLib(lib)"
@@ -188,8 +196,33 @@
           </div>
         </div>
       </template>
-      <p v-else class="empty-hint">暂无文件库，请点击「新建文件库」。</p>
-      <div v-if="libraries.length" class="audit-pagination">
+      <div v-if="searchApplied && rootSearchFiles.length" class="card global-file-results">
+        <h4 class="global-file-title">文件结果</h4>
+        <div class="global-file-list">
+          <div v-for="f in rootSearchFiles" :key="'gf-' + f.id" class="global-file-row">
+            <div class="global-file-main">
+              <button
+                v-if="!f.is_dir"
+                type="button"
+                class="global-file-name-btn"
+                :title="'点击预览：' + ((f.path || '').split('/').pop() || '')"
+                @click="openGlobalSearchFilePreview(f)"
+              >
+                {{ (f.path || '').split('/').pop() }}
+              </button>
+              <div v-else class="global-file-name">{{ (f.path || '').split('/').pop() }}</div>
+              <div class="global-file-sub">
+                <span>文件库：{{ f.library_name || '-' }}</span>
+                <span>路径：{{ f.path }}</span>
+              </div>
+            </div>
+            <button type="button" class="btn-small" @click="openGlobalSearchFileResult(f)">打开位置</button>
+          </div>
+        </div>
+      </div>
+      <p v-else-if="searchApplied && !displayLibraries.length" class="empty-hint">未找到匹配的文件库或文件</p>
+      <p v-else-if="!searchApplied && !displayLibraries.length" class="empty-hint">暂无文件库，请点击「新建文件库」。</p>
+      <div v-if="!searchApplied && libraries.length" class="audit-pagination">
         <div class="audit-pagination-actions">
           <button
             type="button"
@@ -225,10 +258,9 @@
     >
       <div class="file-content-area">
         <p v-if="filesLoading" class="empty-hint">加载中...</p>
-        <div v-else-if="searchResults.length" class="search-results-section">
+        <div v-else-if="searchApplied" class="search-results-section">
           <div class="search-results-header">
             <span>搜索「{{ searchKeyword }}」共 {{ searchResults.length }} 项</span>
-            <button class="btn-small" @click="clearSearch">清除</button>
           </div>
           <!-- 搜索结果行视图：沿用下方 file-grid 的样式和布局 -->
           <template v-if="fileViewMode === 'list'">
@@ -298,6 +330,7 @@
                   </div>
                 </span>
               </div>
+              <p v-if="!sortedSearchResults.length" class="empty-hint" style="padding:12px 20px;">未找到匹配结果</p>
             </div>
           </template>
           <!-- 搜索结果网格视图：沿用文件卡片样式 -->
@@ -342,6 +375,7 @@
                 >重命名</button>
               </div>
             </div>
+            <p v-if="!sortedSearchResults.length" class="empty-hint">未找到匹配结果</p>
           </div>
         </div>
 
@@ -514,6 +548,7 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import Icons from './Icons.vue'
 
 const props = defineProps({
@@ -529,6 +564,9 @@ const props = defineProps({
   filesLoading: Boolean,
   files: { type: Array, default: () => [] },
   searchResults: { type: Array, default: () => [] },
+  searchApplied: { type: Boolean, default: false },
+  rootSearchLibraries: { type: Array, default: () => [] },
+  rootSearchFiles: { type: Array, default: () => [] },
   sortedSearchResults: { type: Array, default: () => [] },
   sortedFiles: { type: Array, default: () => [] },
   searchKeyword: { type: String, default: '' },
@@ -539,6 +577,8 @@ const props = defineProps({
   // 行为回调（由父组件 Home 提供）
   openDeptLib: { type: Function, required: true },
   selectLib: { type: Function, required: true },
+  openGlobalSearchFileResult: { type: Function, required: true },
+  openGlobalSearchFilePreview: { type: Function, required: true },
   openEditLib: { type: Function, required: true },
   delLib: { type: Function, required: true },
   onFileDrop: { type: Function, required: true },
@@ -559,6 +599,11 @@ const props = defineProps({
   librariesLimit: { type: Number, default: 20 },
   librariesOffset: { type: Number, default: 0 },
   librariesHasMore: { type: Boolean, default: false },
+})
+
+const displayLibraries = computed(() => {
+  if (props.searchApplied && !props.currentLib) return props.rootSearchLibraries || []
+  return props.libraries || []
 })
 </script>
 
@@ -585,6 +630,74 @@ const props = defineProps({
 .audit-pagination-actions {
   display: flex;
   gap: 8px;
+}
+
+.global-file-results {
+  margin-top: 8px;
+  padding: 12px;
+}
+
+.global-file-title {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.global-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.global-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.global-file-main {
+  min-width: 0;
+}
+
+.global-file-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.global-file-name-btn {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #185fa5;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  text-align: left;
+}
+
+.global-file-name-btn:hover {
+  text-decoration: underline;
+}
+
+.global-file-sub {
+  margin-top: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: #6b7280;
 }
 
 .lib-header {

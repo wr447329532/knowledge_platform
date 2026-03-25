@@ -45,6 +45,10 @@ class FileRead(BaseModel):
         from_attributes = True
 
 
+class GlobalSearchFileRead(FileRead):
+    library_name: Optional[str] = None
+
+
 class FileTrashRead(FileRead):
     deleted_at: datetime
     library_name: Optional[str] = None
@@ -1313,6 +1317,73 @@ def search_files(
     return result
 
 
+@router.get("/search-global", response_model=List[GlobalSearchFileRead])
+def search_files_global(
+    keyword: str = Query(..., min_length=1, description="搜索关键词，跨可访问资料库匹配路径中的文件名"),
+    limit: int = Query(100, ge=1, le=300, description="最大返回条数"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """跨资料库搜索文件（按当前用户可访问范围过滤）。"""
+    kw = keyword.strip()
+    if not kw:
+        return []
+
+    lib_ids = get_accessible_library_ids(db, current_user)
+    if not lib_ids:
+        return []
+
+    entries = (
+        db.query(FileEntry)
+        .filter(
+            FileEntry.library_id.in_(lib_ids),
+            FileEntry.deleted_at.is_(None),
+            FileEntry.path.ilike(f"%{kw}%"),
+        )
+        .order_by(FileEntry.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    file_entry_ids = [e.id for e in entries if not e.is_dir]
+    latest_size: dict[int, int] = {}
+    if file_entry_ids:
+        from sqlalchemy import func
+
+        subq = (
+            db.query(FileVersion.file_entry_id, func.max(FileVersion.version_no).label("max_ver"))
+            .filter(FileVersion.file_entry_id.in_(file_entry_ids))
+            .group_by(FileVersion.file_entry_id)
+            .subquery()
+        )
+        rows = (
+            db.query(FileVersion.file_entry_id, FileVersion.size)
+            .join(subq, (FileVersion.file_entry_id == subq.c.file_entry_id) & (FileVersion.version_no == subq.c.max_ver))
+            .all()
+        )
+        latest_size = {r[0]: r[1] for r in rows}
+
+    lib_name_rows = db.query(Library.id, Library.name).filter(Library.id.in_(lib_ids)).all()
+    lib_name_map: dict[int, str] = {int(i): n or "" for i, n in lib_name_rows}
+
+    result: list[GlobalSearchFileRead] = []
+    for e in entries:
+        can_dl = can_download_file(db, e, current_user) if not e.is_dir else None
+        result.append(
+            GlobalSearchFileRead(
+                id=e.id,
+                library_id=e.library_id,
+                library_name=lib_name_map.get(e.library_id) or None,
+                path=e.path,
+                is_dir=e.is_dir,
+                size=latest_size.get(e.id) if not e.is_dir else None,
+                updated_at=e.updated_at,
+                can_download=can_dl,
+            )
+        )
+    return result
+
+
 SYSTEM_DEFAULT_TOTAL_QUOTA_BYTES = int(getattr(settings, "STORAGE_SYSTEM_TOTAL_BYTES", 500 * 1024 * 1024 * 1024))
 
 
@@ -1927,7 +1998,8 @@ def download_file(
     )
     db.commit()
 
-    filename = storage_path.name
+    # 下载文件名优先使用业务路径中的文件名，确保与前端显示名称一致
+    filename = Path(entry.path).name or storage_path.name
     return FileResponse(
         path=str(storage_path),
         filename=filename,
@@ -1936,7 +2008,7 @@ def download_file(
 
 
 def _media_type_by_ext(path: str) -> str:
-    """根据扩展名返回合适的 media_type，用于预览"""
+    """根据扩展名返回合适的 media_type，用于预览""" 
     ext = Path(path).suffix.lower()
     _map = {
         ".pdf": "application/pdf",
