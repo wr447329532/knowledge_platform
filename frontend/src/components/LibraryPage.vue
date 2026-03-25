@@ -145,12 +145,27 @@
               @click.stop
             />
             <button
+              v-if="lib.is_owner"
               class="lib-card-more"
               title="更多操作"
-              @click.stop
+              @click.stop="toggleActionMenu('l-' + lib.id)"
             >
               ⋯
             </button>
+            <div
+              v-if="openActionMenuId === 'l-' + lib.id"
+              class="action-dropdown lib-card-dropdown"
+              @click.stop
+            >
+              <button
+                class="btn-small"
+                @click="openEditLib(lib); closeActionMenu()"
+              >编辑</button>
+              <button
+                class="btn-small danger"
+                @click="delLib(lib); closeActionMenu()"
+              >删除</button>
+            </div>
             <div class="lib-card-icon-wrap">
               <Icons name="folder" class="lib-card-icon" />
             </div>

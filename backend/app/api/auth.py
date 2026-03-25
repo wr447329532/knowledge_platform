@@ -362,6 +362,14 @@ def update_user(
         if body.role not in ("staff", "dept_leader", "executive"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="角色取值须为 staff、dept_leader 或 executive")
         user.role = body.role
+        if user.department_id is not None:
+            dept = db.query(Department).filter(Department.id == user.department_id).first()
+            if dept:
+                if body.role == "dept_leader":
+                    dept.leader_user_id = user.id
+                else:
+                    if dept.leader_user_id == user.id:
+                        dept.leader_user_id = None
         log_audit(
             db,
             current_user.id,

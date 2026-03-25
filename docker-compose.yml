@@ -8,9 +8,9 @@ services:
     environment:
       POSTGRES_DB: knowledge_platform
       POSTGRES_USER: kp_user
-      POSTGRES_PASSWORD: kp_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - /data/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kp_user -d knowledge_platform"]
       interval: 5s
@@ -27,19 +27,19 @@ services:
       db:
         condition: service_healthy
     environment:
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-REPLACE_WITH_STRONG_RANDOM_SECRET}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       JWT_ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 1440
-      DATABASE_URL: postgresql+psycopg2://kp_user:kp_password@db:5432/knowledge_platform
+      DATABASE_URL: postgresql+psycopg2://kp_user:${POSTGRES_PASSWORD}@db:5432/knowledge_platform
       STORAGE_ROOT: /app/storage
-      STORAGE_SYSTEM_TOTAL_BYTES: ${STORAGE_SYSTEM_TOTAL_BYTES:-1099511627776}
-      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://127.0.0.1}
+      STORAGE_SYSTEM_TOTAL_BYTES: ${STORAGE_SYSTEM_TOTAL_BYTES:-536870912000}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://192.168.150.99}
       BOOTSTRAP_DEFAULT_ADMIN: "true"
       RESET_DEFAULT_ADMIN_PASSWORD_ON_STARTUP: "false"
-      DB_AUTO_CREATE_TABLES_ON_STARTUP: "false"
-      DB_COMPAT_PATCH_ON_STARTUP: "false"
+      DB_AUTO_CREATE_TABLES_ON_STARTUP: "true"
+      DB_COMPAT_PATCH_ON_STARTUP: "true"
     volumes:
-      - storage_data:/app/storage
+      - /data/storage:/app/storage
     expose:
       - "8000"
 
