@@ -116,9 +116,9 @@
       <SharedPage
         v-if="tab === 'shared'"
         :shared-sub-tab="sharedSubTab"
-        :my-shares-list="mySharesList"
+        :my-shares-list="filteredMySharesList"
         :my-shares-loading="mySharesLoading"
-        :received-shares-list="receivedSharesList"
+        :received-shares-list="filteredReceivedSharesList"
         :received-shares-loading="receivedSharesLoading"
         @tab="onSharedTab"
         @open-shared-lib="openSharedLib"
@@ -129,9 +129,9 @@
       <TrashPage
         v-if="tab === 'trash'"
         :mode="trashMode"
-        :trash-items="trashItems"
+        :trash-items="filteredTrashItems"
         :trash-loading="trashLoading"
-        :dept-trash-list="deptTrashList"
+        :dept-trash-list="filteredDeptTrashList"
         :dept-trash-loading="deptTrashLoading"
         :libraries="libraries"
         :format-date="formatDate"
@@ -950,6 +950,63 @@ const sortedLibraries = computed(() => {
 
 const sortedFiles = computed(() => _sortFileList(files.value || []))
 const sortedSearchResults = computed(() => _sortFileList(searchResults.value || []))
+const normalizedSearchKeyword = computed(() => String(searchKeyword.value || '').trim().toLowerCase())
+
+function _includesKeyword(value, kw) {
+  if (!kw) return true
+  return String(value || '').toLowerCase().includes(kw)
+}
+
+const filteredMySharesList = computed(() => {
+  const kw = normalizedSearchKeyword.value
+  const list = mySharesList.value || []
+  if (!kw) return list
+  return list.filter(row =>
+    _includesKeyword(row?.name, kw) ||
+    _includesKeyword(row?.share_scope, kw) ||
+    _includesKeyword(row?.description, kw) ||
+    _includesKeyword(row?.department_name, kw)
+  )
+})
+
+const filteredReceivedSharesList = computed(() => {
+  const kw = normalizedSearchKeyword.value
+  const list = receivedSharesList.value || []
+  if (!kw) return list
+  return list.filter(row =>
+    _includesKeyword(row?.name, kw) ||
+    _includesKeyword(row?.owner_username, kw) ||
+    _includesKeyword(row?.share_scope, kw) ||
+    _includesKeyword(row?.description, kw) ||
+    _includesKeyword(row?.department_name, kw)
+  )
+})
+
+const filteredTrashItems = computed(() => {
+  const kw = normalizedSearchKeyword.value
+  const list = trashItems.value || []
+  if (!kw) return list
+  return list.filter(item =>
+    _includesKeyword(item?.name, kw) ||
+    _includesKeyword(item?.library_name, kw) ||
+    _includesKeyword(item?.path, kw) ||
+    _includesKeyword(item?.type, kw) ||
+    _includesKeyword(item?.username, kw)
+  )
+})
+
+const filteredDeptTrashList = computed(() => {
+  const kw = normalizedSearchKeyword.value
+  const list = deptTrashList.value || []
+  if (!kw) return list
+  return list.filter(item =>
+    _includesKeyword(item?.name, kw) ||
+    _includesKeyword(item?.library_name, kw) ||
+    _includesKeyword(item?.path, kw) ||
+    _includesKeyword(item?.type, kw) ||
+    _includesKeyword(item?.username, kw)
+  )
+})
 
 const breadcrumbSegments = computed(() => {
   const p = (pathPrefix.value || '').replace(/\/$/, '')

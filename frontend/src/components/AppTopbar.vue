@@ -210,11 +210,11 @@ onUnmounted(() => {
 .app-topbar-row {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 10px;
 }
 .search-box {
-  flex: 1;
-  max-width: 480px;
+  flex: 1 1 760px;
+  min-width: 360px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -226,7 +226,7 @@ onUnmounted(() => {
 .search-icon { width: 18px; height: 18px; font-size: 18px; color: #999; flex-shrink: 0; }
 .search-input { flex: 1; border: none; background: transparent; font-size: 14px; padding: 0; }
 .search-input:focus { outline: none; }
-.topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.topbar-actions { margin-left: 6px; display: flex; align-items: center; gap: 12px; }
 .notify-btn {
   position: relative;
   border: none;
