@@ -67,3 +67,31 @@ class FileVersion(Base):
     file_entry = relationship("FileEntry", backref="versions")
     uploaded_by = relationship("User")
 
+
+class FileVersionTrash(Base):
+    """已从版本历史删除、暂存于回收站的文件版本"""
+
+    __tablename__ = "file_version_trash"
+
+    id = Column(Integer, primary_key=True, index=True)
+    file_entry_id = Column(
+        Integer, ForeignKey("file_entries.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    library_id = Column(Integer, ForeignKey("libraries.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_no = Column(Integer, nullable=False)
+
+    storage_path = Column(String(2048), nullable=False)
+    size = Column(Integer, nullable=False)
+    content_hash = Column(String(128), nullable=True)
+    comment = Column(Text, nullable=True)
+
+    uploaded_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    uploaded_at = Column(DateTime, nullable=False)
+    deleted_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    deleted_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True
+    )
+
+    file_entry = relationship("FileEntry")
+    library = relationship("Library")
+

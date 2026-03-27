@@ -34,6 +34,7 @@
             <thead>
               <tr>
                 <th>文件库名称</th>
+                <th>类型</th>
                 <th>共享范围</th>
                 <th>创建时间</th>
                 <th>操作</th>
@@ -46,6 +47,14 @@
                     <Icons name="folder" class="shared-file-icon" />
                     <span class="shared-file-path">{{ row.name }}</span>
                   </div>
+                </td>
+                <td>
+                  <span
+                    class="shared-library-type"
+                    :class="libraryTypeClass(row)"
+                  >
+                    {{ libraryTypeText(row) }}
+                  </span>
                 </td>
                 <td class="shared-td-to">
                   <span class="shared-user">{{ row.share_scope }}</span>
@@ -82,9 +91,9 @@
             <thead>
               <tr>
                 <th>文件库名称</th>
+                <th>类型</th>
                 <th>所有者</th>
                 <th>共享范围</th>
-                <th>我的权限</th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -96,19 +105,19 @@
                     <span class="shared-file-path">{{ row.name }}</span>
                   </div>
                 </td>
+                <td>
+                  <span
+                    class="shared-library-type"
+                    :class="libraryTypeClass(row)"
+                  >
+                    {{ libraryTypeText(row) }}
+                  </span>
+                </td>
                 <td class="shared-td-to">
                   <span class="shared-user">{{ row.owner_username }}</span>
                 </td>
                 <td>
                   <span class="shared-cell">{{ row.share_scope }}</span>
-                </td>
-                <td>
-                  <span
-                    class="shared-permission"
-                    :class="row.can_write ? 'perm-download' : 'perm-read'"
-                  >
-                    {{ row.can_write ? '读写' : '只读' }}
-                  </span>
                 </td>
                 <td class="shared-td-action-last">
                   <button type="button" class="shared-link-btn" @click="emit('open-shared-lib', row)">查看</button>
@@ -152,6 +161,20 @@ const emit = defineEmits(['tab', 'open-shared-lib'])
 function formatDateStr(s) {
   if (!s) return ''
   return String(s).slice(0, 10)
+}
+
+function libraryTypeText(row) {
+  const vis = String(row?.visibility || '').toLowerCase()
+  if (vis === 'public') return '公开库'
+  if (vis === 'department' || row?.department_name) return '部门库'
+  return '个人库'
+}
+
+function libraryTypeClass(row) {
+  const vis = String(row?.visibility || '').toLowerCase()
+  if (vis === 'public') return 'type-public'
+  if (vis === 'department' || row?.department_name) return 'type-dept'
+  return 'type-personal'
 }
 </script>
 
@@ -295,6 +318,16 @@ function formatDateStr(s) {
 .shared-permission { display: inline-block; padding: 2px 8px; font-size: 12px; font-weight: 500; border-radius: 6px; }
 .shared-permission.perm-read { background: #f3f4f6; color: #4b5563; }
 .shared-permission.perm-download { background: #dbeafe; color: #1d4ed8; }
+.shared-library-type {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.shared-library-type.type-dept { background: #ede9fe; color: #6d28d9; }
+.shared-library-type.type-personal { background: #e0f2fe; color: #0369a1; }
+.shared-library-type.type-public { background: #dcfce7; color: #166534; }
 .shared-link-btn {
   padding: 4px 8px;
   border: none;

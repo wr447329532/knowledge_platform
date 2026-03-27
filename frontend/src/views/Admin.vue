@@ -2295,8 +2295,13 @@ async function restoreGlobalTrashItem(item) {
   globalTrashMessage.value = ''
   globalTrashError.value = ''
   try {
-    await api.restoreFile(item.id)
-    globalTrashMessage.value = '文件已恢复'
+    if (item?.type === 'file_version') {
+      await api.restoreVersionTrash(item.id)
+      globalTrashMessage.value = '历史版本已恢复'
+    } else {
+      await api.restoreFile(item.id)
+      globalTrashMessage.value = '文件已恢复'
+    }
     await loadGlobalTrash()
     setTimeout(() => { globalTrashMessage.value = '' }, 3000)
   } catch (e) {
@@ -2310,8 +2315,13 @@ async function permDeleteGlobalTrashItem(item) {
   globalTrashMessage.value = ''
   globalTrashError.value = ''
   try {
-    await api.permanentDelete(item.id)
-    globalTrashMessage.value = '文件已彻底删除'
+    if (item?.type === 'file_version') {
+      await api.permanentDeleteVersionTrash(item.id)
+      globalTrashMessage.value = '历史版本已彻底删除'
+    } else {
+      await api.permanentDelete(item.id)
+      globalTrashMessage.value = '文件已彻底删除'
+    }
     await loadGlobalTrash()
     setTimeout(() => { globalTrashMessage.value = '' }, 3000)
   } catch (e) {
@@ -2352,6 +2362,7 @@ async function permDeleteGlobalLibrary(item) {
 async function restoreDeptTrashItem(item) {
   try {
     if (item?.type === 'library') await api.restoreLibrary(item.id)
+    else if (item?.type === 'file_version') await api.restoreVersionTrash(item.id)
     else await api.restoreFile(item.id)
     await loadDeptTrashAdmin()
   } catch (e) {
@@ -2364,6 +2375,7 @@ async function permDeleteDeptTrashItem(item) {
   if (!confirm('确定从回收站彻底删除？此操作不可恢复。')) return
   try {
     if (item?.type === 'library') await api.permanentDeleteLibrary(item.id)
+    else if (item?.type === 'file_version') await api.permanentDeleteVersionTrash(item.id)
     else await api.permanentDelete(item.id)
     await loadDeptTrashAdmin()
   } catch (e) {

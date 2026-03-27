@@ -7,6 +7,7 @@
       :me="me"
       :active-tab="tab"
       :active-dept-id="activeDeptId"
+      :dept-keyword="searchKeyword"
       :storage-stats="storageStats"
       :trash-mode="trashMode"
       @nav="onSidebarNav"
@@ -21,6 +22,7 @@
         v-if="tab !== 'sys'"
         :active-tab="tab"
         :active-dept-id="activeDeptId"
+        :active-dept-name="activeDeptInfo?.name || ''"
         :current-lib="currentLib"
         v-model:searchKeyword="searchKeyword"
         v-model:fileSortOrder="fileSortOrder"
@@ -50,7 +52,7 @@
 
       <!-- 部门视图：选中部门时显示 -->
       <DepartmentFiles
-        v-if="tab === 'lib' && activeDeptId"
+        v-if="tab === 'lib' && activeDeptId && !currentLib"
         :key="deptFilesReloadKey"
         :me="me"
         :active-dept-id="activeDeptId"
@@ -471,7 +473,7 @@
               <th style="width: 90px;">大小</th>
               <th style="width: 120px;">上传者</th>
               <th style="width: 160px;">上传时间</th>
-              <th style="width: 150px; text-align: right;">操作</th>
+              <th style="width: 240px; text-align: right;">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -480,7 +482,7 @@
               <td>{{ v.size }}</td>
               <td>{{ v.uploaded_by || '-' }}</td>
               <td>{{ formatDate(v.uploaded_at) }}</td>
-              <td style="width: 150px; text-align: right;">
+              <td style="width: 240px; text-align: right;">
                 <button
                   type="button"
                   class="btn-small"
@@ -495,6 +497,15 @@
                   @click.stop.prevent="previewVersion(v)"
                 >
                   预览
+                </button>
+                <button
+                  type="button"
+                  class="btn-small btn-danger"
+                  style="margin-left: 8px;"
+                  :disabled="!canDeleteVersion()"
+                  @click.stop.prevent="deleteVersionRecord(v)"
+                >
+                  删除版本
                 </button>
               </td>
             </tr>
@@ -1044,7 +1055,14 @@ function _sortFileList(list) {
 
 async function onSidebarNav(tabName) {
   tab.value = tabName
-  if (tabName === 'lib') { clearDeptView(); err.value = '' }
+  if (tabName === 'lib') {
+    clearDeptView()
+    currentLib.value = null
+    pathPrefix.value = ''
+    clearSearch()
+    err.value = ''
+    await loadLibraries()
+  }
   if (tabName === 'shared') { sharedSubTab.value = 'mine'; err.value = ''; loadMyShares() }
   if (tabName === 'trash') {
     trashMode.value = 'personal'
@@ -1126,6 +1144,7 @@ async function loadLibraries() {
     const params = {
       limit: librariesLimit.value,
       offset: librariesOffset.value,
+      include_department: false,
     }
     const list = await api.listLibraries(params)
     libraries.value = list || []
@@ -1219,7 +1238,7 @@ async function doSearch() {
   try {
     const [libs, files] = await Promise.all([
       searchLibrariesGlobal(kw),
-      api.searchFilesGlobal(kw, null),
+      api.searchFilesGlobal(kw, null, { includeDepartment: false }),
     ])
     rootSearchLibraries.value = libs
     rootSearchFiles.value = files || []
@@ -1248,7 +1267,7 @@ async function searchLibrariesGlobal(keyword) {
   const all = []
   // 逐页拉取可访问库，避免仅搜索当前分页数据
   while (offset <= 2000) {
-    const rows = await api.listLibraries({ limit, offset })
+    const rows = await api.listLibraries({ limit, offset, include_department: false })
     const list = rows || []
     all.push(...list)
     if (list.length < limit) break
@@ -1346,6 +1365,25 @@ async function openVersions(f) {
   versionEntryFilename.value = (versionEntryName.value || '').split('/').pop()
   versions.value = await api.listVersions(f.id)
   showVersions.value = true
+}
+function canDeleteVersion() {
+  return Array.isArray(versions.value) && versions.value.length > 1
+}
+async function deleteVersionRecord(v) {
+  if (!versionEntryId.value || !v) return
+  if (!canDeleteVersion()) {
+    err.value = '至少保留一个版本，无法删除'
+    return
+  }
+  if (!confirm(`确定删除版本 v${v.version_no} 吗？`)) return
+  err.value = ''
+  try {
+    await api.deleteVersion(versionEntryId.value, v.version_no)
+    versions.value = await api.listVersions(versionEntryId.value)
+    showSuccess(`版本 v${v.version_no} 已删除`)
+  } catch (e) {
+    err.value = e.message || '删除版本失败'
+  }
 }
 function onFileClick(file) { if (file.is_dir) return; openPreview(file) }
 
@@ -1464,6 +1502,38 @@ function vmExtractKeyword(filename) {
 
   return name
 }
+
+function vmBuildCandidateKeywords(filename) {
+  if (!filename || typeof filename !== 'string') return []
+  const stem = filename.replace(/\.[^.]+$/, '').trim()
+  const out = []
+  const seen = new Set()
+  const pushKw = (kw) => {
+    const s = String(kw || '').trim()
+    if (!s || s.length < 2 || seen.has(s)) return
+    seen.add(s)
+    out.push(s)
+  }
+
+  // 1) 主关键词：沿用既有规则（日期/版本号/终稿等）
+  const primary = vmExtractKeyword(filename)
+  pushKw(primary)
+
+  // 2) 兼容“文件名后缀加数字/字母”的常见版本命名
+  let relaxed = stem
+  // 例如：报告(1)、报告（A1）
+  relaxed = relaxed.replace(/\s*[（(][A-Za-z0-9一二三四五六七八九十]{1,4}[)）]\s*$/, '').trim()
+  // 例如：报告_1、报告-A、报告 A1
+  relaxed = relaxed.replace(/[_\- ]+[A-Za-z]?\d{1,4}$/, '').trim()
+  relaxed = relaxed.replace(/[_\- ]+[A-Za-z]{1,3}$/, '').trim()
+  // 例如：报告1、报告A（仅去掉很短的结尾，避免过度截断）
+  relaxed = relaxed.replace(/([\u4e00-\u9fa5A-Za-z]{2,})[A-Za-z]?\d{1,2}$/, '$1').trim()
+  relaxed = relaxed.replace(/([\u4e00-\u9fa5]{2,})[A-Za-z]{1,2}$/, '$1').trim()
+
+  pushKw(relaxed)
+  pushKw(vmExtractKeyword(relaxed))
+  return out
+}
 // 测试用例：
 // vmExtractKeyword('XXXX（1）.pdf')           → 'XXXX'
 // vmExtractKeyword('XXXX(1).pdf')             → 'XXXX'
@@ -1496,14 +1566,19 @@ async function addUploadFiles(files) {
   showUpload.value = true
 
   const searchPromises = arr.map(async (file, i) => {
-    const kw = vmExtractKeyword(file.name)
-    if (!kw) return { file, ufId: list[i].id, results: [] }
-    try {
-      const results = await api.searchFilesGlobal(kw, currentLib.value?.id ?? null)
-      return { file, ufId: list[i].id, results }
-    } catch {
-      return { file, ufId: list[i].id, results: [] }
+    const candidates = vmBuildCandidateKeywords(file.name)
+    if (!candidates.length) return { file, ufId: list[i].id, results: [], matchedKeyword: '' }
+    for (const kw of candidates) {
+      try {
+        const results = await api.searchFilesGlobal(kw, currentLib.value?.id ?? null)
+        if (results?.length) {
+          return { file, ufId: list[i].id, results, matchedKeyword: kw }
+        }
+      } catch {
+        // ignore and try next candidate keyword
+      }
     }
+    return { file, ufId: list[i].id, results: [], matchedKeyword: candidates[0] || '' }
   })
 
   const searched = await Promise.all(searchPromises)
@@ -1517,6 +1592,7 @@ async function addUploadFiles(files) {
       file: s.file,
       ufId: s.ufId,
       searchResults: s.results,
+      matchedKeyword: s.matchedKeyword || '',
     }))
     vmOpenFromQueue()
   }
@@ -1531,7 +1607,7 @@ function vmOpenFromQueue() {
   vmComment.value = ''
   vmSelectedEntry.value = null
   vmSearchResults.value = item.searchResults
-  vmKeyword.value = vmExtractKeyword(item.file.name)
+  vmKeyword.value = item.matchedKeyword || vmExtractKeyword(item.file.name)
   uploadStep.value = 'confirm'
 }
 
@@ -1738,11 +1814,22 @@ async function loadReceivedShares() {
   catch (e) { err.value = e.message; receivedSharesList.value = [] }
   finally { receivedSharesLoading.value = false }
 }
-function openSharedLib(row) {
-  const lib = libraries.value.find(l => l.id === row.id)
+async function openSharedLib(row) {
+  let lib = libraries.value.find(l => l.id === row.id)
+  if (!lib && row?.id != null) {
+    try {
+      lib = await api.getLibrary(row.id)
+    } catch (e) {
+      err.value = e?.message || '未找到该文件库，请刷新页面后重试'
+      return
+    }
+  }
   if (lib) {
-    tab.value = 'lib'; selectLib(lib)
-  } else { err.value = '未找到该文件库，请刷新页面后重试' }
+    tab.value = 'lib'
+    selectLib(lib)
+  } else {
+    err.value = '未找到该文件库，请刷新页面后重试'
+  }
 }
 
 // ---- 回收站 ----
@@ -1785,6 +1872,9 @@ async function restoreDeptFile(item) {
       await api.restoreLibrary(item.id)
       await refreshLibrariesKeepPage()
       showSuccess('资料库已恢复')
+    } else if (item?.type === 'file_version') {
+      await api.restoreVersionTrash(item.id)
+      showSuccess('历史版本已恢复')
     } else {
       await api.restoreFile(item.id)
       showSuccess('文件已恢复')
@@ -1803,6 +1893,9 @@ async function permDeleteDeptFile(item) {
       await api.permanentDeleteLibrary(item.id)
       await refreshLibrariesKeepPage()
       showSuccess('资料库已彻底删除')
+    } else if (item?.type === 'file_version') {
+      await api.permanentDeleteVersionTrash(item.id)
+      showSuccess('历史版本已彻底删除')
     } else {
       await api.permanentDelete(item.id)
       showSuccess('文件已彻底删除')
@@ -1818,9 +1911,12 @@ async function restoreTrashItem(item) {
   try {
     if (item.type === 'library') {
       await api.restoreLibrary(item.id)
-      libraries.value = await api.listLibraries()
+      libraries.value = await api.listLibraries({ include_department: false })
       loadStorageStats()
       showSuccess('资料库已恢复')
+    } else if (item.type === 'file_version') {
+      await api.restoreVersionTrash(item.id)
+      showSuccess('历史版本已恢复')
     } else {
       await api.restoreFile(item.id)
       showSuccess('文件已恢复')
@@ -1837,10 +1933,13 @@ async function permDeleteTrashItem(item) {
   try {
     if (item.type === 'library') {
       await api.permanentDeleteLibrary(item.id)
-      libraries.value = await api.listLibraries()
+      libraries.value = await api.listLibraries({ include_department: false })
       if (currentLib.value?.id === item.id) currentLib.value = null
       loadStorageStats()
       showSuccess('资料库已彻底删除')
+    } else if (item.type === 'file_version') {
+      await api.permanentDeleteVersionTrash(item.id)
+      showSuccess('历史版本已彻底删除')
     } else {
       await api.permanentDelete(item.id)
       showSuccess('文件已彻底删除')
@@ -1949,7 +2048,7 @@ async function createLib() {
     if (created?.id != null) {
       libraries.value = [created, ...libraries.value.filter(l => l.id !== created.id)]
     } else {
-      libraries.value = await api.listLibraries()
+      libraries.value = await api.listLibraries({ include_department: false })
     }
     showNewLib.value = false; newLibName.value = ''; newLibDesc.value = ''; newLibDepartmentId.value = null
     newLibVisibility.value = 'private'; newLibMembers.value = []; newLibUsers.value = []
@@ -1972,7 +2071,7 @@ async function doConfirmDeleteLib() {
   err.value = ''; errorMessage.value = ''
   try {
     await api.deleteLibrary(lib.id)
-    libraries.value = await api.listLibraries()
+    libraries.value = await api.listLibraries({ include_department: false })
     if (currentLib.value?.id === lib.id) currentLib.value = null
     loadStorageStats()
     if (tab.value === 'trash') trashLibraryList.value = await api.listLibraryTrash()
@@ -2033,7 +2132,7 @@ async function saveEditLib() {
       visibility,
       editLibAllowDownload.value
     )
-    libraries.value = await api.listLibraries()
+    libraries.value = await api.listLibraries({ include_department: false })
     if (currentLib.value?.id === editLibId.value) currentLib.value = libraries.value.find(l => l.id === editLibId.value)
     if (editLibId.value) {
       const libId = editLibId.value
@@ -2066,7 +2165,7 @@ async function loadDeptFiles(deptId) {
   } catch (e) { activeDeptErr.value = e.message || '加载部门库失败'; activeDeptLibraries.value = [] }
   finally { activeDeptLoading.value = false }
 }
-function openDeptLib(lib) { clearDeptView(); selectLib(lib) }
+function openDeptLib(lib) { selectLib(lib) }
 async function loadDepartments() {
   deptTreeRefreshKey.value++
   try { deptTreeForTable.value = await api.getDepartmentTree() }

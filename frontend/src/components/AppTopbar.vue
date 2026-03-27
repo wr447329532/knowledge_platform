@@ -19,7 +19,7 @@
             + 新建文件库
           </button>
           <button v-else-if="currentLib?.is_writeable" class="btn-primary" @click="emit('upload')">
-            + 新建
+            上传文件
           </button>
         </template>
         <button
@@ -80,9 +80,14 @@
     </div>
 
     <!-- 第二行：面包屑 + 视图切换（仅我的文件库，非部门视图） -->
-    <div v-if="activeTab === 'lib' && !activeDeptId" class="file-toolbar file-toolbar-topbar">
+    <div v-if="activeTab === 'lib' && (!activeDeptId || currentLib)" class="file-toolbar file-toolbar-topbar">
       <div class="file-toolbar-left">
-        <span class="file-breadcrumb-item">文件库</span>
+        <template v-if="activeDeptId && currentLib">
+          <span class="file-breadcrumb-item">{{ activeDeptName || '部门' }}</span>
+        </template>
+        <template v-else>
+          <span class="file-breadcrumb-item">文件库</span>
+        </template>
         <template v-if="currentLib">
           <span class="file-breadcrumb-sep">/</span>
           <a href="#" @click.prevent="emit('clear-lib')" class="file-breadcrumb-link">{{ currentLib?.name }}</a>
@@ -124,6 +129,7 @@ import Icons from './Icons.vue'
 const props = defineProps({
   activeTab: String,
   activeDeptId: { type: Number, default: null },
+  activeDeptName: { type: String, default: '' },
   currentLib: Object,
   searchKeyword: String,
   fileSortOrder: String,

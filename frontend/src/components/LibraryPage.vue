@@ -99,12 +99,7 @@
                 {{ lib.description || '-' }}
               </div>
               <div class="lib-col-type">
-                <template v-if="lib.is_owner">
-                  我的库
-                </template>
-                <template v-else>
-                  {{ lib.department_name ? '部门库' : '个人库' }}
-                </template>
+                {{ libraryTypeText(lib) }}
               </div>
               <div class="lib-col-source">
                 <template v-if="lib.is_owner">-</template>
@@ -187,7 +182,7 @@
             </div>
             <div class="lib-card-meta">
               <span v-if="!lib.is_owner" class="lib-badge-shared">共享给我</span>
-              <span v-else class="lib-badge-owner">我的库</span>
+              <span v-else class="lib-badge-owner">{{ libraryTypeText(lib) }}</span>
               <div v-if="!lib.is_owner" class="lib-card-share-meta">
                 <span>分享者：{{ lib.owner_username || '-' }}</span>
                 <span v-if="lib.department_name">来源：{{ lib.department_name }}</span>
@@ -605,6 +600,13 @@ const displayLibraries = computed(() => {
   if (props.searchApplied && !props.currentLib) return props.rootSearchLibraries || []
   return props.libraries || []
 })
+
+function libraryTypeText(lib) {
+  const vis = String(lib?.visibility || '').toLowerCase()
+  if (lib?.department_id != null) return '部门库'
+  if (vis === 'public') return '公开库'
+  return '个人库'
+}
 </script>
 
 <style scoped>

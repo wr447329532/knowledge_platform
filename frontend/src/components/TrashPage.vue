@@ -8,8 +8,8 @@
           <h1 class="trash-title">{{ mode === 'dept' ? '部门回收站' : '我的回收站' }}</h1>
           <p class="trash-subtitle">{{
             mode === 'dept'
-              ? '本部门所有文件库的删除记录，30 天后自动彻底删除'
-              : '仅显示您私人库中的删除记录，30 天后自动彻底删除'
+              ? '本部门所有文件库的删除记录，仅在手动彻底删除后永久移除'
+              : '仅显示您私人库中的删除记录，仅在手动彻底删除后永久移除'
           }}</p>
         </div>
       </div>
@@ -48,7 +48,7 @@
                 </td>
                 <td class="trash-cell-type">
                   <span class="trash-tag" :class="item.type === 'library' ? 'trash-tag-lib' : 'trash-tag-file'">
-                    {{ item.type === 'library' ? '文件库' : '文件' }}
+                    {{ item.type === 'library' ? '文件库' : (item.type === 'file_version' ? '历史版本' : '文件') }}
                   </span>
                 </td>
                 <td class="trash-cell-name">
@@ -118,7 +118,7 @@
         <div v-else class="trash-empty-card">
           <Icons name="trash" class="trash-empty-icon" />
           <p class="trash-empty-text">回收站为空</p>
-          <p class="trash-empty-hint">{{ mode === 'dept' ? '本部门暂无删除记录。' : '删除的文件库和文件会显示在这里，30 天后自动清理。' }}</p>
+          <p class="trash-empty-hint">{{ mode === 'dept' ? '本部门暂无删除记录。' : '删除的文件库和文件会显示在这里，需手动执行彻底删除。' }}</p>
         </div>
       </section>
     </div>

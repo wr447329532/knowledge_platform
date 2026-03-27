@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, Query, Request, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, Query, Request, status, Path as FPath
 from fastapi.responses import Response
 from fastapi.responses import FileResponse
 from jose import JWTError, jwt
@@ -22,7 +22,7 @@ from backend.app.core.library_access import (
 from backend.app.api.notifications import create_notification
 from backend.app.db.session import get_db
 from backend.app.models.department import Department
-from backend.app.models.file import FileEntry, FileVersion
+from backend.app.models.file import FileEntry, FileVersion, FileVersionTrash
 from backend.app.models.file_share import FileShare
 from backend.app.models.library import Library
 from backend.app.models.user import User
@@ -59,7 +59,9 @@ class GlobalTrashItem(BaseModel):
     """全局回收站条目：既包含文件也包含文件库"""
 
     id: int
-    type: Literal["file", "library"]
+    type: Literal["file", "library", "file_version"]
+    entry_id: Optional[int] = None
+    version_no: Optional[int] = None
     library_id: Optional[int] = None
     library_name: Optional[str] = None
     username: Optional[str] = None  # 删除人（若无则回退为文件创建人/库拥有者）
@@ -794,25 +796,8 @@ def list_trash(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """列出回收站中的文件/目录，并清理超过保留期的记录。"""
+    """列出回收站中的文件/目录。"""
     lib = _check_trash_permission(db, library_id, current_user)
-
-    # 自动清理超过 30 天的回收站记录，避免无限占用存储
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=30)
-    old_entries = (
-        db.query(FileEntry)
-        .filter(
-            FileEntry.library_id == library_id,
-            FileEntry.deleted_at != None,  # noqa: E711
-            FileEntry.deleted_at < cutoff,
-        )
-        .all()
-    )
-    for e in old_entries:
-        _permanent_delete_entry(db, e)
-    if old_entries:
-        db.commit()
 
     entries = (
         db.query(FileEntry)
@@ -824,27 +809,6 @@ def list_trash(
         .all()
     )
     return entries
-
-
-def _trash_cleanup_old_in_libraries(db: Session, library_ids: List[int]) -> None:
-    """清理指定库中超过 30 天的回收站记录。"""
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=30)
-    if not library_ids:
-        return
-    old_entries = (
-        db.query(FileEntry)
-        .filter(
-            FileEntry.library_id.in_(library_ids),
-            FileEntry.deleted_at != None,  # noqa: E711
-            FileEntry.deleted_at < cutoff,
-        )
-        .all()
-    )
-    for e in old_entries:
-        _permanent_delete_entry(db, e)
-    if old_entries:
-        db.commit()
 
 
 @router.get("/dept-trash", response_model=List[GlobalTrashItem])
@@ -880,8 +844,6 @@ def list_dept_trash(
     owner_name_map: dict[int, str] = {}
     for u in owners:
         owner_name_map[u.id] = u.username or u.email or f"用户{u.id}"
-
-    _trash_cleanup_old_in_libraries(db, lib_ids)
 
     entries = (
         db.query(FileEntry)
@@ -946,6 +908,47 @@ def list_dept_trash(
                 can_delete=True,
             )
         )
+
+    # 3) 活跃部门库中的“已删历史版本”
+    version_rows = (
+        db.query(FileVersionTrash)
+        .filter(FileVersionTrash.library_id.in_(lib_ids))
+        .order_by(FileVersionTrash.deleted_at.desc())
+        .all()
+        if lib_ids
+        else []
+    )
+    version_entry_ids = {r.file_entry_id for r in version_rows}
+    version_entries = (
+        db.query(FileEntry).filter(FileEntry.id.in_(version_entry_ids)).all()
+        if version_entry_ids
+        else []
+    )
+    version_entry_map: dict[int, FileEntry] = {e.id: e for e in version_entries}
+    deleter_ids = {r.deleted_by_id for r in version_rows if getattr(r, "deleted_by_id", None)}
+    deleters = db.query(User).filter(User.id.in_(deleter_ids)).all() if deleter_ids else []
+    deleter_name_map: dict[int, str] = {u.id: (u.username or u.email or f"用户{u.id}") for u in deleters}
+
+    for r in version_rows:
+        entry = version_entry_map.get(r.file_entry_id)
+        entry_path = entry.path if entry else f"文件#{r.file_entry_id}"
+        can_restore = bool(entry and entry.deleted_at is None)
+        items.append(
+            GlobalTrashItem(
+                id=r.id,
+                type="file_version",
+                entry_id=r.file_entry_id,
+                version_no=r.version_no,
+                library_id=r.library_id,
+                library_name=lib_names.get(r.library_id) or None,
+                path=f"{entry_path} (历史版本 v{r.version_no})",
+                is_dir=False,
+                deleted_at=r.deleted_at,
+                username=deleter_name_map.get(r.deleted_by_id) if r.deleted_by_id else None,
+                can_restore=can_restore,
+                can_delete=True,
+            )
+        )
     items.sort(key=lambda x: x.deleted_at, reverse=True)
     return items
 
@@ -964,11 +967,7 @@ def list_global_trash(
     if not current_user.is_superuser:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅系统管理员可查看全局回收站")
 
-    # 1) 对所有库执行「文件级」回收站清理（30 天以上的回收站文件会被彻底删除）
-    all_lib_ids = [r[0] for r in db.query(Library.id).all()]
-    _trash_cleanup_old_in_libraries(db, all_lib_ids)
-
-    # 2) 全平台文件级回收站（支持简单分页）
+    # 1) 全平台文件级回收站（支持简单分页）
     file_q = (
         db.query(FileEntry)
         .filter(FileEntry.deleted_at != None)  # noqa: E711
@@ -1016,9 +1015,7 @@ def list_global_trash(
             )
         )
 
-    # 3) 全平台文件库回收站（软删除的库）
-    #    这里不重复实现 30 天清理逻辑，沿用原有 /libraries/trash 的行为即可；
-    #    超过 30 天的库会在访问 /libraries/trash 时被彻底删除。
+    # 2) 全平台文件库回收站（软删除的库）
     deleted_libs = (
         db.query(Library)
         .filter(Library.deleted_at != None)  # noqa: E711
@@ -1047,6 +1044,44 @@ def list_global_trash(
                 deleted_at=getattr(lib, "deleted_at"),
                 username=username,
                 can_restore=True,
+                can_delete=True,
+            )
+        )
+
+    # 3) 全平台“已删历史版本”
+    version_rows = (
+        db.query(FileVersionTrash)
+        .order_by(FileVersionTrash.deleted_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    version_lib_ids = {r.library_id for r in version_rows}
+    version_entry_ids = {r.file_entry_id for r in version_rows}
+    version_libs = db.query(Library).filter(Library.id.in_(version_lib_ids)).all() if version_lib_ids else []
+    version_lib_name_map: dict[int, str] = {lib.id: (lib.name or "") for lib in version_libs}
+    version_entries = db.query(FileEntry).filter(FileEntry.id.in_(version_entry_ids)).all() if version_entry_ids else []
+    version_entry_map: dict[int, FileEntry] = {e.id: e for e in version_entries}
+    deleter_ids = {r.deleted_by_id for r in version_rows if getattr(r, "deleted_by_id", None)}
+    deleters = db.query(User).filter(User.id.in_(deleter_ids)).all() if deleter_ids else []
+    deleter_name_map: dict[int, str] = {u.id: (u.username or u.email or f"用户{u.id}") for u in deleters}
+
+    for r in version_rows:
+        entry = version_entry_map.get(r.file_entry_id)
+        entry_path = entry.path if entry else f"文件#{r.file_entry_id}"
+        items.append(
+            GlobalTrashItem(
+                id=r.id,
+                type="file_version",
+                entry_id=r.file_entry_id,
+                version_no=r.version_no,
+                library_id=r.library_id,
+                library_name=version_lib_name_map.get(r.library_id) or None,
+                path=f"{entry_path} (历史版本 v{r.version_no})",
+                is_dir=False,
+                deleted_at=r.deleted_at,
+                username=deleter_name_map.get(r.deleted_by_id) if r.deleted_by_id else None,
+                can_restore=bool(entry and entry.deleted_at is None),
                 can_delete=True,
             )
         )
@@ -1160,7 +1195,59 @@ def list_my_trash(
             )
         )
 
-    # 3) 统一按删除时间倒序返回
+    # 3) 版本级回收站：
+    #    - 我拥有的库中的任意已删历史版本
+    #    - 或由我删除的历史版本（无论库属于谁）
+    version_rows = (
+        db.query(FileVersionTrash, Library)
+        .join(Library, Library.id == FileVersionTrash.library_id)
+        .filter(
+            Library.deleted_at.is_(None),
+            or_(
+                Library.owner_id == user_id,
+                FileVersionTrash.deleted_by_id == user_id,
+            ),
+        )
+        .all()
+    )
+    version_entry_ids = {row.file_entry_id for row, _ in version_rows}
+    version_entries = (
+        db.query(FileEntry).filter(FileEntry.id.in_(version_entry_ids)).all() if version_entry_ids else []
+    )
+    version_entry_map: dict[int, FileEntry] = {e.id: e for e in version_entries}
+    version_deleter_ids = {row.deleted_by_id for row, _ in version_rows if getattr(row, "deleted_by_id", None)}
+    version_deleters = (
+        db.query(User).filter(User.id.in_(version_deleter_ids)).all() if version_deleter_ids else []
+    )
+    version_deleter_name_map: dict[int, str] = {
+        u.id: (u.username or u.email or f"用户{u.id}") for u in version_deleters
+    }
+    seen_version_ids: set[int] = set()
+    for row, lib in version_rows:
+        if row.id in seen_version_ids:
+            continue
+        seen_version_ids.add(row.id)
+        can_manage = _can_manage_library_soft(lib, current_user)
+        entry = version_entry_map.get(row.file_entry_id)
+        entry_path = entry.path if entry else f"文件#{row.file_entry_id}"
+        items.append(
+            GlobalTrashItem(
+                id=row.id,
+                type="file_version",
+                entry_id=row.file_entry_id,
+                version_no=row.version_no,
+                library_id=row.library_id,
+                library_name=getattr(lib, "name", "") or None,
+                path=f"{entry_path} (历史版本 v{row.version_no})",
+                is_dir=False,
+                deleted_at=row.deleted_at,
+                username=version_deleter_name_map.get(row.deleted_by_id) if row.deleted_by_id else owner_username,
+                can_restore=can_manage and bool(entry and entry.deleted_at is None),
+                can_delete=can_manage,
+            )
+        )
+
+    # 4) 统一按删除时间倒序返回
     items.sort(key=lambda x: x.deleted_at, reverse=True)
     return items
 
@@ -1216,6 +1303,16 @@ def _permanent_delete_entry(db: Session, entry: FileEntry) -> None:
             except OSError:
                 pass
     db.query(FileVersion).filter(FileVersion.file_entry_id == entry.id).delete()
+
+    trashed_versions = db.query(FileVersionTrash).filter(FileVersionTrash.file_entry_id == entry.id).all()
+    for tv in trashed_versions:
+        p = Path(tv.storage_path)
+        if p.is_file():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    db.query(FileVersionTrash).filter(FileVersionTrash.file_entry_id == entry.id).delete()
     db.delete(entry)
 
 
@@ -1321,6 +1418,7 @@ def search_files(
 def search_files_global(
     keyword: str = Query(..., min_length=1, description="搜索关键词，跨可访问资料库匹配路径中的文件名"),
     limit: int = Query(100, ge=1, le=300, description="最大返回条数"),
+    include_department: bool = Query(True, description="是否包含部门库中的文件"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1332,6 +1430,15 @@ def search_files_global(
     lib_ids = get_accessible_library_ids(db, current_user)
     if not lib_ids:
         return []
+    if not include_department:
+        personal_lib_rows = (
+            db.query(Library.id)
+            .filter(Library.id.in_(lib_ids), Library.department_id.is_(None), Library.deleted_at.is_(None))
+            .all()
+        )
+        lib_ids = [int(r[0]) for r in personal_lib_rows]
+        if not lib_ids:
+            return []
 
     entries = (
         db.query(FileEntry)
@@ -1957,6 +2064,164 @@ def list_versions(
             )
         )
     return out
+
+
+@router.delete("/{entry_id}/versions/{version_no}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_file_version(
+    entry_id: int,
+    version_no: int = FPath(..., ge=1, description="要删除的版本号"),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """删除指定文件版本到回收站（至少保留一个版本）。"""
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == entry_id).first()
+    if not entry or entry.is_dir or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    _get_library_and_check(db, entry.library_id, current_user, require_write=True)
+
+    versions = (
+        db.query(FileVersion)
+        .filter(FileVersion.file_entry_id == entry.id)
+        .order_by(FileVersion.version_no.desc())
+        .all()
+    )
+    if not versions:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件版本不存在")
+    if len(versions) <= 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="至少保留一个版本，无法删除")
+
+    target = next((v for v in versions if v.version_no == version_no), None)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件版本不存在")
+
+    trash_row = FileVersionTrash(
+        file_entry_id=entry.id,
+        library_id=entry.library_id,
+        version_no=target.version_no,
+        storage_path=target.storage_path,
+        size=target.size,
+        content_hash=target.content_hash,
+        comment=target.comment,
+        uploaded_by_id=target.uploaded_by_id,
+        uploaded_at=target.uploaded_at,
+        deleted_by_id=current_user.id,
+        deleted_at=datetime.now(timezone.utc),
+    )
+    db.add(trash_row)
+    db.delete(target)
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "delete_version",
+        "file",
+        entry.id,
+        f"path={entry.path} version={version_no} -> recycle",
+        ip_address=get_client_ip(request),
+    )
+    db.commit()
+
+
+@router.post("/version-trash/{trash_id}/restore", status_code=status.HTTP_204_NO_CONTENT)
+def restore_deleted_file_version(
+    trash_id: int,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """恢复回收站中的单个历史版本。"""
+    row: FileVersionTrash | None = (
+        db.query(FileVersionTrash).filter(FileVersionTrash.id == trash_id).first()
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="回收站中无此版本")
+
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == row.file_entry_id).first()
+    if not entry or entry.deleted_at:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="所属文件已在回收站，无法恢复历史版本")
+    _get_library_and_check(db, entry.library_id, current_user, require_write=True)
+
+    exists = (
+        db.query(FileVersion)
+        .filter(
+            FileVersion.file_entry_id == row.file_entry_id,
+            FileVersion.version_no == row.version_no,
+        )
+        .first()
+    )
+    if exists:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="版本号冲突，无法恢复")
+    if not Path(row.storage_path).is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="版本物理文件缺失，无法恢复")
+
+    restored = FileVersion(
+        file_entry_id=row.file_entry_id,
+        version_no=row.version_no,
+        storage_path=row.storage_path,
+        size=row.size,
+        content_hash=row.content_hash,
+        uploaded_by_id=row.uploaded_by_id,
+        uploaded_at=row.uploaded_at,
+        comment=row.comment,
+    )
+    db.add(restored)
+    db.delete(row)
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "restore_version",
+        "file",
+        entry.id,
+        f"path={entry.path} version={restored.version_no}",
+        ip_address=get_client_ip(request),
+    )
+    db.commit()
+
+
+@router.delete("/version-trash/{trash_id}", status_code=status.HTTP_204_NO_CONTENT)
+def permanent_delete_file_version(
+    trash_id: int,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """彻底删除回收站中的单个历史版本。"""
+    row: FileVersionTrash | None = (
+        db.query(FileVersionTrash).filter(FileVersionTrash.id == trash_id).first()
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="回收站中无此版本")
+    _get_library_and_check(db, row.library_id, current_user, require_write=True)
+
+    p = Path(row.storage_path)
+    if p.is_file():
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    try:
+        version_dir = p.parent
+        if version_dir.is_dir():
+            version_dir.rmdir()
+    except OSError:
+        pass
+
+    entry: FileEntry | None = db.query(FileEntry).filter(FileEntry.id == row.file_entry_id).first()
+    entry_path = getattr(entry, "path", None) or f"entry_id={row.file_entry_id}"
+    db.delete(row)
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "permanent_delete_version",
+        "file",
+        row.file_entry_id,
+        f"path={entry_path} version={row.version_no}",
+        ip_address=get_client_ip(request),
+    )
+    db.commit()
 
 
 @router.get("/download")

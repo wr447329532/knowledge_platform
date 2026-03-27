@@ -14,15 +14,15 @@
     </div>
     <p v-if="treeErr" class="dept-tree-err">{{ treeErr }}</p>
     <div v-if="loading" class="dept-tree-loading">加载中...</div>
-    <div v-else-if="tree.length === 0" class="dept-tree-empty">暂无部门</div>
+    <div v-else-if="filteredTree.length === 0" class="dept-tree-empty">未找到匹配部门</div>
     <div v-else class="dept-tree-list">
       <DepartmentTreeNode
-        v-for="node in tree"
+        v-for="node in filteredTree"
         :key="node.id"
         :node="node"
         :me="me"
         :variant="variant"
-        :expanded-ids="expandedIds"
+        :expanded-ids="effectiveExpandedIds"
         :active-dept-id="activeDeptId"
         @toggle="toggle"
         @add="openAdd"
@@ -68,6 +68,7 @@ const props = defineProps({
   refreshTrigger: { type: Number, default: 0 },
   variant: { type: String, default: 'sidebar' },
   activeDeptId: { type: Number, default: null },
+  keyword: { type: String, default: '' },
 })
 const emit = defineEmits(['select'])
 const tree = ref([])
@@ -99,6 +100,37 @@ const parentOptions = computed(() => {
   const flat = flatten(tree.value)
   if (!editId.value) return flat.map(({ id, name, level }) => ({ id, label: '　'.repeat(level) + name }))
   return flat.filter(({ id }) => id !== editId.value).map(({ id, name, level }) => ({ id, label: '　'.repeat(level) + name }))
+})
+
+function filterTreeByKeyword(nodes, kw) {
+  if (!kw) return nodes || []
+  const list = Array.isArray(nodes) ? nodes : []
+  const keyword = String(kw).trim().toLowerCase()
+  if (!keyword) return list
+  return list
+    .map((n) => {
+      const children = filterTreeByKeyword(n.children || [], keyword)
+      const selfMatch = String(n.name || '').toLowerCase().includes(keyword)
+      if (!selfMatch && children.length === 0) return null
+      return { ...n, children }
+    })
+    .filter(Boolean)
+}
+
+function collectAllIds(nodes, out = []) {
+  const list = Array.isArray(nodes) ? nodes : []
+  list.forEach((n) => {
+    out.push(n.id)
+    if (Array.isArray(n.children) && n.children.length) collectAllIds(n.children, out)
+  })
+  return out
+}
+
+const filteredTree = computed(() => filterTreeByKeyword(tree.value, props.keyword))
+const effectiveExpandedIds = computed(() => {
+  const kw = String(props.keyword || '').trim()
+  if (!kw) return expandedIds.value
+  return collectAllIds(filteredTree.value, [])
 })
 
 async function loadTree() {

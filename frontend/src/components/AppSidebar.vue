@@ -48,7 +48,12 @@
 
     <!-- 部门树 -->
     <div class="sidebar-dept">
-      <DepartmentTree :me="me" :active-dept-id="activeDeptId" @select="emit('dept-select', $event)" />
+      <DepartmentTree
+        :me="me"
+        :active-dept-id="activeDeptId"
+        :keyword="deptKeyword"
+        @select="emit('dept-select', $event)"
+      />
     </div>
 
     <div class="sidebar-spacer"></div>
@@ -72,6 +77,7 @@ defineProps({
   me: Object,
   activeTab: String,
   activeDeptId: { type: Number, default: null },
+  deptKeyword: { type: String, default: '' },
   storageStats: Object,
   trashMode: { type: String, default: 'personal' },
 })

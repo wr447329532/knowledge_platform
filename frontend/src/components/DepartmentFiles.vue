@@ -68,7 +68,7 @@
                   </div>
                 </td>
                 <td class="dept-file-type">
-                  {{ r.type === 'folder' ? '部门文件库' : '文件库' }}
+                  {{ r.type === 'folder' ? '部门库' : '文件库' }}
                 </td>
                 <td class="dept-file-desc">
                   {{ r.description || '-' }}

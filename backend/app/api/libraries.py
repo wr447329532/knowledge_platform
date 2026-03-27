@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -195,31 +195,7 @@ def list_library_trash(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """列出已软删除的资料库（仅拥有者或超级管理员可见），超过 30 天自动彻底删除"""
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=30)
-    # 自动彻底删除超过 30 天的已删除资料库
-    old_libs = (
-        db.query(Library)
-        .filter(Library.deleted_at.isnot(None), Library.deleted_at < cutoff)
-        .all()
-    )
-    for lib in old_libs:
-        if current_user.is_superuser or lib.owner_id == current_user.id:
-            from sqlalchemy import func
-            from backend.app.api.files import _permanent_delete_entry
-            from backend.app.models.file import FileEntry
-            entries = (
-                db.query(FileEntry)
-                .filter(FileEntry.library_id == lib.id)
-                .order_by(func.length(FileEntry.path).desc())
-                .all()
-            )
-            for entry in entries:
-                _permanent_delete_entry(db, entry)
-            db.delete(lib)
-    if old_libs:
-        db.commit()
+    """列出已软删除的资料库（仅拥有者或超级管理员可见）。"""
 
     q = db.query(Library).filter(Library.deleted_at.isnot(None))
     if not current_user.is_superuser:
@@ -264,16 +240,16 @@ def list_library_trash(
 def list_libraries(
     limit: int = Query(50, ge=1, le=200, description="每页数量"),
     offset: int = Query(0, ge=0, description="起始偏移量"),
+    include_department: bool = Query(True, description="是否包含部门库"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """列出当前用户可访问的资料库（拥有、分享、部门库）。支持简单 limit/offset 分页。"""
     ids = get_accessible_library_ids(db, current_user)
-    q = (
-        db.query(Library)
-        .filter(Library.id.in_(ids))
-        .order_by(Library.created_at.desc())
-    )
+    q = db.query(Library).filter(Library.id.in_(ids))
+    if not include_department:
+        q = q.filter(Library.department_id.is_(None))
+    q = q.order_by(Library.created_at.desc())
     libs = q.offset(offset).limit(limit).all()
     result = []
     for l in libs:

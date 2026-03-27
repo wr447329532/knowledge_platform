@@ -331,10 +331,12 @@ export async function searchFiles(libraryId, keyword) {
 }
 
 /** 全局/库内搜索：libraryId 存在时库内搜索；为空时跨可访问资料库搜索 */
-export async function searchFilesGlobal(keyword, libraryId) {
+export async function searchFilesGlobal(keyword, libraryId, options = {}) {
   if (!keyword || !keyword.trim()) return []
   if (libraryId == null) {
-    return api(`/files/search-global?keyword=${encodeURIComponent(keyword.trim())}`)
+    const q = new URLSearchParams({ keyword: keyword.trim() })
+    if (options.includeDepartment === false) q.set('include_department', 'false')
+    return api(`/files/search-global?${q.toString()}`)
   }
   return api(`/files/search?library_id=${libraryId}&keyword=${encodeURIComponent(keyword.trim())}`)
 }
@@ -603,6 +605,10 @@ export async function listVersions(entryId) {
   return api(`/files/versions?entry_id=${entryId}`)
 }
 
+export async function deleteVersion(entryId, versionNo) {
+  return api(`/files/${entryId}/versions/${versionNo}`, { method: 'DELETE' })
+}
+
 export async function createDir(libraryId, path) {
   return api(`/files/mkdir?library_id=${libraryId}&path=${encodeURIComponent(path)}`, { method: 'POST' })
 }
@@ -621,6 +627,14 @@ export async function restoreFile(entryId) {
 
 export async function permanentDelete(entryId) {
   return api(`/files/trash/${entryId}`, { method: 'DELETE' })
+}
+
+export async function restoreVersionTrash(trashId) {
+  return api(`/files/version-trash/${trashId}/restore`, { method: 'POST' })
+}
+
+export async function permanentDeleteVersionTrash(trashId) {
+  return api(`/files/version-trash/${trashId}`, { method: 'DELETE' })
 }
 
 export async function listMyTrash() {
