@@ -7,7 +7,7 @@ from fastapi.responses import Response
 from fastapi.responses import FileResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
-from sqlalchemy import Integer, literal, or_, select, union_all
+from sqlalchemy import Boolean, Integer, String, cast, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_user
@@ -973,10 +973,10 @@ def list_global_trash(
     # 统一三类记录为同一数据流后分页
     file_stmt = (
         select(
-            literal("file").label("type"),
-            FileEntry.id.label("id"),
-            literal(None, type_=Integer).label("entry_id"),
-            literal(None, type_=Integer).label("version_no"),
+            literal("file", type_=String).label("type"),
+            cast(FileEntry.id, String).label("id"),
+            literal(None, type_=String).label("entry_id"),
+            literal(None, type_=String).label("version_no"),
             FileEntry.library_id.label("library_id"),
             FileEntry.path.label("path"),
             FileEntry.is_dir.label("is_dir"),
@@ -987,13 +987,13 @@ def list_global_trash(
     )
     library_stmt = (
         select(
-            literal("library").label("type"),
-            Library.id.label("id"),
-            literal(None, type_=Integer).label("entry_id"),
-            literal(None, type_=Integer).label("version_no"),
+            literal("library", type_=String).label("type"),
+            cast(Library.id, String).label("id"),
+            literal(None, type_=String).label("entry_id"),
+            literal(None, type_=String).label("version_no"),
             Library.id.label("library_id"),
             Library.name.label("path"),
-            literal(True).label("is_dir"),
+            literal(True, type_=Boolean).label("is_dir"),
             Library.deleted_at.label("deleted_at"),
             Library.owner_id.label("actor_user_id"),
         )
@@ -1001,13 +1001,13 @@ def list_global_trash(
     )
     version_stmt = (
         select(
-            literal("file_version").label("type"),
-            FileVersionTrash.id.label("id"),
-            FileVersionTrash.file_entry_id.label("entry_id"),
-            FileVersionTrash.version_no.label("version_no"),
+            literal("file_version", type_=String).label("type"),
+            cast(FileVersionTrash.id, String).label("id"),
+            cast(FileVersionTrash.file_entry_id, String).label("entry_id"),
+            cast(FileVersionTrash.version_no, String).label("version_no"),
             FileVersionTrash.library_id.label("library_id"),
-            literal(None).label("path"),
-            literal(False).label("is_dir"),
+            literal(None, type_=String).label("path"),
+            literal(False, type_=Boolean).label("is_dir"),
             FileVersionTrash.deleted_at.label("deleted_at"),
             FileVersionTrash.deleted_by_id.label("actor_user_id"),
         )
