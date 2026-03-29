@@ -273,7 +273,7 @@
               <div class="admin-stat-card">
                 <div class="admin-stat-label">总存储使用</div>
                 <div class="admin-stat-value">{{ storageStats?.used_display || '0 B' }}</div>
-                <div class="admin-stat-extra">共 {{ storageStats?.total_display || '500 GB' }}</div>
+                <div class="admin-stat-extra">共 {{ storageStats?.total_display || '--' }}</div>
               </div>
               <div class="admin-stat-card">
                 <div class="admin-stat-label">使用率</div>
@@ -469,7 +469,7 @@
             <div class="admin-stats">
               <div class="admin-stat-card">
                 <div class="admin-stat-label">总存储容量</div>
-                <div class="admin-stat-value">{{ storageStats?.total_display || '500 GB' }}</div>
+                <div class="admin-stat-value">{{ storageStats?.total_display || '--' }}</div>
                 <div class="admin-stat-extra text-muted">企业总配额</div>
               </div>
               <div class="admin-stat-card">
@@ -500,7 +500,7 @@
                 <div class="admin-storage-overview-left">
                   <h3 class="admin-storage-card-title">整体存储使用情况</h3>
                   <p class="admin-storage-overview-sub">
-                    {{ storageStats?.used_display || '0 B' }} / {{ storageStats?.total_display || '500 GB' }}
+                    {{ storageStats?.used_display || '0 B' }} / {{ storageStats?.total_display || '--' }}
                   </p>
                   <div class="admin-storage-bar">
                     <div
@@ -514,7 +514,7 @@
                 </div>
               </div>
               <div
-                v-if="(storageStats?.percent || 0) > 80"
+                v-if="(storageStats?.percent || 0) >= 85"
                 class="admin-storage-overview-alert"
               >
                 <Icons name="alert-circle" class="admin-storage-alert-icon" />
@@ -684,6 +684,7 @@
                         </td>
                         <td class="admin-cell-center">
                           <span
+                            v-if="row.total_bytes"
                             :class="[
                               'admin-badge',
                               row.percent >= 90 ? 'badge-critical' : row.percent >= 70 ? 'badge-warning' : 'badge-ok',
@@ -691,6 +692,7 @@
                           >
                             {{ row.percent.toFixed(1) }}%
                           </span>
+                          <span v-else class="text-muted">未设置</span>
                         </td>
                         <td class="admin-cell-center">
                           {{ row.file_count.toLocaleString('zh-CN') }}

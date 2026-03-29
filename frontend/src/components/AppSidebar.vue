@@ -11,7 +11,7 @@
       <div class="storage-label">存储空间</div>
       <div class="storage-value">
         <span class="storage-used">{{ storageStats?.used_display || '0 B' }}</span>
-        <span class="storage-total">/ {{ storageStats?.total_display || '500 GB' }}</span>
+        <span class="storage-total">/ {{ storageStats?.total_display || '--' }}</span>
       </div>
       <div class="storage-bar">
         <div class="storage-fill" :style="{ width: Math.min((storageStats?.percent || 0), 100) + '%' }"></div>

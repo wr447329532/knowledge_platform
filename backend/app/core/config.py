@@ -29,8 +29,15 @@ class Settings(BaseSettings):
     STORAGE_ROOT: Path = Path(__file__).resolve().parents[3] / "storage"
 
     # 系统级总存储配额（字节），用于统计视角的“系统总容量”。
-    # 默认 500GB，可通过环境变量 STORAGE_SYSTEM_TOTAL_BYTES 或 STORAGE_SYSTEM_TOTAL_GB 覆盖。
-    STORAGE_SYSTEM_TOTAL_BYTES: int = 500 * 1024 * 1024 * 1024
+    # 默认 2TB（2048GB），可通过环境变量 STORAGE_SYSTEM_TOTAL_BYTES 覆盖。
+    STORAGE_SYSTEM_TOTAL_BYTES: int = 2 * 1024 * 1024 * 1024 * 1024
+    # 部门配额策略：预留比例（0~1），用于从系统总配额中保留缓冲池。
+    STORAGE_DEPT_RESERVED_RATIO: float = 0.20
+    # 部门配额策略：每个部门的基础配额（字节），默认 120GB。
+    STORAGE_DEPT_BASE_QUOTA_BYTES: int = 120 * 1024 * 1024 * 1024
+    # 部门配额策略：状态阈值（百分比）
+    STORAGE_DEPT_WARNING_PCT: float = 85.0
+    STORAGE_DEPT_CRITICAL_PCT: float = 95.0
     # 数据库初始化策略（开发默认开启；生产建议关闭，改用 Alembic）
     DB_AUTO_CREATE_TABLES_ON_STARTUP: bool = True
     DB_COMPAT_PATCH_ON_STARTUP: bool = True

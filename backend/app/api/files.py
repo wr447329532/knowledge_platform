@@ -1528,14 +1528,20 @@ def search_files_global(
     return result
 
 
-SYSTEM_DEFAULT_TOTAL_QUOTA_BYTES = int(getattr(settings, "STORAGE_SYSTEM_TOTAL_BYTES", 500 * 1024 * 1024 * 1024))
+SYSTEM_DEFAULT_TOTAL_QUOTA_BYTES = int(
+    getattr(settings, "STORAGE_SYSTEM_TOTAL_BYTES", 2 * 1024 * 1024 * 1024 * 1024)
+)
+DEPT_RESERVED_RATIO = float(getattr(settings, "STORAGE_DEPT_RESERVED_RATIO", 0.20))
+DEPT_BASE_QUOTA_BYTES = int(getattr(settings, "STORAGE_DEPT_BASE_QUOTA_BYTES", 120 * 1024 * 1024 * 1024))
+DEPT_WARNING_PCT = float(getattr(settings, "STORAGE_DEPT_WARNING_PCT", 85.0))
+DEPT_CRITICAL_PCT = float(getattr(settings, "STORAGE_DEPT_CRITICAL_PCT", 95.0))
 
 
 class StorageStats(BaseModel):
     used_bytes: int
     used_display: str
     total_bytes: int = SYSTEM_DEFAULT_TOTAL_QUOTA_BYTES
-    total_display: str = "500 GB"
+    total_display: str = "0 B"
     percent: float
 
 
@@ -1559,8 +1565,8 @@ class UserStorageRow(BaseModel):
     department_name: str | None = None
     used_bytes: int
     used_display: str
-    total_bytes: int
-    total_display: str
+    total_bytes: int | None = None
+    total_display: str = "未设置"
     percent: float
     file_count: int
     last_upload: datetime | None = None
@@ -1601,7 +1607,7 @@ def get_storage_stats(
             q = q.filter(FileEntry.library_id == -1)
     row = q.first()
     used = int(row[0]) if row and row[0] else 0
-    # 个人视角总容量：优先使用当前用户的个人配额；未配置时回退到系统默认 500GB
+    # 个人视角总容量：优先使用当前用户的个人配额；未配置时回退到系统默认总配额
     total = int(getattr(current_user, "storage_quota_bytes", None) or SYSTEM_DEFAULT_TOTAL_QUOTA_BYTES)
     pct = (used / total * 100) if total > 0 else 0
 
@@ -1800,17 +1806,36 @@ def get_storage_by_department(
         elif created_naive >= previous_start:
             dept_previous_new_files[dept_id] = dept_previous_new_files.get(dept_id, 0) + 1
 
+    # 默认部门配额策略（仅在部门未设置自定义配额时生效）：
+    # 1) 从系统总配额中按比例预留缓冲池；
+    # 2) 给每个部门发放基础配额；
+    # 3) 剩余配额按部门人数占比分配。
     rows_out: list[DepartmentStorageRow] = []
+    dept_ids = list(depts.keys())
+    dept_count = len(dept_ids)
+    safe_reserved_ratio = min(max(DEPT_RESERVED_RATIO, 0.0), 0.9)
+    distributable_total = int(SYSTEM_DEFAULT_TOTAL_QUOTA_BYTES * (1.0 - safe_reserved_ratio))
+    base_total = DEPT_BASE_QUOTA_BYTES * dept_count
+    floating_pool = max(distributable_total - base_total, 0)
+    total_users = sum(dept_user_counts.get(did, 0) for did in dept_ids)
+
     for dept_id, dept in depts.items():
         used = dept_used.get(dept_id, 0)
-        # 部门配额：优先使用自定义配额，否则默认 100GB
-        quota_bytes = dept.storage_quota_bytes or (100 * 1024 * 1024 * 1024)
         users = dept_user_counts.get(dept_id, 0)
+        if dept.storage_quota_bytes:
+            quota_bytes = int(dept.storage_quota_bytes)
+        else:
+            if total_users > 0:
+                floating_part = int(floating_pool * (users / total_users))
+            else:
+                floating_part = int(floating_pool / dept_count) if dept_count > 0 else 0
+            quota_bytes = DEPT_BASE_QUOTA_BYTES + floating_part
+
         file_cnt = dept_file_count.get(dept_id, 0)
         pct = (used / quota_bytes * 100) if quota_bytes > 0 else 0.0
-        if pct >= 90:
+        if pct >= DEPT_CRITICAL_PCT:
             status_str = "critical"
-        elif pct >= 70:
+        elif pct >= DEPT_WARNING_PCT:
             status_str = "warning"
         else:
             status_str = "normal"
@@ -1882,17 +1907,16 @@ def get_storage_by_user(
                 user_last_upload[uid] = uploaded_at
 
     rows_out: list[UserStorageRow] = []
-    for uid, used in user_used.items():
-        u = users.get(uid)
-        if not u:
-            continue
-        quota_bytes = u.storage_quota_bytes or (100 * 1024 * 1024 * 1024)
+    # 展示所有用户（即使未上传文件，也需要在用户存储列表可见）
+    for uid, u in users.items():
+        used = int(user_used.get(uid, 0))
+        quota_bytes = int(u.storage_quota_bytes) if u.storage_quota_bytes else None
         dept_name = None
         if u.department_id is not None:
             d = dept_map.get(u.department_id)
             if d:
                 dept_name = d.name
-        pct = (used / quota_bytes * 100) if quota_bytes > 0 else 0.0
+        pct = (used / quota_bytes * 100) if quota_bytes and quota_bytes > 0 else 0.0
         rows_out.append(
             UserStorageRow(
                 id=uid,
@@ -1901,7 +1925,7 @@ def get_storage_by_user(
                 used_bytes=used,
                 used_display=_format_bytes(used),
                 total_bytes=quota_bytes,
-                total_display=_format_bytes(quota_bytes),
+                total_display=_format_bytes(quota_bytes) if quota_bytes else "未设置",
                 percent=round(pct, 1),
                 file_count=user_file_count.get(uid, 0),
                 last_upload=user_last_upload.get(uid),
