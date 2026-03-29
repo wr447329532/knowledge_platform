@@ -7,7 +7,7 @@ from fastapi.responses import Response
 from fastapi.responses import FileResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
+from sqlalchemy import Integer, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_user
@@ -70,6 +70,13 @@ class GlobalTrashItem(BaseModel):
     deleted_at: datetime
     can_restore: bool = True
     can_delete: bool = True
+
+
+class GlobalTrashPage(BaseModel):
+    items: List[GlobalTrashItem]
+    has_more: bool
+    limit: int
+    offset: int
 
 
 class FileVersionRead(BaseModel):
@@ -953,142 +960,172 @@ def list_dept_trash(
     return items
 
 
-@router.get("/global-trash", response_model=List[GlobalTrashItem])
+@router.get("/global-trash", response_model=GlobalTrashPage)
 def list_global_trash(
     limit: int = Query(50, ge=1, le=500, description="每页数量"),
     offset: int = Query(0, ge=0, description="起始偏移量"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """全局回收站：全平台所有库的删除文件与文件库聚合列表。仅超级管理员可访问。
-
-    目前使用简单的 limit/offset 分页，不返回总数，前端通过本页数量是否达到 limit 来判断是否还有下一页。
-    """
+    """全局回收站：统一流分页（文件/库/历史版本）"""
     if not current_user.is_superuser:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅系统管理员可查看全局回收站")
-
-    # 1) 全平台文件级回收站（支持简单分页）
-    file_q = (
-        db.query(FileEntry)
-        .filter(FileEntry.deleted_at != None)  # noqa: E711
-        .order_by(FileEntry.deleted_at.desc())
+    # 统一三类记录为同一数据流后分页
+    file_stmt = (
+        select(
+            literal("file").label("type"),
+            FileEntry.id.label("id"),
+            literal(None, type_=Integer).label("entry_id"),
+            literal(None, type_=Integer).label("version_no"),
+            FileEntry.library_id.label("library_id"),
+            FileEntry.path.label("path"),
+            FileEntry.is_dir.label("is_dir"),
+            FileEntry.deleted_at.label("deleted_at"),
+            FileEntry.created_by_id.label("actor_user_id"),
+        )
+        .where(FileEntry.deleted_at.is_not(None))
     )
-    file_entries = file_q.offset(offset).limit(limit).all()
-    lib_ids = list({e.library_id for e in file_entries})
+    library_stmt = (
+        select(
+            literal("library").label("type"),
+            Library.id.label("id"),
+            literal(None, type_=Integer).label("entry_id"),
+            literal(None, type_=Integer).label("version_no"),
+            Library.id.label("library_id"),
+            Library.name.label("path"),
+            literal(True).label("is_dir"),
+            Library.deleted_at.label("deleted_at"),
+            Library.owner_id.label("actor_user_id"),
+        )
+        .where(Library.deleted_at.is_not(None))
+    )
+    version_stmt = (
+        select(
+            literal("file_version").label("type"),
+            FileVersionTrash.id.label("id"),
+            FileVersionTrash.file_entry_id.label("entry_id"),
+            FileVersionTrash.version_no.label("version_no"),
+            FileVersionTrash.library_id.label("library_id"),
+            literal(None).label("path"),
+            literal(False).label("is_dir"),
+            FileVersionTrash.deleted_at.label("deleted_at"),
+            FileVersionTrash.deleted_by_id.label("actor_user_id"),
+        )
+        .where(FileVersionTrash.deleted_at.is_not(None))
+    )
+    unified = union_all(file_stmt, library_stmt, version_stmt).subquery("global_trash_stream")
+
+    page_stmt = (
+        select(unified)
+        .order_by(
+            unified.c.deleted_at.desc(),
+            unified.c.type.asc(),
+            unified.c.id.desc(),
+        )
+        .offset(offset)
+        .limit(limit + 1)
+    )
+    rows = db.execute(page_stmt).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
+    if not rows:
+        return GlobalTrashPage(items=[], has_more=False, limit=limit, offset=offset)
+
+    mappings = [r._mapping for r in rows]
+    lib_ids = {int(m["library_id"]) for m in mappings if m.get("library_id") is not None}
+    entry_ids = {int(m["entry_id"]) for m in mappings if m.get("entry_id") is not None}
+
     libs = db.query(Library).filter(Library.id.in_(lib_ids)).all() if lib_ids else []
-    lib_names = {lib.id: getattr(lib, "name", "") or "" for lib in libs}
-    lib_owner_ids = {lib.owner_id for lib in libs if getattr(lib, "owner_id", None)}
-
-    # 预取文件创建人和库拥有者
-    creator_ids = {e.created_by_id for e in file_entries if getattr(e, "created_by_id", None)}
-    user_ids = set(creator_ids) | set(lib_owner_ids)
-    users = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
-    user_name_map: dict[int, str] = {}
-    for u in users:
-        user_name_map[u.id] = u.username or u.email or f"用户{u.id}"
-
-    # 映射 library_id -> owner_id
+    lib_name_map: dict[int, str] = {lib.id: (lib.name or "") for lib in libs}
     lib_owner_map: dict[int, Optional[int]] = {lib.id: lib.owner_id for lib in libs}
 
+    entries = db.query(FileEntry).filter(FileEntry.id.in_(entry_ids)).all() if entry_ids else []
+    entry_map: dict[int, FileEntry] = {e.id: e for e in entries}
+
+    user_ids: set[int] = set()
+    for m in mappings:
+        actor_id = m.get("actor_user_id")
+        if actor_id:
+            user_ids.add(int(actor_id))
+        lib_id = m.get("library_id")
+        if lib_id:
+            owner_id = lib_owner_map.get(int(lib_id))
+            if owner_id:
+                user_ids.add(int(owner_id))
+    users = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+    user_name_map: dict[int, str] = {u.id: (u.username or u.email or f"用户{u.id}") for u in users}
+
     items: list[GlobalTrashItem] = []
-    for e in file_entries:
-        username: Optional[str] = None
-        if getattr(e, "created_by_id", None):
-            username = user_name_map.get(e.created_by_id)
-        if not username:
-            owner_id = lib_owner_map.get(e.library_id)
+    for m in mappings:
+        item_type = str(m["type"])
+        item_id = int(m["id"])
+        lib_id = int(m["library_id"]) if m.get("library_id") is not None else None
+        actor_id = int(m["actor_user_id"]) if m.get("actor_user_id") is not None else None
+        username: Optional[str] = user_name_map.get(actor_id) if actor_id else None
+        if not username and lib_id:
+            owner_id = lib_owner_map.get(lib_id)
             if owner_id:
                 username = user_name_map.get(owner_id)
 
+        if item_type == "file_version":
+            entry_id = int(m["entry_id"]) if m.get("entry_id") is not None else None
+            version_no = int(m["version_no"]) if m.get("version_no") is not None else None
+            entry = entry_map.get(entry_id) if entry_id else None
+            entry_path = entry.path if entry is not None else f"文件#{entry_id}"
+            items.append(
+                GlobalTrashItem(
+                    id=item_id,
+                    type="file_version",
+                    entry_id=entry_id,
+                    version_no=version_no,
+                    library_id=lib_id,
+                    library_name=lib_name_map.get(lib_id) if lib_id else None,
+                    path=f"{entry_path} (历史版本 v{version_no})" if version_no is not None else entry_path,
+                    is_dir=False,
+                    deleted_at=m["deleted_at"],
+                    username=username,
+                    can_restore=bool(entry and entry.deleted_at is None),
+                    can_delete=True,
+                )
+            )
+            continue
+
+        if item_type == "library":
+            lib_name = lib_name_map.get(lib_id) if lib_id else None
+            items.append(
+                GlobalTrashItem(
+                    id=item_id,
+                    type="library",
+                    library_id=lib_id,
+                    library_name=lib_name,
+                    path=lib_name or None,
+                    is_dir=True,
+                    deleted_at=m["deleted_at"],
+                    username=username,
+                    can_restore=True,
+                    can_delete=True,
+                )
+            )
+            continue
+
+        # file
         items.append(
             GlobalTrashItem(
-                id=e.id,
+                id=item_id,
                 type="file",
-                library_id=e.library_id,
-                library_name=lib_names.get(e.library_id) or None,
-                path=e.path,
-                is_dir=e.is_dir,
-                deleted_at=e.deleted_at,
+                library_id=lib_id,
+                library_name=lib_name_map.get(lib_id) if lib_id else None,
+                path=m["path"],
+                is_dir=bool(m["is_dir"]),
+                deleted_at=m["deleted_at"],
                 username=username,
                 can_restore=True,
                 can_delete=True,
             )
         )
 
-    # 2) 全平台文件库回收站（软删除的库）
-    deleted_libs = (
-        db.query(Library)
-        .filter(Library.deleted_at != None)  # noqa: E711
-        .all()
-    )
-    # 预取库拥有者
-    lib_owner_ids2 = {lib.owner_id for lib in deleted_libs if getattr(lib, "owner_id", None)}
-    owners2 = db.query(User).filter(User.id.in_(lib_owner_ids2)).all() if lib_owner_ids2 else []
-    owner2_name_map: dict[int, str] = {}
-    for u in owners2:
-        owner2_name_map[u.id] = u.username or u.email or f"用户{u.id}"
-
-    for lib in deleted_libs:
-        username: Optional[str] = None
-        if getattr(lib, "owner_id", None):
-            username = owner2_name_map.get(lib.owner_id)
-
-        items.append(
-            GlobalTrashItem(
-                id=lib.id,
-                type="library",
-                library_id=lib.id,
-                library_name=getattr(lib, "name", "") or None,
-                path=getattr(lib, "name", "") or None,
-                is_dir=True,
-                deleted_at=getattr(lib, "deleted_at"),
-                username=username,
-                can_restore=True,
-                can_delete=True,
-            )
-        )
-
-    # 3) 全平台“已删历史版本”
-    version_rows = (
-        db.query(FileVersionTrash)
-        .order_by(FileVersionTrash.deleted_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-    version_lib_ids = {r.library_id for r in version_rows}
-    version_entry_ids = {r.file_entry_id for r in version_rows}
-    version_libs = db.query(Library).filter(Library.id.in_(version_lib_ids)).all() if version_lib_ids else []
-    version_lib_name_map: dict[int, str] = {lib.id: (lib.name or "") for lib in version_libs}
-    version_entries = db.query(FileEntry).filter(FileEntry.id.in_(version_entry_ids)).all() if version_entry_ids else []
-    version_entry_map: dict[int, FileEntry] = {e.id: e for e in version_entries}
-    deleter_ids = {r.deleted_by_id for r in version_rows if getattr(r, "deleted_by_id", None)}
-    deleters = db.query(User).filter(User.id.in_(deleter_ids)).all() if deleter_ids else []
-    deleter_name_map: dict[int, str] = {u.id: (u.username or u.email or f"用户{u.id}") for u in deleters}
-
-    for r in version_rows:
-        entry = version_entry_map.get(r.file_entry_id)
-        entry_path = entry.path if entry else f"文件#{r.file_entry_id}"
-        items.append(
-            GlobalTrashItem(
-                id=r.id,
-                type="file_version",
-                entry_id=r.file_entry_id,
-                version_no=r.version_no,
-                library_id=r.library_id,
-                library_name=version_lib_name_map.get(r.library_id) or None,
-                path=f"{entry_path} (历史版本 v{r.version_no})",
-                is_dir=False,
-                deleted_at=r.deleted_at,
-                username=deleter_name_map.get(r.deleted_by_id) if r.deleted_by_id else None,
-                can_restore=bool(entry and entry.deleted_at is None),
-                can_delete=True,
-            )
-        )
-
-    # 4) 统一按删除时间倒序返回
-    items.sort(key=lambda x: x.deleted_at, reverse=True)
-    return items
+    return GlobalTrashPage(items=items, has_more=has_more, limit=limit, offset=offset)
 
 
 @router.get("/my-trash", response_model=List[GlobalTrashItem])

@@ -1368,7 +1368,7 @@
           </div>
 
           <!-- 全局回收站 -->
-          <div v-if="subTab === 'global-trash'" class="admin-page">
+          <div v-if="subTab === 'global-trash'" class="admin-page admin-page-global-trash">
             <div class="admin-page-header">
               <div>
                 <h2 class="admin-page-title">全局回收站</h2>
@@ -1385,7 +1385,7 @@
             <div class="card admin-table-wrap">
               <p v-if="globalTrashLoading" class="admin-empty">加载中...</p>
               <div v-else-if="globalTrashList.length" class="admin-table-scroll">
-                <table class="admin-table">
+                <table class="admin-table admin-table-global-trash">
                   <thead>
                   <tr>
                     <th>用户账号</th>
@@ -1400,28 +1400,30 @@
                   <tbody>
                     <tr v-for="f in globalTrashList" :key="f.type + '-' + f.id" class="admin-table-row">
                       <td>{{ f.username || '-' }}</td>
-                      <td>{{ f.type === 'library' ? '文件库' : '文件' }}</td>
+                      <td>{{ f.type === 'library' ? '文件库' : (f.type === 'file_version' ? '历史版本' : '文件') }}</td>
                       <td>{{ f.type === 'library' ? (f.library_name || ('文件库 #' + f.id)) : (f.path && f.path.split('/').pop()) }}</td>
                       <td>{{ f.type === 'library' ? '-' : (f.library_name || '-') }}</td>
                       <td>{{ f.type === 'library' ? '-' : (f.path || '-') }}</td>
                       <td>{{ formatDate(f.deleted_at) }}</td>
-                      <td>
-                        <template v-if="f.type === 'library'">
-                          <button type="button" class="admin-btn-secondary" @click="restoreGlobalLibrary(f)">
-                            恢复
-                          </button>
-                          <button type="button" class="admin-btn-danger" @click="permDeleteGlobalLibrary(f)">
-                            永久删除
-                          </button>
-                        </template>
-                        <template v-else>
-                          <button type="button" class="admin-btn-secondary" @click="restoreGlobalTrashItem(f)">
-                            恢复
-                          </button>
-                          <button type="button" class="admin-btn-danger" @click="permDeleteGlobalTrashItem(f)">
-                            永久删除
-                          </button>
-                        </template>
+                      <td class="admin-global-trash-actions-cell">
+                        <div class="admin-global-trash-actions">
+                          <template v-if="f.type === 'library'">
+                            <button type="button" class="admin-btn-secondary" @click="restoreGlobalLibrary(f)">
+                              恢复
+                            </button>
+                            <button type="button" class="admin-btn-danger" @click="permDeleteGlobalLibrary(f)">
+                              永久删除
+                            </button>
+                          </template>
+                          <template v-else>
+                            <button type="button" class="admin-btn-secondary" @click="restoreGlobalTrashItem(f)">
+                              恢复
+                            </button>
+                            <button type="button" class="admin-btn-danger" @click="permDeleteGlobalTrashItem(f)">
+                              永久删除
+                            </button>
+                          </template>
+                        </div>
                       </td>
                     </tr>
                   </tbody>
@@ -1780,6 +1782,7 @@ const globalTrashMessage = ref('')
 const globalTrashError = ref('')
 const globalTrashLimit = ref(50)
 const globalTrashOffset = ref(0)
+const globalTrashHasMore = ref(false)
 const sendingNotify = ref(false)
 const sendForm = ref({
   title: '',
@@ -2228,13 +2231,22 @@ async function loadNotifyAll() {
 async function loadGlobalTrash() {
   globalTrashLoading.value = true
   try {
-    globalTrashList.value = await api.listGlobalTrash({
+    const res = await api.listGlobalTrash({
       limit: globalTrashLimit.value,
       offset: globalTrashOffset.value,
     })
+    if (Array.isArray(res)) {
+      // 兼容旧后端返回
+      globalTrashList.value = res
+      globalTrashHasMore.value = res.length >= globalTrashLimit.value
+    } else {
+      globalTrashList.value = Array.isArray(res?.items) ? res.items : []
+      globalTrashHasMore.value = !!res?.has_more
+    }
   } catch (e) {
     globalTrashError.value = _globalTrashErrMsg(e) || '加载全局回收站失败'
     globalTrashList.value = []
+    globalTrashHasMore.value = false
   } finally {
     globalTrashLoading.value = false
   }
@@ -2242,7 +2254,7 @@ async function loadGlobalTrash() {
 
 const globalTrashHasPrev = computed(() => globalTrashOffset.value > 0)
 const globalTrashHasNext = computed(
-  () => globalTrashList.value.length >= globalTrashLimit.value,
+  () => globalTrashHasMore.value,
 )
 
 async function gotoGlobalTrashFirstPage() {
@@ -4074,6 +4086,10 @@ onUnmounted(() => {
   max-width: 1200px;
 }
 
+.admin-page-global-trash {
+  max-width: none;
+}
+
 .admin-page-header {
   display: flex;
   align-items: flex-start;
@@ -4218,6 +4234,35 @@ onUnmounted(() => {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+}
+
+.admin-table-global-trash {
+  min-width: 1320px;
+}
+
+.admin-page-global-trash .admin-table-scroll {
+  overflow-x: auto;
+}
+
+.admin-table-global-trash th,
+.admin-table-global-trash td {
+  white-space: nowrap;
+}
+
+.admin-global-trash-actions-cell {
+  width: 180px;
+}
+
+.admin-global-trash-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.admin-global-trash-actions .admin-btn-secondary,
+.admin-global-trash-actions .admin-btn-danger {
+  white-space: nowrap;
 }
 
 .admin-table th,
