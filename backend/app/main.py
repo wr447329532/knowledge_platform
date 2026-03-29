@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import or_
@@ -183,6 +185,37 @@ def _ensure_default_admin(reset_password_on_startup: bool = False) -> None:
         db.close()
 
 
+def _ensure_db_at_alembic_head(database_url: str) -> None:
+    """校验数据库 revision 必须位于 Alembic head。"""
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
+    repo_root = Path(__file__).resolve().parents[2]
+    alembic_ini = repo_root / "alembic.ini"
+    if not alembic_ini.exists():
+        raise RuntimeError("未找到 alembic.ini，无法校验数据库迁移版本。")
+
+    cfg = Config(str(alembic_ini))
+    cfg.set_main_option("sqlalchemy.url", database_url)
+    script = ScriptDirectory.from_config(cfg)
+    heads = set(script.get_heads())
+    if not heads:
+        return
+
+    with engine.connect() as conn:
+        ctx = MigrationContext.configure(conn)
+        current = ctx.get_current_revision()
+
+    if current not in heads:
+        heads_str = ", ".join(sorted(heads))
+        current_str = current or "None"
+        raise RuntimeError(
+            f"数据库迁移版本不一致：current={current_str}, head={heads_str}。"
+            "请先执行 `alembic upgrade head` 后再启动服务。"
+        )
+
+
 def create_app() -> FastAPI:
     """
     创建并配置 FastAPI 应用实例。
@@ -214,6 +247,9 @@ def create_app() -> FastAPI:
         _ensure_default_admin(
             reset_password_on_startup=settings.RESET_DEFAULT_ADMIN_PASSWORD_ON_STARTUP
         )
+    # 生产环境（通常关闭自动建表）强制要求 DB revision 与 Alembic head 一致。
+    if (not settings.DB_AUTO_CREATE_TABLES_ON_STARTUP) or settings.REQUIRE_ALEMBIC_HEAD_ON_STARTUP:
+        _ensure_db_at_alembic_head(settings.DATABASE_URL)
 
     app = FastAPI(
         title=settings.PROJECT_NAME,

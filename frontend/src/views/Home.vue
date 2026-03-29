@@ -746,7 +746,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import * as api from '../api/client'
 import Icons from '../components/Icons.vue'
 import DepartmentTree from '../components/DepartmentTree.vue'
@@ -760,6 +760,7 @@ import TrashPage from '../components/TrashPage.vue'
 import NotificationPanel from '../components/NotificationPanel.vue'
 
 const router = useRouter()
+const route = useRoute()
 const me = ref(null)
 const tab = ref('lib')
 const subTab = ref('users')
@@ -1121,6 +1122,44 @@ function showError(msg) {
   setTimeout(() => { errorMessage.value = '' }, 4000)
 }
 
+async function restorePreviewReturnContext() {
+  const q = route.query || {}
+  if (q.return_to !== 'lib' || q.return_lib_id == null) return
+
+  const libId = Number(q.return_lib_id)
+  if (!Number.isFinite(libId) || libId <= 0) return
+
+  const deptIdRaw = q.return_dept_id
+  const deptId = deptIdRaw != null ? Number(deptIdRaw) : null
+  if (Number.isFinite(deptId) && deptId > 0) {
+    activeDeptId.value = deptId
+    await loadDeptFiles(deptId)
+  } else {
+    clearDeptView()
+  }
+
+  let lib = libraries.value.find(l => l.id === libId)
+  if (!lib) {
+    try {
+      lib = await api.getLibrary(libId)
+    } catch {
+      return
+    }
+  }
+  if (!lib) return
+
+  tab.value = 'lib'
+  currentLib.value = lib
+  pathPrefix.value = typeof q.return_path === 'string' ? q.return_path : ''
+  searchResults.value = []
+  rootSearchLibraries.value = []
+  rootSearchFiles.value = []
+  searchApplied.value = false
+  await loadFiles()
+  // 一次性上下文，用完即清理，避免刷新后重复执行
+  router.replace({ path: '/', query: {} })
+}
+
 // ---- 生命周期 ----
 
 onMounted(async () => {
@@ -1128,6 +1167,7 @@ onMounted(async () => {
   await loadLibraries()
   loadStorageStats()
   await loadDepartments()
+  await restorePreviewReturnContext()
   // 页面进入时就拉取未读通知，用于顶部通知图标的角标显示
   await loadNotifications(true)
 })
@@ -1401,7 +1441,14 @@ async function openPreview(f) {
   if (!previewTypeOf(f.path)) { err.value = '该文件类型暂不支持预览'; return }
   try {
     // 受控预览：站内预览页通过鉴权接口获取“渲染产物”，不直接打开原文件直链
-    router.push({ path: '/preview', query: { entry_id: String(f.id) } })
+    const q = {
+      entry_id: String(f.id),
+      return_to: 'lib',
+    }
+    if (currentLib.value?.id != null) q.return_lib_id = String(currentLib.value.id)
+    if (pathPrefix.value) q.return_path = pathPrefix.value
+    if (activeDeptId.value != null) q.return_dept_id = String(activeDeptId.value)
+    router.push({ path: '/preview', query: q })
   } catch (e) { err.value = e.message || '预览失败' }
 }
 function closePreview() { previewUrl.value = ''; showPreview.value = false; previewText.value = ''; previewErr.value = '' }
@@ -1415,7 +1462,15 @@ async function previewVersion(v) {
   }
   try {
     // 受控预览：带版本号跳转
-    router.push({ path: '/preview', query: { entry_id: String(versionEntryId.value), version_no: String(v.version_no) } })
+    const q = {
+      entry_id: String(versionEntryId.value),
+      version_no: String(v.version_no),
+      return_to: 'lib',
+    }
+    if (currentLib.value?.id != null) q.return_lib_id = String(currentLib.value.id)
+    if (pathPrefix.value) q.return_path = pathPrefix.value
+    if (activeDeptId.value != null) q.return_dept_id = String(activeDeptId.value)
+    router.push({ path: '/preview', query: q })
   } catch (e) {
     err.value = e.message || '预览失败'
   }

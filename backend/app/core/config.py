@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # 数据库初始化策略（开发默认开启；生产建议关闭，改用 Alembic）
     DB_AUTO_CREATE_TABLES_ON_STARTUP: bool = True
     DB_COMPAT_PATCH_ON_STARTUP: bool = True
+    # 启动时是否强制校验数据库 revision 必须等于 Alembic head。
+    # 若 DB_AUTO_CREATE_TABLES_ON_STARTUP=false（生产推荐），后端会自动执行该校验。
+    REQUIRE_ALEMBIC_HEAD_ON_STARTUP: bool = False
 
     class Config:
         env_file = ".env"

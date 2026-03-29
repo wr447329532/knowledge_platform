@@ -320,7 +320,7 @@
               <div>
                 <h2 class="admin-page-title">部门回收站</h2>
                 <p class="admin-page-desc">
-                  本部门所有部门库的删除记录（仅部门负责人可见），30 天后自动彻底删除。
+                  本部门所有部门库的删除记录（仅部门负责人可见），仅在手动彻底删除后永久移除。
                 </p>
               </div>
             </div>
@@ -1372,7 +1372,7 @@
             <div class="admin-page-header">
               <div>
                 <h2 class="admin-page-title">全局回收站</h2>
-                <p class="admin-page-desc">全平台所有文件库的删除记录，30 天后自动彻底删除</p>
+                <p class="admin-page-desc">全平台所有文件库的删除记录，仅在手动彻底删除后永久移除</p>
               </div>
             </div>
             <!-- 操作结果提示条（与表格同时存在，不互斥） -->

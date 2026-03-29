@@ -173,7 +173,19 @@ async function download() {
 }
 
 function goBack() {
-  // 优先回到上一页，否则回主页
+  // 优先按来源上下文回到文件库页面
+  const q = route.query || {}
+  if (q.return_to === 'lib' && q.return_lib_id != null) {
+    const nextQuery = {
+      return_to: 'lib',
+      return_lib_id: String(q.return_lib_id),
+    }
+    if (q.return_path != null) nextQuery.return_path = String(q.return_path)
+    if (q.return_dept_id != null) nextQuery.return_dept_id = String(q.return_dept_id)
+    router.push({ path: '/', query: nextQuery })
+    return
+  }
+  // 无上下文时退回上一页，否则回主页
   if (window.history.length > 1) router.back()
   else router.push('/')
 }
