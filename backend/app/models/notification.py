@@ -43,7 +43,7 @@ class NotificationTemplate(Base):
     enabled = Column(Boolean, nullable=False, default=True)
     # 发送渠道：逗号分隔，例如 "system,email"
     channels = Column(String(100), nullable=False, default="system")
-    icon = Column(String(10), nullable=True)
+    icon = Column(String(50), nullable=True)
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
     )

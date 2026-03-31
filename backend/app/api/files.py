@@ -2538,12 +2538,14 @@ def _watermark_text(user: User) -> str:
     """
     受控预览水印文本（MVP 版本）。
 
-    口径：仅展示用户邮箱（作为后续“唯一标识”的基础），避免中文字体兼容问题。
+    口径：优先展示用户账户姓名（username）。
     """
+    if getattr(user, "username", None):
+        return str(user.username)
+    # 兜底：用户名缺失时退回邮箱
     if getattr(user, "email", None):
         return str(user.email)
-    # 兜底：邮箱缺失时退回 username
-    return user.username or f"user-{user.id}"
+    return f"user-{user.id}"
 
 
 def _apply_watermark_to_image(img_bytes: bytes, wm: str, *, max_side: int = 1600, quality: int = 75) -> tuple[bytes, str]:
@@ -2565,17 +2567,36 @@ def _apply_watermark_to_image(img_bytes: bytes, wm: str, *, max_side: int = 1600
     overlay = Image.new("RGBA", im.size, (255, 255, 255, 0))
     short_side = min(im.size[0], im.size[1])
     font_size = max(12, int(short_side * 0.018))
+    # 优先尝试中文字体，避免中文用户名水印显示为方块。
     font = None
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", font_size)
-    except Exception:
+    font_candidates = [
+        # Linux / Debian
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        # macOS
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        # Windows
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        # fallback
+        "NotoSansCJK-Regular.ttc",
+        "Arial Unicode.ttf",
+        "DejaVuSans.ttf",
+        "Arial.ttf",
+    ]
+    for fp in font_candidates:
         try:
-            font = ImageFont.truetype("Arial.ttf", font_size)
+            font = ImageFont.truetype(fp, font_size)
+            break
         except Exception:
-            try:
-                font = ImageFont.load_default()
-            except Exception:
-                font = None
+            continue
+    if font is None:
+        try:
+            font = ImageFont.load_default()
+        except Exception:
+            font = None
 
     draw = ImageDraw.Draw(overlay)
     # 半透明斜纹水印（不遮挡正文）

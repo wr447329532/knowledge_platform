@@ -3744,6 +3744,11 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
+.audit-table th,
+.audit-table td {
+  white-space: nowrap;
+}
+
 .audit-table thead {
   background: #f9fafb;
   border-bottom: 1px solid #e5e7eb;
@@ -3772,6 +3777,7 @@ onUnmounted(() => {
 .audit-cell {
   padding: 8px 12px;
   color: #374151;
+  white-space: nowrap;
 }
 
 .audit-cell-muted {
@@ -3783,6 +3789,7 @@ onUnmounted(() => {
 .audit-cell-strong {
   padding: 8px 12px;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .audit-cell-op {
