@@ -469,24 +469,92 @@ export function downloadUrl(entryId, versionNo = '') {
   return `${url}&t=${Date.now()}` // 带 token 需前端用 fetch 加 header 下载，这里先做新开窗口会丢 header，改用 fetch 下载
 }
 
+function parseContentDispositionFilename(disposition) {
+  if (!disposition || typeof disposition !== 'string') return 'download'
+  const star = disposition.match(/filename\*=(?:UTF-8|utf-8)''([^;]+)/)
+  if (star && star[1]) {
+    try {
+      return decodeURIComponent(star[1].trim().replace(/^"+|"+$/g, ''))
+    } catch (_) { /* fall through */ }
+  }
+  const m = disposition.match(/filename\*=([^;]+)/)
+  if (m && m[1] && m[1].includes("''")) {
+    const part = m[1].split("''").pop()
+    if (part) {
+      try {
+        return decodeURIComponent(part.trim().replace(/^"+|"+$/g, ''))
+      } catch (_) { /* fall through */ }
+    }
+  }
+  const q = disposition.match(/filename="((?:\\.|[^"\\])*)"/)
+  if (q) {
+    try {
+      return decodeURIComponent(q[1].replace(/\\"/g, '"'))
+    } catch (_) {
+      return q[1]
+    }
+  }
+  const plain = disposition.match(/filename=([^;]+)/)
+  if (plain) return decodeURIComponent(plain[1].trim().replace(/^"+|"+$/g, ''))
+  return 'download'
+}
+
 export async function downloadFile(entryId, versionNo = null) {
   let url = BASE + `/files/download?entry_id=${entryId}`
   if (versionNo != null) url += `&version_no=${versionNo}`
   const token = getToken()
-  const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-  if (!res.ok) throw new Error('下载失败')
-  const blob = await res.blob()
-  const disposition = res.headers.get('content-disposition')
-  let filename = 'download'
-  if (disposition) {
-    const m = disposition.match(/filename="?([^";]+)"?/)
-    if (m) filename = decodeURIComponent(m[1].trim())
+  let res
+  try {
+    res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  } catch (e) {
+    throw new Error('网络异常，请确认后端已启动且前端 /api 代理正常')
   }
+  if (!res.ok) {
+    let msg = `下载失败（${res.status}）`
+    try {
+      const text = await res.text()
+      if (text) {
+        try {
+          const j = JSON.parse(text)
+          if (j && j.detail != null) {
+            msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)
+          }
+        } catch (_) {
+          msg = text.slice(0, 300)
+        }
+      }
+    } catch (_) { /* keep msg */ }
+    throw new Error(msg)
+  }
+  const ctype = res.headers.get('content-type') || 'application/octet-stream'
+  let buf
+  try {
+    buf = await res.arrayBuffer()
+  } catch (e) {
+    throw new Error('读取下载内容失败')
+  }
+  const blob = new Blob([buf], { type: ctype })
+  const disposition = res.headers.get('content-disposition')
+  let filename = parseContentDispositionFilename(disposition)
+  const safeName = String(filename || 'download')
+    .replace(/[/\\?%*:|"<>]/g, '_')
+    .trim()
+    .slice(0, 200) || 'download'
+  const objectUrl = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = filename
+  a.href = objectUrl
+  a.download = safeName
+  a.rel = 'noopener'
+  a.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none'
+  document.body.appendChild(a)
   a.click()
-  URL.revokeObjectURL(a.href)
+  // click 后立刻 remove 会取消部分浏览器（尤其 Safari）尚未开始的下载
+  window.setTimeout(() => {
+    try {
+      a.remove()
+    } catch (_) {}
+  }, 2500)
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 120_000)
 }
 
 async function _previewFetch(entryId, versionNo = null) {

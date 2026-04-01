@@ -3,6 +3,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_user
@@ -12,6 +13,7 @@ from backend.app.core.library_access import (
     check_can_manage_library,
     get_accessible_library_ids,
     has_library_access,
+    write_access_for_listed_library,
 )
 from backend.app.api.notifications import create_notification
 from backend.app.db.session import get_db
@@ -82,6 +84,8 @@ class LibraryUpdate(BaseModel):
 
 router = APIRouter(prefix="/libraries", tags=["libraries"])
 
+_LIB_READ_AUTO = object()
+
 
 def _lib_to_read(
     db: Session,
@@ -90,23 +94,29 @@ def _lib_to_read(
     *,
     is_owner: bool = False,
     is_write: bool = False,
-    dept_name: str | None = None,
+    dept_name: str | None | object = _LIB_READ_AUTO,
+    owner_username: str | None | object = _LIB_READ_AUTO,
+    member_count: int | None = None,
 ) -> LibraryRead:
-    if dept_name is None and getattr(lib, "department_id", None) is not None:
-        d = db.query(Department).filter(Department.id == lib.department_id).first()
-        dept_name = d.name if d else None
-    owner_name: str | None = None
-    if getattr(lib, "owner_id", None):
-        owner = db.query(User).filter(User.id == lib.owner_id).first()
-        if owner:
-            owner_name = owner.username or owner.email or f"用户{owner.id}"
-    member_count = len(getattr(lib, "members", []) or [])
+    if dept_name is _LIB_READ_AUTO:
+        dept_name = None
+        if getattr(lib, "department_id", None) is not None:
+            d = db.query(Department).filter(Department.id == lib.department_id).first()
+            dept_name = d.name if d else None
+    if owner_username is _LIB_READ_AUTO:
+        owner_username = None
+        if getattr(lib, "owner_id", None):
+            owner = db.query(User).filter(User.id == lib.owner_id).first()
+            if owner:
+                owner_username = owner.username or owner.email or f"用户{owner.id}"
+    if member_count is None:
+        member_count = len(getattr(lib, "members", []) or [])
     return LibraryRead(
         id=lib.id,
         name=lib.name,
         description=lib.description,
         owner_id=lib.owner_id,
-        owner_username=owner_name,
+        owner_username=owner_username,
         department_id=getattr(lib, "department_id", None),
         department_name=dept_name,
         visibility=getattr(lib, "visibility", "private"),
@@ -251,10 +261,60 @@ def list_libraries(
         q = q.filter(Library.department_id.is_(None))
     q = q.order_by(Library.created_at.desc())
     libs = q.offset(offset).limit(limit).all()
-    result = []
+    if not libs:
+        return []
+    lib_ids = [l.id for l in libs]
+    acc_dept_ids = _get_accessible_department_ids(db, current_user)
+
+    member_by_lib = {
+        m.library_id: m
+        for m in db.query(LibraryMember)
+        .filter(
+            LibraryMember.user_id == current_user.id,
+            LibraryMember.library_id.in_(lib_ids),
+        )
+        .all()
+    }
+
+    owner_ids = {l.owner_id for l in libs if getattr(l, "owner_id", None)}
+    owner_username_by_id: dict[int, str] = {}
+    if owner_ids:
+        for u in db.query(User).filter(User.id.in_(owner_ids)).all():
+            owner_username_by_id[u.id] = u.username or u.email or f"用户{u.id}"
+
+    dept_ids = {l.department_id for l in libs if getattr(l, "department_id", None)}
+    dept_name_by_id: dict[int, str] = {}
+    if dept_ids:
+        for d in db.query(Department).filter(Department.id.in_(dept_ids)).all():
+            dept_name_by_id[d.id] = d.name
+
+    cnt_rows = (
+        db.query(LibraryMember.library_id, func.count(LibraryMember.user_id))
+        .filter(LibraryMember.library_id.in_(lib_ids))
+        .group_by(LibraryMember.library_id)
+        .all()
+    )
+    member_count_by_lib = {int(lid): int(c) for lid, c in cnt_rows}
+
+    result: list[LibraryRead] = []
     for l in libs:
-        _, is_write = has_library_access(db, l.id, current_user)
-        result.append(_lib_to_read(db, l, current_user.id, is_owner=l.owner_id == current_user.id, is_write=is_write))
+        m = member_by_lib.get(l.id)
+        is_write = write_access_for_listed_library(l, current_user, m, acc_dept_ids)
+        dept_name = dept_name_by_id.get(l.department_id) if l.department_id else None
+        owner_username = owner_username_by_id.get(l.owner_id) if l.owner_id else None
+        mc = member_count_by_lib.get(l.id, 0)
+        result.append(
+            _lib_to_read(
+                db,
+                l,
+                current_user.id,
+                is_owner=l.owner_id == current_user.id,
+                is_write=is_write,
+                dept_name=dept_name,
+                owner_username=owner_username,
+                member_count=mc,
+            )
+        )
     return result
 
 

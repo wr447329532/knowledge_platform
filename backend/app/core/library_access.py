@@ -1,4 +1,6 @@
 """资料库与文件访问权限（文件级共享）"""
+import threading
+import time
 from typing import Set, Tuple
 
 from fastapi import HTTPException, status
@@ -39,24 +41,57 @@ def _is_leader_of_department(db: Session, user: User, dept_id: int | None) -> bo
     return getattr(dept, "leader_user_id", None) == user.id
 
 
+_dept_snap_lock = threading.Lock()
+_dept_snap_ts: float = 0.0
+_dept_parent_map: dict[int, int | None] = {}
+_dept_all_ids: frozenset[int] = frozenset()
+# 部门树快照 TTL：减少每条权限判断都全表扫描 Department；部门变更后最多延迟该秒数生效
+DEPT_SNAPSHOT_TTL_SEC = 25.0
+
+
+def invalidate_department_access_cache() -> None:
+    """部门增删改后调用，使部门树快照立即失效。"""
+    global _dept_snap_ts
+    with _dept_snap_lock:
+        _dept_snap_ts = 0.0
+
+
+def _ensure_department_parent_snapshot(db: Session) -> None:
+    global _dept_snap_ts, _dept_parent_map, _dept_all_ids
+    now = time.monotonic()
+    with _dept_snap_lock:
+        stale = (now - _dept_snap_ts >= DEPT_SNAPSHOT_TTL_SEC) or not _dept_parent_map
+    if not stale:
+        return
+    rows = db.query(Department.id, Department.parent_id).all()
+    parent_map = {int(r[0]): (int(r[1]) if r[1] is not None else None) for r in rows}
+    all_ids = frozenset(parent_map.keys())
+    with _dept_snap_lock:
+        _dept_snap_ts = time.monotonic()
+        _dept_parent_map = parent_map
+        _dept_all_ids = all_ids
+
+
 def _get_accessible_department_ids(db: Session, user: User) -> Set[int]:
     """用户可访问的部门 ID（本人部门及所有子部门，超级管理员/高管为全部）"""
-    all_depts = {d.id: d for d in db.query(Department).all()}
+    _ensure_department_parent_snapshot(db)
+    with _dept_snap_lock:
+        parent_map = _dept_parent_map
+        all_ids = _dept_all_ids
     # 超级管理员：可访问全部部门
     if user.is_superuser:
-        return set(all_depts.keys())
+        return set(all_ids)
     # 高管：可访问全部部门（用于只读查看所有部门文件库）
     if is_executive(user):
-        return set(all_depts.keys())
+        return set(all_ids)
     # 普通用户未绑定部门：不自动放宽为全部，按「无部门访问权限」处理
     if user.department_id is None:
         return set()
-    if user.department_id not in all_depts:
-        # 绑定了无效部门，同样视为无部门访问权限
+    if user.department_id not in parent_map:
         return set()
-    children_map: dict = {}
-    for d in all_depts.values():
-        children_map.setdefault(d.parent_id, []).append(d.id)
+    children_map: dict[int | None, list[int]] = {}
+    for did, pid in parent_map.items():
+        children_map.setdefault(pid, []).append(did)
     accessible: Set[int] = set()
     stack = [user.department_id]
     while stack:
@@ -67,6 +102,31 @@ def _get_accessible_department_ids(db: Session, user: User) -> Set[int]:
         for cid in children_map.get(did, []):
             stack.append(cid)
     return accessible
+
+
+def write_access_for_listed_library(
+    lib: Library,
+    user: User,
+    member: LibraryMember | None,
+    acc_dept_ids: Set[int],
+) -> bool:
+    """
+    在「资料库已在用户可访问列表中」的前提下，推断是否可写。
+    避免 list_libraries 对每行调用 has_library_access（重复查库）。
+    """
+    if user.is_superuser or lib.owner_id == user.id:
+        return True
+    if member is not None:
+        return member.role == "write" and not is_executive(user)
+    visibility = getattr(lib, "visibility", "private") or "private"
+    if visibility == "public":
+        return False
+    dept_id = getattr(lib, "department_id", None)
+    if dept_id is not None and dept_id in acc_dept_ids:
+        if is_executive(user):
+            return False
+        return True
+    return False
 
 
 def _get_library_member(db: Session, library_id: int, user_id: int) -> LibraryMember | None:
@@ -312,5 +372,22 @@ def can_download_file(db: Session, entry: FileEntry, user: User) -> bool:
 
     # 必须先具备访问权限（库级/部门库/public/成员/文件分享）
     if not can_access_file(db, entry, user):
+        return False
+    return True
+
+
+def can_download_in_library_list_context(lib: Library, user: User) -> bool:
+    """
+    仅用于「已校验库级列表权限」的 /files/list 场景：同一资料库下所有可见条目的
+    「是否可下载原文件」与具体 path 无关，避免对每条 FileEntry 重复调用 can_download_file
+    （否则会触发大量 Library / Department 全表扫描与 FileShare 查询，目录文件多时极慢）。
+    """
+    if getattr(lib, "deleted_at", None) is not None:
+        return False
+    if user.is_superuser or lib.owner_id == user.id:
+        return True
+    if is_executive(user):
+        return True
+    if getattr(lib, "allow_download", True) is False:
         return False
     return True

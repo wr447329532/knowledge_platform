@@ -1,6 +1,9 @@
+import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, Query, Request, status, Path as FPath
 from fastapi.responses import Response
@@ -15,6 +18,7 @@ from backend.app.core.audit import get_client_ip, log_audit
 from backend.app.core.config import get_settings
 from backend.app.core.library_access import (
     can_download_file,
+    can_download_in_library_list_context,
     can_access_file,
     get_accessible_library_ids,
     has_library_access,
@@ -619,9 +623,10 @@ def list_files(
             .all()
         )
         latest_size = {r[0]: r[1] for r in rows}
+    bulk_can_dl = can_download_in_library_list_context(lib, current_user)
     result = []
     for e in entries:
-        can_dl = can_download_file(db, e, current_user) if not e.is_dir else None
+        can_dl = bulk_can_dl if not e.is_dir else None
         result.append(
             FileRead(
                 id=e.id,
@@ -1402,7 +1407,7 @@ def search_files(
     current_user: User = Depends(get_current_user),
 ):
     """按关键词搜索文件（匹配路径）"""
-    _get_library_and_check(db, library_id, current_user)
+    lib = _get_library_and_check(db, library_id, current_user)
     kw = keyword.strip()
     if not kw:
         return []
@@ -1434,9 +1439,10 @@ def search_files(
             .all()
         )
         latest_size = {r[0]: r[1] for r in rows}
+    bulk_can_dl = can_download_in_library_list_context(lib, current_user)
     result = []
     for e in entries:
-        can_dl = can_download_file(db, e, current_user) if not e.is_dir else None
+        can_dl = bulk_can_dl if not e.is_dir else None
         result.append(
             FileRead(
                 id=e.id,
@@ -1510,9 +1516,20 @@ def search_files_global(
     lib_name_rows = db.query(Library.id, Library.name).filter(Library.id.in_(lib_ids)).all()
     lib_name_map: dict[int, str] = {int(i): n or "" for i, n in lib_name_rows}
 
+    unique_entry_lib_ids = list({e.library_id for e in entries})
+    lib_rows = db.query(Library).filter(Library.id.in_(unique_entry_lib_ids)).all()
+    lib_by_id = {L.id: L for L in lib_rows}
+    can_dl_by_lib: dict[int, bool] = {
+        lid: can_download_in_library_list_context(lib_by_id[lid], current_user)
+        for lid in unique_entry_lib_ids
+        if lid in lib_by_id
+    }
+
     result: list[GlobalSearchFileRead] = []
     for e in entries:
-        can_dl = can_download_file(db, e, current_user) if not e.is_dir else None
+        can_dl = (
+            can_dl_by_lib.get(e.library_id, False) if not e.is_dir else None
+        )
         result.append(
             GlobalSearchFileRead(
                 id=e.id,
@@ -2326,10 +2343,54 @@ def download_file(
 
     # 下载文件名优先使用业务路径中的文件名，确保与前端显示名称一致
     filename = Path(entry.path).name or storage_path.name
+
+    # 凡通过本接口下载：支持水印的类型一律叠当前用户标识（全角色一致，含超管/库主/高管等）
+    wm = _watermark_text(current_user)
+    ptype = _download_media_kind(filename, storage_path)
+    if ptype == "pdf":
+        try:
+            out_pdf = _apply_watermark_to_full_pdf(storage_path, wm)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"无法为该 PDF 生成带水印副本：{exc}",
+            ) from exc
+        h = {**_content_disposition_attachment(filename), **_no_cache_download_headers()}
+        h["X-KP-Download-Processed"] = "watermarked-pdf"
+        return Response(content=out_pdf, media_type="application/pdf", headers=h)
+    if ptype == "image":
+        raw = storage_path.read_bytes()
+        out_bytes, _ct = _apply_watermark_to_image(
+            raw, wm, max_side=2200, quality=88, for_download=True
+        )
+        stem = Path(filename).stem or "file"
+        dl_name = f"{stem}.jpg"
+        h = {**_content_disposition_attachment(dl_name), **_no_cache_download_headers()}
+        h["X-KP-Download-Processed"] = "watermarked-image"
+        return Response(content=out_bytes, media_type="image/jpeg", headers=h)
+    if ptype == "text":
+        try:
+            txt = storage_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            txt = storage_path.read_text(encoding="latin-1", errors="replace")
+        sep = "=" * 56
+        banner = (
+            f"{sep}\n"
+            f"【平台下载水印】操作人：{wm}\n"
+            f"本文件为可追溯副本，正文见下方。\n"
+            f"{sep}\n\n"
+        )
+        body = (banner + txt).encode("utf-8")
+        h = {**_content_disposition_attachment(filename), **_no_cache_download_headers()}
+        h["X-KP-Download-Processed"] = "watermarked-text"
+        return Response(content=body, media_type="text/plain; charset=utf-8", headers=h)
+
+    h_raw = {**_no_cache_download_headers(), "X-KP-Download-Processed": "original-bytes"}
     return FileResponse(
         path=str(storage_path),
         filename=filename,
         media_type="application/octet-stream",
+        headers=h_raw,
     )
 
 
@@ -2534,11 +2595,60 @@ def _preview_type_by_filename(filename: str) -> str:
     return "unsupported"
 
 
+# 水印字体候选（PIL / PyMuPDF 共用）
+_WATERMARK_FONT_PATHS: tuple[str, ...] = (
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/simhei.ttf",
+    "NotoSansCJK-Regular.ttc",
+    "Arial Unicode.ttf",
+    "DejaVuSans.ttf",
+    "Arial.ttf",
+)
+
+
+def _content_disposition_attachment(filename: str) -> dict[str, str]:
+    """
+    同时提供 filename（ASCII 兜底）与 filename*（UTF-8），兼容各浏览器与前端解析。
+    """
+    quoted = quote(filename, safe="")
+    ext = Path(filename).suffix
+    ascii_base = filename.encode("ascii", "ignore").decode("ascii").strip()
+    if not ascii_base or ascii_base in {".", ext}:
+        ascii_base = "download"
+    ascii_name = ascii_base if ascii_base.endswith(ext) else f"{ascii_base}{ext}"
+    cd = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
+    return {"Content-Disposition": cd}
+
+
+def _no_cache_download_headers() -> dict[str, str]:
+    """避免反向代理或浏览器把未水印原文件缓存后反复命中。"""
+    return {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+    }
+
+
+def _bytes_looks_like_pdf(head: bytes) -> bool:
+    """兼容 BOM、前导空白、线性化 PDF 等，避免误判成二进制原样下载。"""
+    if not head:
+        return False
+    chunk = head[:8192]
+    if chunk.lstrip(b"\xef\xbb\xbf\x00\t\n\r ").startswith(b"%PDF-"):
+        return True
+    # 部分生成器在 %PDF 前有少量二进制或空白
+    return b"%PDF-1." in chunk or b"%PDF-2." in chunk
+
+
 def _watermark_text(user: User) -> str:
     """
-    受控预览水印文本（MVP 版本）。
+    受控预览与下载水印文本（全角色统一）。
 
-    口径：优先展示用户账户姓名（username）。
+    口径：优先展示用户账户姓名（username）；无角色例外。
     """
     if getattr(user, "username", None):
         return str(user.username)
@@ -2548,14 +2658,37 @@ def _watermark_text(user: User) -> str:
     return f"user-{user.id}"
 
 
-def _apply_watermark_to_image(img_bytes: bytes, wm: str, *, max_side: int = 1600, quality: int = 75) -> tuple[bytes, str]:
+def _load_watermark_font(size: int):
+    """返回与字号匹配的 ImageFont，保证中文可用。"""
+    from PIL import ImageFont
+
+    for fp in _WATERMARK_FONT_PATHS:
+        try:
+            return ImageFont.truetype(fp, size)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def _apply_watermark_to_image(
+    img_bytes: bytes,
+    wm: str,
+    *,
+    max_side: int = 1600,
+    quality: int = 75,
+    text_alpha: int = 75,
+    for_download: bool = False,
+) -> tuple[bytes, str]:
     """
     将图片加水印并（可选）降清晰，返回 (out_bytes, content_type)。
-    说明：MVP 版本使用简单半透明斜纹文字水印，避免引入复杂渲染依赖。
+    for_download=True：斜纹比预览略清晰但仍保持低密度、低不透明度，以免遮挡正文；底部保留窄条标识。
     """
     from io import BytesIO
 
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
 
     im = Image.open(BytesIO(img_bytes)).convert("RGBA")
     w, h = im.size
@@ -2563,44 +2696,35 @@ def _apply_watermark_to_image(img_bytes: bytes, wm: str, *, max_side: int = 1600
     if scale < 1.0:
         im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
 
-    # 受控预览水印：满屏铺斜纹（小字号、低透明度），用于可追溯且不直接下发原文件
-    overlay = Image.new("RGBA", im.size, (255, 255, 255, 0))
     short_side = min(im.size[0], im.size[1])
-    font_size = max(12, int(short_side * 0.018))
-    # 优先尝试中文字体，避免中文用户名水印显示为方块。
-    font = None
-    font_candidates = [
-        # Linux / Debian
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        # macOS
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Medium.ttc",
-        # Windows
-        "C:/Windows/Fonts/msyh.ttc",
-        "C:/Windows/Fonts/simhei.ttf",
-        # fallback
-        "NotoSansCJK-Regular.ttc",
-        "Arial Unicode.ttf",
-        "DejaVuSans.ttf",
-        "Arial.ttf",
-    ]
-    for fp in font_candidates:
-        try:
-            font = ImageFont.truetype(fp, font_size)
-            break
-        except Exception:
-            continue
+    if for_download:
+        # 略大于预览字号，但远低于「铺满」强度；透明度与预览同量级，保证可读正文
+        tile_font_size = max(13, int(short_side * 0.022))
+        alpha = max(38, min(72, int(text_alpha)))
+        text_color = (40, 40, 40, alpha)
+        stroke_fill = (255, 255, 255, max(30, alpha - 8))
+        stroke_width = 1
+        out_quality = max(quality, 90)
+    else:
+        tile_font_size = max(12, int(short_side * 0.018))
+        alpha = max(40, min(200, int(text_alpha)))
+        text_color = (0, 0, 0, alpha)
+        stroke_fill = None
+        stroke_width = 0
+        out_quality = quality
+
+    font = _load_watermark_font(tile_font_size)
     if font is None:
+        from PIL import ImageFont as _IF
+
         try:
-            font = ImageFont.load_default()
+            font = _IF.load_default()
         except Exception:
             font = None
 
+    overlay = Image.new("RGBA", im.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
-    # 半透明斜纹水印（不遮挡正文）
-    text_color = (0, 0, 0, 75)
+
     try:
         bbox = draw.textbbox((0, 0), wm, font=font)
         tw = max(1, bbox[2] - bbox[0])
@@ -2608,20 +2732,54 @@ def _apply_watermark_to_image(img_bytes: bytes, wm: str, *, max_side: int = 1600
     except Exception:
         tw, th = 220, 18
 
-    # 按文字尺寸决定铺设密度
-    step_x = max(180, int(tw * 1.6))
-    step_y = max(140, int(th * 4.0))
+    if for_download:
+        # 拉大间距，减少「糊成一片」
+        step_x = max(220, int(tw * 2.15))
+        step_y = max(170, int(th * 3.4))
+    else:
+        step_x = max(180, int(tw * 1.6))
+        step_y = max(140, int(th * 4.0))
 
     for y in range(-im.size[1], im.size[1] * 2, step_y):
         for x in range(-im.size[0], im.size[0] * 2, step_x):
-            draw.text((x, y), wm, fill=text_color, font=font)
-            # 交错一层填补空隙
-            draw.text((x + step_x // 2, y + step_y // 2), wm, fill=text_color, font=font)
+            # 下载模式仅单层铺点，不再交错半格加密；预览仍交错增强覆盖感
+            offsets = ((0, 0),) if for_download else ((0, 0), (step_x // 2, step_y // 2))
+            for ox, oy in offsets:
+                tx, ty = x + ox, y + oy
+                kw: dict = {"font": font, "fill": text_color}
+                if stroke_width and stroke_fill is not None:
+                    kw["stroke_width"] = stroke_width
+                    kw["stroke_fill"] = stroke_fill
+                try:
+                    draw.text((tx, ty), wm, **kw)
+                except Exception:
+                    draw.text((tx, ty), wm, fill=text_color, font=font)
 
     overlay = overlay.rotate(30, expand=False)
     out = Image.alpha_composite(im, overlay).convert("RGB")
+
+    if for_download and im.size[1] > 64:
+        d3 = ImageDraw.Draw(out)
+        bar_h = max(28, min(52, int(im.size[1] * 0.038)))
+        footer_fs = max(11, min(18, bar_h - 10))
+        footer_font = _load_watermark_font(footer_fs) or font
+        line = f"下载水印 {wm}"
+        d3.rectangle(
+            [0, im.size[1] - bar_h, im.size[0], im.size[1]],
+            fill=(245, 245, 246),
+        )
+        try:
+            d3.text(
+                (10, im.size[1] - bar_h + (bar_h - footer_fs) // 2 - 1),
+                line,
+                fill=(90, 90, 95),
+                font=footer_font,
+            )
+        except Exception:
+            pass
+
     buf = BytesIO()
-    out.save(buf, format="JPEG", quality=quality, optimize=True)
+    out.save(buf, format="JPEG", quality=out_quality, optimize=True)
     return buf.getvalue(), "image/jpeg"
 
 
@@ -2646,6 +2804,136 @@ def _render_pdf_page_with_watermark(pdf_path: Path, page: int, wm: str) -> tuple
         return out_bytes, ct, page_count
     finally:
         doc.close()
+
+
+def _download_media_kind(filename: str, storage_path: Path) -> str:
+    """
+    以文件内容魔数为准再回退扩展名，避免：
+    - 无后缀 / 错后缀的 PDF 被当成 octet-stream 直接下发原文件；
+    - UTF-8 BOM 等导致 %PDF 不在首字节而无法识别。
+    """
+    try:
+        head = storage_path.read_bytes()[:8192]
+    except Exception:
+        head = b""
+
+    if _bytes_looks_like_pdf(head):
+        return "pdf"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image"
+    if len(head) >= 8 and head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image"
+    if head.startswith(b"GIF87a") or head.startswith(b"GIF89a"):
+        return "image"
+    if head.startswith(b"BM"):
+        return "image"
+    if len(head) >= 12 and head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return "image"
+
+    return _preview_type_by_filename(filename)
+
+
+def _stamp_vector_download_footer_on_pdf(doc, wm: str) -> None:
+    """
+    在每页最上层叠窄条矢量标识（浅底深灰字），与 JPEG 内嵌条一致，不抢正文。
+    """
+    import fitz
+    from pathlib import Path
+
+    label = f"下载水印 {wm}"
+    fontfile = None
+    for fp in _WATERMARK_FONT_PATHS:
+        try:
+            if Path(fp).is_file():
+                fontfile = fp
+                break
+        except Exception:
+            continue
+    for page in doc:
+        rect = page.rect
+        h = float(rect.height)
+        w = float(rect.width)
+        if h < 36 or w < 36:
+            continue
+        bar_h = max(28.0, h * 0.038)
+        bar = fitz.Rect(0, h - bar_h, w, h)
+        page.draw_rect(bar, color=None, fill=(0.96, 0.96, 0.97), width=0)
+        fs = max(10.0, min(16.0, bar_h * 0.48))
+        ty = h - max(12.0, bar_h * 0.35)
+        tx = 10.0
+        kw: dict = {"fontsize": fs, "color": (0.35, 0.35, 0.38)}
+        if fontfile:
+            kw["fontfile"] = fontfile
+        try:
+            page.insert_text((tx, ty), label, **kw)
+        except Exception:
+            try:
+                page.insert_text((tx, ty), f"KP-DL {wm}", fontsize=fs, color=(0.35, 0.35, 0.38))
+            except Exception:
+                pass
+
+
+def _pdf_page_watermarked_single_pdf_bytes(pdf_path_str: str, page_index: int, wm: str) -> bytes:
+    """单页打开文档并栅格化加水印；供线程池调用（主文档不可跨线程共享）。"""
+    import fitz
+
+    doc = fitz.open(pdf_path_str)
+    try:
+        page = doc.load_page(page_index)
+        mat = fitz.Matrix(1.35, 1.35)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        png = pix.tobytes("png")
+        out_jpg, _ = _apply_watermark_to_image(
+            png, wm, max_side=2000, quality=85, for_download=True
+        )
+        jdoc = fitz.open(stream=out_jpg, filetype="jpeg")
+        try:
+            return jdoc.convert_to_pdf()
+        finally:
+            jdoc.close()
+    finally:
+        doc.close()
+
+
+def _apply_watermark_to_full_pdf(pdf_path: Path, wm: str) -> bytes:
+    """
+    逐页栅格化后走 PIL 斜纹水印 + 底栏，再拼回 PDF。
+    嵌入页使用 convert_to_pdf + insert_pdf（比单页 insert_image(stream=) 在部分阅读器/版本上更稳定）。
+    多页时按页并行打开 PDF，降低矩阵倍率与 JPEG 尺寸以缩短下载耗时。
+    """
+    import fitz
+
+    path_str = str(pdf_path)
+    src = fitz.open(path_str)
+    try:
+        n = src.page_count
+        if n < 1:
+            return src.tobytes(deflate=True, garbage=4)
+    finally:
+        src.close()
+
+    if n == 1:
+        page_pdfs = [_pdf_page_watermarked_single_pdf_bytes(path_str, 0, wm)]
+    else:
+        workers = min(max(2, (os.cpu_count() or 4) // 2), n, 6)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [
+                ex.submit(_pdf_page_watermarked_single_pdf_bytes, path_str, i, wm) for i in range(n)
+            ]
+            page_pdfs = [f.result() for f in futures]
+
+    dst = fitz.open()
+    try:
+        for jpdf in page_pdfs:
+            jone = fitz.open(stream=jpdf, filetype="pdf")
+            try:
+                dst.insert_pdf(jone)
+            finally:
+                jone.close()
+        _stamp_vector_download_footer_on_pdf(dst, wm)
+        return dst.tobytes(deflate=True, garbage=4)
+    finally:
+        dst.close()
 
 
 @router.get("/rendered-preview/meta", response_model=RenderedPreviewMeta)

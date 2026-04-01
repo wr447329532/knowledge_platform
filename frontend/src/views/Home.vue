@@ -1163,10 +1163,13 @@ async function restorePreviewReturnContext() {
 // ---- 生命周期 ----
 
 onMounted(async () => {
-  me.value = await api.getMe()
-  await loadLibraries()
+  // 并行拉取用户信息、库列表、部门树，减少首屏总等待（原先串行会叠加延迟）
+  await Promise.all([
+    api.getMe().then((m) => { me.value = m }),
+    loadLibraries(),
+    loadDepartments(),
+  ])
   loadStorageStats()
-  await loadDepartments()
   await restorePreviewReturnContext()
   // 页面进入时就拉取未读通知，用于顶部通知图标的角标显示
   await loadNotifications(true)
@@ -1396,8 +1399,14 @@ async function delFile(f) {
 }
 async function download(entryId, versionNo = null) {
   err.value = ''
-  try { await api.downloadFile(entryId, versionNo); showSuccess('下载已开始') }
-  catch (e) { err.value = e.message }
+  try {
+    await api.downloadFile(entryId, versionNo)
+    showSuccess('下载已开始')
+  } catch (e) {
+    const m = e?.message || '下载失败'
+    err.value = m
+    showError(m)
+  }
 }
 async function openVersions(f) {
   versionEntryId.value = f.id

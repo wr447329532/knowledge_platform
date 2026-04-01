@@ -12,7 +12,7 @@ from backend.app.api.deps import (
 )
 from backend.app.api.libraries import LibraryRead, _lib_to_read
 from backend.app.core.audit import get_client_ip, log_audit
-from backend.app.core.library_access import is_executive
+from backend.app.core.library_access import invalidate_department_access_cache, is_executive
 from backend.app.db.session import get_db
 from backend.app.models.department import Department
 from backend.app.models.library import Library
@@ -269,6 +269,7 @@ def create_department(
     db.add(dept)
     db.commit()
     db.refresh(dept)
+    invalidate_department_access_cache()
     return DepartmentNode(
         id=dept.id,
         name=dept.name,
@@ -322,6 +323,7 @@ def update_department(
             dept.leader_user_id = leader.id
     db.commit()
     db.refresh(dept)
+    invalidate_department_access_cache()
     all_depts: List[Department] = (
         db.query(Department)
         .options(
@@ -359,6 +361,7 @@ def delete_department(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
     db.delete(dept)
     db.commit()
+    invalidate_department_access_cache()
 
 
 def _build_department_path(dept: Department) -> str:
