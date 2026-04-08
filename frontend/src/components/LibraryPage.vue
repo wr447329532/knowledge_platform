@@ -75,11 +75,6 @@
             >
               <div class="lib-col-name">
                 <div class="lib-name-inner">
-                  <input
-                    type="checkbox"
-                    class="lib-checkbox"
-                    @click.stop
-                  />
                   <Icons name="folder" class="lib-folder-icon" />
                   <a
                     href="#"
@@ -142,11 +137,6 @@
             class="lib-card"
             @click="selectLib(lib)"
           >
-            <input
-              type="checkbox"
-              class="lib-card-checkbox"
-              @click.stop
-            />
             <button
               v-if="lib.is_owner"
               class="lib-card-more"
@@ -796,13 +786,6 @@ function libraryTypeText(lib) {
   min-width: 0;
 }
 
-.lib-checkbox {
-  width: 14px;
-  height: 14px;
-  border-radius: 4px;
-  border: 1px solid #d1d5db;
-}
-
 .lib-folder-icon {
   width: 18px;
   height: 18px;
@@ -919,18 +902,6 @@ function libraryTypeText(lib) {
   transform: translateY(-1px);
 }
 
-.lib-card-checkbox {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  width: 14px;
-  height: 14px;
-  border-radius: 4px;
-  border: 1px solid #d1d5db;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-
 .lib-card-more {
   position: absolute;
   top: 6px;
@@ -949,7 +920,6 @@ function libraryTypeText(lib) {
   transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
 }
 
-.lib-card:hover .lib-card-checkbox,
 .lib-card:hover .lib-card-more {
   opacity: 1;
 }

@@ -692,12 +692,12 @@
         <div class="form-group" style="margin-bottom: 8px;">
           <label>访问权限</label>
           <select v-model="editLibMode" class="admin-select" style="width:100%;" @change="onEditLibModeChange">
-            <option v-if="!currentLib?.department_id" value="self">仅自己</option>
-            <option v-if="!currentLib?.department_id" value="self_plus">仅自己 + 指定成员</option>
-            <option v-if="!currentLib?.department_id" value="members_only">仅指定成员</option>
-            <option v-if="!currentLib?.department_id" value="public">公开（所有用户）</option>
-            <option v-if="currentLib?.department_id" value="dept">所属部门</option>
-            <option v-if="currentLib?.department_id" value="dept_plus">所属部门 + 指定成员</option>
+            <option v-if="!editLibDepartmentId" value="self">仅自己</option>
+            <option v-if="!editLibDepartmentId" value="self_plus">仅自己 + 指定成员</option>
+            <option v-if="!editLibDepartmentId" value="members_only">仅指定成员</option>
+            <option v-if="!editLibDepartmentId" value="public">公开（所有用户）</option>
+            <option v-if="editLibDepartmentId" value="dept">所属部门</option>
+            <option v-if="editLibDepartmentId" value="dept_plus">所属部门 + 指定成员</option>
           </select>
           <p class="form-hint">个人库可控制是否公开或仅指定成员；部门库始终对所在部门成员开放，可额外指定跨部门成员。</p>
         </div>
@@ -851,6 +851,7 @@ const showEditLib = ref(false)
 const editLibId = ref(null)
 const editLibName = ref('')
 const editLibDesc = ref('')
+const editLibDepartmentId = ref(null)
 const editLibMode = ref('self')
 const editLibAllowDownload = ref(true)
 const editLibUsers = ref([])
@@ -1310,9 +1311,10 @@ async function doSearch() {
   }
 
   try {
+    const inDeptView = activeDeptId.value != null
     const [libs, files] = await Promise.all([
-      searchLibrariesGlobal(kw),
-      api.searchFilesGlobal(kw, null, { includeDepartment: false }),
+      searchLibrariesGlobal(kw, { includeDepartment: inDeptView, departmentId: activeDeptId.value }),
+      api.searchFilesGlobal(kw, null, { includeDepartment: inDeptView }),
     ])
     rootSearchLibraries.value = libs
     rootSearchFiles.value = files || []
@@ -1335,13 +1337,20 @@ function doSearchNow() {
   doSearch()
 }
 
-async function searchLibrariesGlobal(keyword) {
+async function searchLibrariesGlobal(keyword, options = {}) {
+  const includeDepartment = options?.includeDepartment === true
+  const departmentId = Number(options?.departmentId)
   const limit = 200
   let offset = 0
   const all = []
   // 逐页拉取可访问库，避免仅搜索当前分页数据
   while (offset <= 2000) {
-    const rows = await api.listLibraries({ limit, offset, include_department: false })
+    let rows = []
+    if (Number.isFinite(departmentId) && departmentId > 0) {
+      rows = await api.listDepartmentLibraries(departmentId, { limit, offset })
+    } else {
+      rows = await api.listLibraries({ limit, offset, include_department: includeDepartment })
+    }
     const list = rows || []
     all.push(...list)
     if (list.length < limit) break
@@ -2214,9 +2223,10 @@ async function doConfirmDeleteLib() {
 async function openEditLib(lib) {
   editLibId.value = lib.id; editLibName.value = lib.name; editLibDesc.value = lib.description || ''
   editLibAllowDownload.value = lib.allow_download !== false
+  editLibDepartmentId.value = lib.department_id || null
   const vis = lib.visibility || 'private'
   const hasMembers = (lib.member_count || 0) > 0
-  const isDeptLib = !!lib.department_id
+  const isDeptLib = !!editLibDepartmentId.value
   if (isDeptLib) editLibMode.value = hasMembers ? 'dept_plus' : 'dept'
   else if (vis === 'public') editLibMode.value = 'public'
   else editLibMode.value = hasMembers ? 'self_plus' : 'self'
@@ -2243,7 +2253,7 @@ async function saveEditLib() {
   err.value = ''
   try {
     const mode = editLibMode.value || 'self'
-    const isDeptLib = !!currentLib.value?.department_id
+    const isDeptLib = !!editLibDepartmentId.value
     let visibility = 'private'
     if (!isDeptLib) {
       if (['dept', 'dept_plus'].includes(mode)) { err.value = '个人库不支持部门访问模式'; return }
