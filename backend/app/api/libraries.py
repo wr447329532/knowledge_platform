@@ -4,6 +4,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_user
@@ -13,6 +14,7 @@ from backend.app.core.library_access import (
     check_can_manage_library,
     get_accessible_library_ids,
     has_library_access,
+    libraries_accessible_base_query,
     write_access_for_listed_library,
 )
 from backend.app.api.notifications import create_notification
@@ -87,6 +89,40 @@ router = APIRouter(prefix="/libraries", tags=["libraries"])
 _LIB_READ_AUTO = object()
 
 
+def _normalize_library_name(name: str) -> str:
+    return name.strip()
+
+
+def _library_name_taken(
+    db: Session,
+    name: str,
+    *,
+    department_id: int | None,
+    owner_id: int | None,
+    exclude_library_id: int | None = None,
+) -> bool:
+    """同一范围内（个人库按拥有者，部门库按部门）已存在未删除的同名资料库则视为占用。"""
+    norm = _normalize_library_name(name)
+    if not norm:
+        return False
+    # 在应用层比对 strip 后的名称，避免各数据库对 TRIM/空白字符语义不一致导致查询异常
+    q = db.query(Library.id, Library.name).filter(Library.deleted_at.is_(None))
+    if exclude_library_id is not None:
+        q = q.filter(Library.id != exclude_library_id)
+    if department_id is not None:
+        q = q.filter(Library.department_id == department_id)
+    else:
+        q = q.filter(Library.department_id.is_(None))
+        if owner_id is not None:
+            q = q.filter(Library.owner_id == owner_id)
+    for row in q.all():
+        # 显式按下标取值，避免个别 SQLAlchemy Row 解包差异导致异常→500
+        existing_name = row[1]
+        if _normalize_library_name(existing_name or "") == norm:
+            return True
+    return False
+
+
 def _lib_to_read(
     db: Session,
     lib: Library,
@@ -111,26 +147,36 @@ def _lib_to_read(
                 owner_username = owner.username or owner.email or f"用户{owner.id}"
     if member_count is None:
         member_count = len(getattr(lib, "members", []) or [])
+    else:
+        member_count = int(member_count)
+    # SQLite 等驱动可能把 BOOLEAN 读成 0/1，Pydantic 对 bool 校验较严时会触发响应校验 500
+    _ad = getattr(lib, "allow_download", None)
+    if _ad is None:
+        allow_download_out = True
+    else:
+        allow_download_out = bool(_ad)
     return LibraryRead(
-        id=lib.id,
-        name=lib.name,
+        id=int(lib.id),
+        name=(lib.name if lib.name is not None else "") or "",
         description=lib.description,
-        owner_id=lib.owner_id,
+        owner_id=(int(lib.owner_id) if lib.owner_id is not None else None),
         owner_username=owner_username,
-        department_id=getattr(lib, "department_id", None),
+        department_id=(
+            int(lib.department_id) if getattr(lib, "department_id", None) is not None else None
+        ),
         department_name=dept_name,
-        visibility=getattr(lib, "visibility", "private"),
-        allow_download=getattr(lib, "allow_download", True),
+        visibility=str(getattr(lib, "visibility", "private") or "private"),
+        allow_download=allow_download_out,
         member_count=member_count,
-        is_owner=is_owner,
-        is_writeable=is_write,
+        is_owner=bool(is_owner),
+        is_writeable=bool(is_write),
     )
 
 
 @router.post("/", response_model=LibraryRead)
 def create_library(
     lib_in: LibraryCreate,
-    request: Request = None,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -139,11 +185,9 @@ def create_library(
     if dept_id is not None:
         dept = db.query(Department).filter(Department.id == dept_id).first()
         if not dept:
-            from fastapi import HTTPException, status
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门不存在")
         acc = _get_accessible_department_ids(db, current_user)
         if dept_id not in acc:
-            from fastapi import HTTPException, status
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权在该部门创建资料库")
 
     # visibility 校验
@@ -157,8 +201,22 @@ def create_library(
     if visibility == "public" and dept_id is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门库不支持设置为公开库")
 
+    display_name = _normalize_library_name(lib_in.name)
+    if not display_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="资料库名称不能为空")
+    if _library_name_taken(
+        db,
+        display_name,
+        department_id=dept_id,
+        owner_id=current_user.id,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="与已有文件库重名，请重新输入其他名称",
+        )
+
     lib = Library(
-        name=lib_in.name,
+        name=display_name,
         description=lib_in.description,
         owner_id=current_user.id,
         department_id=dept_id,
@@ -166,38 +224,61 @@ def create_library(
         allow_download=True if lib_in.allow_download is None else bool(lib_in.allow_download),
     )
     db.add(lib)
-    db.flush()
 
-    # 指定成员：创建初始成员（默认 role=read）
-    if lib_in.member_user_ids:
-        user_ids = set(int(uid) for uid in lib_in.member_user_ids if isinstance(uid, int))
-        # 排除自己，避免 Owner 同时作为成员
-        user_ids.discard(current_user.id)
-        if user_ids:
-            users = db.query(User).filter(User.id.in_(user_ids), User.is_active == True).all()
-            valid_ids = {u.id for u in users}
-            for uid in valid_ids:
-                member = LibraryMember(
-                    library_id=lib.id,
-                    user_id=uid,
-                    role="read",
-                )
-                db.add(member)
-
+    member_count_for_read = 0
     dept_name = dept.name if dept_id is not None else None
-    log_audit(
-        db,
-        current_user.id,
-        current_user.username,
-        "create_library",
-        "library",
-        lib.id,
-        f"name={lib_in.name} dept={dept_id}",
-        ip_address=get_client_ip(request),
-    )
-    db.commit()
+    audit_username = (current_user.username or "")[:50]
+    try:
+        db.flush()
+        # 指定成员：创建初始成员（默认 role=read）
+        if lib_in.member_user_ids:
+            # bool 是 int 子类，需排除，避免 JSON 异常数据导致误解析
+            user_ids = {
+                int(uid)
+                for uid in lib_in.member_user_ids
+                if isinstance(uid, int) and not isinstance(uid, bool)
+            }
+            # 排除自己，避免 Owner 同时作为成员
+            user_ids.discard(current_user.id)
+            if user_ids:
+                users = db.query(User).filter(User.id.in_(user_ids), User.is_active == True).all()
+                valid_ids = {u.id for u in users}
+                member_count_for_read = len(valid_ids)
+                for uid in valid_ids:
+                    member = LibraryMember(
+                        library_id=lib.id,
+                        user_id=uid,
+                        role="read",
+                    )
+                    db.add(member)
+        log_audit(
+            db,
+            current_user.id,
+            audit_username,
+            "create_library",
+            "library",
+            lib.id,
+            f"name={lib_in.name} dept={dept_id}",
+            ip_address=get_client_ip(request),
+        )
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # flush 阶段也可能因库表唯一约束、并发等触发，与业务层重名同一提示
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="与已有文件库重名，请重新输入其他名称",
+        ) from None
     db.refresh(lib)
-    return _lib_to_read(db, lib, current_user.id, is_owner=True, is_write=True, dept_name=dept_name)
+    return _lib_to_read(
+        db,
+        lib,
+        current_user.id,
+        is_owner=True,
+        is_write=True,
+        dept_name=dept_name,
+        member_count=member_count_for_read,
+    )
 
 
 @router.get("/trash", response_model=List[LibraryTrashRead])
@@ -255,8 +336,7 @@ def list_libraries(
     current_user: User = Depends(get_current_user),
 ):
     """列出当前用户可访问的资料库（拥有、分享、部门库）。支持简单 limit/offset 分页。"""
-    ids = get_accessible_library_ids(db, current_user)
-    q = db.query(Library).filter(Library.id.in_(ids))
+    q = libraries_accessible_base_query(db, current_user)
     if not include_department:
         q = q.filter(Library.department_id.is_(None))
     q = q.order_by(Library.created_at.desc())
@@ -289,12 +369,17 @@ def list_libraries(
             dept_name_by_id[d.id] = d.name
 
     cnt_rows = (
-        db.query(LibraryMember.library_id, func.count(LibraryMember.user_id))
+        db.query(LibraryMember.library_id, func.count(LibraryMember.id))
         .filter(LibraryMember.library_id.in_(lib_ids))
         .group_by(LibraryMember.library_id)
         .all()
     )
-    member_count_by_lib = {int(lid): int(c) for lid, c in cnt_rows}
+    member_count_by_lib: dict[int, int] = {}
+    for row in cnt_rows:
+        lid_raw, cnt_raw = row[0], row[1]
+        if lid_raw is None:
+            continue
+        member_count_by_lib[int(lid_raw)] = int(cnt_raw) if cnt_raw is not None else 0
 
     result: list[LibraryRead] = []
     for l in libs:
@@ -487,7 +572,21 @@ def update_library(
     lib, _ = has_library_access(db, library_id, current_user)
     check_can_manage_library(lib, current_user, db)
     if lib_in.name is not None:
-        lib.name = lib_in.name
+        display_name = _normalize_library_name(lib_in.name)
+        if not display_name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="资料库名称不能为空")
+        if _library_name_taken(
+            db,
+            display_name,
+            department_id=lib.department_id,
+            owner_id=lib.owner_id,
+            exclude_library_id=lib.id,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="与已有文件库重名，请重新输入其他名称",
+            )
+        lib.name = display_name
     if lib_in.description is not None:
         lib.description = lib_in.description
     if lib_in.visibility is not None:
@@ -673,6 +772,18 @@ def restore_library(
     if getattr(lib, "deleted_at", None) is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="资料库未在回收站")
     check_can_manage_library(lib, current_user, db)
+
+    if _library_name_taken(
+        db,
+        lib.name,
+        department_id=lib.department_id,
+        owner_id=lib.owner_id,
+        exclude_library_id=lib.id,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="已存在同名资料库，请先重命名回收站中的资料库或删除/重命名现有资料库后再恢复",
+        )
 
     lib.deleted_at = None
     db.commit()

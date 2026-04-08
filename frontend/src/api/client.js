@@ -157,8 +157,15 @@ export async function updateUser(userId, { is_active, is_superuser, new_password
 }
 
 export async function listLibraries(params = {}) {
-  const q = new URLSearchParams(params).toString()
-  return api(`/libraries/${q ? '?' + q : ''}`)
+  const sp = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue
+    sp.set(key, String(value))
+  }
+  const q = sp.toString()
+  // 必须使用 /libraries/（尾部斜杠）：否则 FastAPI 会 307 到绝对 URL 127.0.0.1:8000，
+  // 浏览器跨域跟随重定向后无 CORS 头即失败（经 Vite 代理时不应触发该重定向）。
+  return api(q ? `/libraries/?${q}` : '/libraries/')
 }
 
 export async function getLibrary(id) {

@@ -16,6 +16,10 @@ router.beforeEach((to, _from, next) => {
     (typeof window !== 'undefined' && window.sessionStorage.getItem('token')) ||
     (typeof window !== 'undefined' && window.localStorage.getItem('token'))
 
+  // 已登录仍打开登录页（含浏览器返回）：直接进首页，不堆叠历史
+  if (to.path === '/login' && token) {
+    return next({ path: '/', replace: true })
+  }
   if (to.meta.public || token) return next()
   next({ path: '/login' })
 })

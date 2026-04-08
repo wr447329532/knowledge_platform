@@ -19,7 +19,10 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1 天
     # CORS 白名单，逗号分隔。生产环境请改为实际前端地址（域名或 IP）。
-    CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+    CORS_ALLOW_ORIGINS: str = (
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:5174,http://127.0.0.1:5174"
+    )
     # 是否在启动时自动确保默认 admin 存在
     BOOTSTRAP_DEFAULT_ADMIN: bool = True
     # 是否在每次启动时重置默认 admin 密码（生产建议关闭）

@@ -7,7 +7,6 @@
       :me="me"
       :active-tab="tab"
       :active-dept-id="activeDeptId"
-      :dept-keyword="searchKeyword"
       :storage-stats="storageStats"
       :trash-mode="trashMode"
       @nav="onSidebarNav"
@@ -50,9 +49,9 @@
         <div v-if="errorMessage" class="error-toast">{{ errorMessage }}</div>
       </Transition>
 
-      <!-- 部门视图：选中部门时显示 -->
+      <!-- 部门视图：选中部门且未在顶部搜索时显示；有搜索关键词时改显 LibraryPage 以展示全局搜文件/库结果 -->
       <DepartmentFiles
-        v-if="tab === 'lib' && activeDeptId && !currentLib"
+        v-if="showDepartmentFilesPanel"
         :key="deptFilesReloadKey"
         :me="me"
         :active-dept-id="activeDeptId"
@@ -232,8 +231,10 @@
         </div>
         <p v-if="err" class="text-danger">{{ err }}</p>
         <div class="modal-actions">
-          <button class="primary" @click="createLib">确定</button>
-          <button @click="showNewLib = false; newLibDepartmentId = null">取消</button>
+          <button type="button" class="primary" :disabled="newLibCreating" @click="createLib">
+            {{ newLibCreating ? '创建中…' : '确定' }}
+          </button>
+          <button type="button" :disabled="newLibCreating" @click="showNewLib = false; newLibDepartmentId = null">取消</button>
         </div>
       </div>
     </div>
@@ -772,6 +773,8 @@ const libraries = ref([])
 const librariesLimit = ref(20)
 const librariesOffset = ref(0)
 const librariesHasMore = ref(false)
+/** 防止多次 loadLibraries 乱序返回把列表覆盖成空或过期的页 */
+let librariesLoadSeq = 0
 const currentLib = ref(null)
 const pathPrefix = ref('')
 const fileSortOrder = ref('modified')
@@ -792,6 +795,7 @@ const newLibMembers = ref([])
 const newLibMembersLoading = ref(false)
 const showNewLibMemberPanel = ref(false)
 const newLibMemberKeyword = ref('')
+const newLibCreating = ref(false)
 const showUpload = ref(false)
 const uploadPath = ref('')
 const selectedFile = ref(null)
@@ -910,6 +914,15 @@ const unreadNotifyCount = ref(0)
 const uploadCompletedCount = computed(() => uploadFiles.value.filter(f => f.status === 'success').length)
 
 // ---- computed ----
+
+/** 左侧选中部门后的「部门文件库」页；顶部搜索框有内容时让位给 LibraryPage 做全局搜索 */
+const showDepartmentFilesPanel = computed(
+  () =>
+    tab.value === 'lib' &&
+    activeDeptId.value != null &&
+    !currentLib.value &&
+    !String(searchKeyword.value || '').trim()
+)
 
 const filteredNewLibUsers = computed(() => {
   const kw = newLibMemberKeyword.value?.trim().toLowerCase()
@@ -1171,8 +1184,8 @@ onMounted(async () => {
   ])
   loadStorageStats()
   await restorePreviewReturnContext()
-  // 页面进入时就拉取未读通知，用于顶部通知图标的角标显示
-  await loadNotifications(true)
+  // 通知不阻塞首屏；失败时静默忽略
+  loadNotifications(true).catch(() => {})
 })
 
 onUnmounted(() => {
@@ -1183,6 +1196,7 @@ onUnmounted(() => {
 })
 
 async function loadLibraries() {
+  const seq = ++librariesLoadSeq
   try {
     const params = {
       limit: librariesLimit.value,
@@ -1190,13 +1204,19 @@ async function loadLibraries() {
       include_department: false,
     }
     const list = await api.listLibraries(params)
-    libraries.value = list || []
-    librariesHasMore.value = (list || []).length === librariesLimit.value
+    if (seq !== librariesLoadSeq) return
+    libraries.value = Array.isArray(list) ? list : []
+    librariesHasMore.value = libraries.value.length === librariesLimit.value
   } catch (e) {
+    if (seq !== librariesLoadSeq) return
     err.value = e.message || '加载文件库失败'
     libraries.value = []
     librariesHasMore.value = false
   }
+}
+
+async function refreshLibrariesKeepPage() {
+  await loadLibraries()
 }
 
 watch(subTab, val => { if (val === 'departments') loadDepartments() })
@@ -2082,6 +2102,7 @@ function onNewLibModeChange() {
   if (['self_plus', 'dept_plus', 'members_only'].includes(newLibMode.value)) loadNewLibUsers()
 }
 function openNewLib() {
+  newLibCreating.value = false
   newLibName.value = ''; newLibDesc.value = ''; err.value = ''
   newLibDepartmentId.value = activeDeptId.value || null
   newLibMode.value = newLibDepartmentId.value ? 'dept' : 'self'
@@ -2090,6 +2111,7 @@ function openNewLib() {
   showNewLib.value = true
 }
 async function createLib() {
+  if (newLibCreating.value) return
   err.value = ''
   const name = (newLibName.value || '').trim()
   if (!name) { err.value = '请填写文件库名称'; return }
@@ -2107,6 +2129,7 @@ async function createLib() {
   }
   const memberIds = (newLibMembers.value || []).map(id => Number(id)).filter(id => !Number.isNaN(id))
   if (['self_plus', 'dept_plus', 'members_only'].includes(mode) && memberIds.length === 0) { err.value = '请选择至少一位指定成员'; return }
+  newLibCreating.value = true
   try {
     const created = await api.createLibrary(name, (newLibDesc.value || '').trim(), deptId, visibility, memberIds, newLibAllowDownload.value)
     if (created?.id != null) {
@@ -2123,7 +2146,8 @@ async function createLib() {
     }
     else if (!deptId) clearDeptView()
     showSuccess(deptId ? '部门文件库已创建' : '文件库已创建')
-  } catch (e) { err.value = e.message }
+  } catch (e) { err.value = e.message || '创建失败' }
+  finally { newLibCreating.value = false }
 }
 function delLib(lib) {
   libToDelete.value = lib

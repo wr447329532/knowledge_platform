@@ -60,7 +60,8 @@ async function submit() {
   error.value = ''
   try {
     await login(email.value, password.value, rememberMe.value)
-    router.push('/')
+    // replace：用首页替换当前历史记录，避免浏览器「返回」回到登录页
+    router.replace('/')
   } catch (e) {
     error.value = e.message || '登录失败'
   }

@@ -4,6 +4,7 @@ import time
 from typing import Set, Tuple
 
 from fastapi import HTTPException, status
+from sqlalchemy import exists, false, or_
 from sqlalchemy.orm import Session
 
 from backend.app.models.department import Department
@@ -214,6 +215,34 @@ def has_library_access(db: Session, library_id: int, user: User, require_write: 
 def _library_not_deleted():
     """未软删除的资料库条件"""
     return Library.deleted_at.is_(None)
+
+
+def libraries_accessible_base_query(db: Session, user: User):
+    """
+    当前用户可访问的未删除 Library 查询对象（与 get_accessible_library_ids 集合语义一致）。
+    用于列表分页，避免先查出全部 id 再 IN (...) 在大数据量下的开销与计划劣化。
+    """
+    not_deleted = _library_not_deleted()
+    if user.is_superuser:
+        return db.query(Library).filter(not_deleted)
+
+    acc_dept_ids = _get_accessible_department_ids(db, user)
+    dept_cond = (
+        Library.department_id.in_(list(acc_dept_ids)) if acc_dept_ids else false()
+    )
+    is_member = exists().where(
+        LibraryMember.library_id == Library.id,
+        LibraryMember.user_id == user.id,
+    )
+    return db.query(Library).filter(
+        not_deleted,
+        or_(
+            Library.owner_id == user.id,
+            Library.visibility == "public",
+            dept_cond,
+            is_member,
+        ),
+    )
 
 
 def get_accessible_library_ids(db: Session, user: User) -> list[int]:

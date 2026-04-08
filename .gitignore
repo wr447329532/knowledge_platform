@@ -35,6 +35,9 @@ frontend/dist/
 *.log
 npm-debug.log*
 
+# 本地打包备份（体积大，勿入库）
+*.tar
+
 # 系统
 .DS_Store
 Thumbs.db
