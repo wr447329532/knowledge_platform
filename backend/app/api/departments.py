@@ -1,7 +1,7 @@
 """部门树 API：树形列表、增删改、部门库"""
 from typing import Dict, List, Optional, Set
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
@@ -577,6 +577,8 @@ def remove_department_member(
 @router.get("/{department_id}/libraries", response_model=List[LibraryRead])
 def list_department_libraries(
     department_id: int,
+    limit: int = Query(20, ge=1, le=200, description="每页数量"),
+    offset: int = Query(0, ge=0, description="起始偏移量"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -602,11 +604,11 @@ def list_department_libraries(
         .order_by(Library.created_at.desc())
         .all()
     )
-    result = []
+    visible: list[LibraryRead] = []
     for lib in libs:
         try:
             _, is_write = has_library_access(db, lib.id, current_user)
-            result.append(
+            visible.append(
                 _lib_to_read(db, lib, current_user.id, is_owner=lib.owner_id == current_user.id, is_write=is_write)
             )
         except HTTPException as e:
@@ -614,7 +616,7 @@ def list_department_libraries(
             if e.status_code in (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND):
                 continue
             raise
-    return result
+    return visible[offset: offset + limit]
 
 
 @router.get("/{department_id}/files", response_model=List[DepartmentFileRow])

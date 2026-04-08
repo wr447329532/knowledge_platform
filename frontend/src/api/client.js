@@ -243,8 +243,14 @@ export async function getDepartmentInfo(id) {
 export async function listDepartmentFiles(id) {
   return api(`/departments/${id}/files`)
 }
-export async function listDepartmentLibraries(id) {
-  return api(`/departments/${id}/libraries`)
+export async function listDepartmentLibraries(id, params = {}) {
+  const sp = new URLSearchParams()
+  for (const [key, value] of Object.entries(params || {})) {
+    if (value === undefined || value === null) continue
+    sp.set(key, String(value))
+  }
+  const q = sp.toString()
+  return api(`/departments/${id}/libraries${q ? `?${q}` : ''}`)
 }
 export async function listDepartmentMembers(id) {
   return api(`/departments/${id}/members`)
@@ -318,10 +324,16 @@ export async function removeFileShare(entryId, userId) {
   return api(`/files/shares?entry_id=${entryId}&user_id=${userId}`, { method: 'DELETE' })
 }
 
-export async function listFiles(libraryId, pathPrefix = '', includeDirs = true) {
-  let url = `/files/list?library_id=${libraryId}&include_dirs=${includeDirs}`
-  if (pathPrefix) url += `&path_prefix=${encodeURIComponent(pathPrefix)}`
-  return api(url)
+export async function listFiles(libraryId, pathPrefix = '', includeDirs = true, params = {}) {
+  const sp = new URLSearchParams()
+  sp.set('library_id', String(libraryId))
+  sp.set('include_dirs', String(includeDirs))
+  if (pathPrefix) sp.set('path_prefix', pathPrefix)
+  for (const [key, value] of Object.entries(params || {})) {
+    if (value === undefined || value === null) continue
+    sp.set(key, String(value))
+  }
+  return api(`/files/list?${sp.toString()}`)
 }
 
 /** 重命名文件或目录 */

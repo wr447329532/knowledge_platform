@@ -580,6 +580,8 @@ def list_files(
     library_id: int,
     path_prefix: Optional[str] = Query(None, description="目录前缀，如 docs/ 只列出 docs/ 下的文件"),
     include_dirs: bool = Query(True, description="是否包含目录"),
+    limit: int = Query(50, ge=1, le=500, description="每页数量"),
+    offset: int = Query(0, ge=0, description="起始偏移量"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -605,6 +607,8 @@ def list_files(
         entries = [e for e in entries if "/" not in e.path]
     # 统一采用库级访问控制：只要通过 has_library_access 校验（拥有者 / 库成员 / 部门库 / public），
     # 即可在列表中看到该资料库下的全部文件和目录，不再按文件级分享单独过滤。
+    entries = entries[offset: offset + limit]
+
     # 文件取最新版本大小；目录无 size
     file_entry_ids = [e.id for e in entries if not e.is_dir]
     latest_size: dict[int, int] = {}

@@ -58,6 +58,8 @@
         :reload-key="deptFilesReloadKey"
         @back="clearDeptView"
         @open-lib="openDeptLib"
+        @edit-lib="openEditLib"
+        @del-lib="delLib"
       />
 
       <!-- 我的文件库：未选中部门时显示 -->
@@ -109,8 +111,13 @@
         :libraries-limit="librariesLimit"
         :libraries-offset="librariesOffset"
         :libraries-has-more="librariesHasMore"
+        :files-limit="filesLimit"
+        :files-offset="filesOffset"
+        :files-has-more="filesHasMore"
         @prev-page="goPrevLibrariesPage"
         @next-page="goNextLibrariesPage"
+        @prev-files-page="goPrevFilesPage"
+        @next-files-page="goNextFilesPage"
       />
 
       <!-- 共享文件 -->
@@ -773,6 +780,9 @@ const libraries = ref([])
 const librariesLimit = ref(20)
 const librariesOffset = ref(0)
 const librariesHasMore = ref(false)
+const filesLimit = ref(20)
+const filesOffset = ref(0)
+const filesHasMore = ref(false)
 /** 防止多次 loadLibraries 乱序返回把列表覆盖成空或过期的页 */
 let librariesLoadSeq = 0
 const currentLib = ref(null)
@@ -1164,6 +1174,7 @@ async function restorePreviewReturnContext() {
   tab.value = 'lib'
   currentLib.value = lib
   pathPrefix.value = typeof q.return_path === 'string' ? q.return_path : ''
+  filesOffset.value = 0
   searchResults.value = []
   rootSearchLibraries.value = []
   rootSearchFiles.value = []
@@ -1354,6 +1365,7 @@ async function openGlobalSearchFileResult(file) {
   const fullPath = String(file.path || '')
   const idx = fullPath.lastIndexOf('/')
   pathPrefix.value = idx >= 0 ? fullPath.slice(0, idx + 1) : ''
+  filesOffset.value = 0
   searchResults.value = []
   rootSearchLibraries.value = []
   rootSearchFiles.value = []
@@ -1369,6 +1381,7 @@ function goToPath(path) {
   const dir = path.endsWith('/') ? path.slice(0, -1) : path
   const i = dir.lastIndexOf('/')
   pathPrefix.value = i >= 0 ? dir.slice(0, i + 1) : ''
+  filesOffset.value = 0
   searchResults.value = []
   searchKeyword.value = ''
   searchApplied.value = false
@@ -1379,19 +1392,35 @@ function goToPath(path) {
 async function loadFiles() {
   if (!currentLib.value) return
   filesLoading.value = true
-  try { files.value = await api.listFiles(currentLib.value.id, pathPrefix.value) }
+  try {
+    const list = await api.listFiles(
+      currentLib.value.id,
+      pathPrefix.value,
+      true,
+      { limit: filesLimit.value, offset: filesOffset.value }
+    )
+    files.value = Array.isArray(list) ? list : []
+    filesHasMore.value = files.value.length === filesLimit.value
+  }
   catch (e) { err.value = e.message }
   finally { filesLoading.value = false }
 }
-function selectLib(lib) { currentLib.value = lib; pathPrefix.value = ''; loadFiles() }
+function selectLib(lib) {
+  currentLib.value = lib
+  pathPrefix.value = ''
+  filesOffset.value = 0
+  loadFiles()
+}
 function goUp() {
   const p = pathPrefix.value.replace(/\/$/, '')
   const i = p.lastIndexOf('/')
   pathPrefix.value = i >= 0 ? p.slice(0, i) : ''
+  filesOffset.value = 0
 }
 function enterDir(entry) {
   if (!entry?.is_dir) return
   pathPrefix.value = entry.path + '/'
+  filesOffset.value = 0
   searchResults.value = []
   searchKeyword.value = ''
   searchApplied.value = false
@@ -1409,6 +1438,18 @@ function goNextLibrariesPage() {
   if (!librariesHasMore.value) return
   librariesOffset.value = librariesOffset.value + librariesLimit.value
   loadLibraries()
+}
+
+function goPrevFilesPage() {
+  if (filesOffset.value <= 0) return
+  filesOffset.value = Math.max(0, filesOffset.value - filesLimit.value)
+  loadFiles()
+}
+
+function goNextFilesPage() {
+  if (!filesHasMore.value) return
+  filesOffset.value = filesOffset.value + filesLimit.value
+  loadFiles()
 }
 
 async function delFile(f) {

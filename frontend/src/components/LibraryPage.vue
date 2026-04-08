@@ -221,19 +221,21 @@
         <div class="audit-pagination-actions">
           <button
             type="button"
-            class="admin-btn-secondary"
+            class="admin-btn-secondary page-icon-btn"
             :disabled="librariesOffset <= 0"
+            title="上一页"
             @click="$emit('prev-page')"
           >
-            上一页
+            <Icons name="arrow-left" />
           </button>
           <button
             type="button"
-            class="admin-btn-secondary"
+            class="admin-btn-secondary page-icon-btn"
             :disabled="!librariesHasMore"
+            title="下一页"
             @click="$emit('next-page')"
           >
-            下一页
+            <Icons name="chevron-right" />
           </button>
         </div>
         <div class="audit-pagination-info">
@@ -272,11 +274,6 @@
                 class="file-item file-item-row"
               >
                 <div class="file-item-name">
-                  <input
-                    type="checkbox"
-                    class="file-checkbox"
-                    @click.stop
-                  />
                   <a
                     v-if="r.is_dir"
                     href="#"
@@ -402,11 +399,6 @@
               class="file-item file-item-row"
             >
               <div class="file-item-name">
-                <input
-                  type="checkbox"
-                  class="file-checkbox"
-                  @click.stop
-                />
                 <a
                   v-if="f.is_dir"
                   href="#"
@@ -537,6 +529,31 @@
         >
           当前目录为空，可上传文件或新建目录。
         </p>
+        <div v-if="currentLib && !searchApplied && files.length" class="audit-pagination">
+          <div class="audit-pagination-actions">
+            <button
+              type="button"
+              class="admin-btn-secondary page-icon-btn"
+              :disabled="filesOffset <= 0"
+              title="上一页"
+              @click="$emit('prev-files-page')"
+            >
+              <Icons name="arrow-left" />
+            </button>
+            <button
+              type="button"
+              class="admin-btn-secondary page-icon-btn"
+              :disabled="!filesHasMore"
+              title="下一页"
+              @click="$emit('next-files-page')"
+            >
+              <Icons name="chevron-right" />
+            </button>
+          </div>
+          <div class="audit-pagination-info">
+            第 {{ Math.floor(filesOffset / filesLimit) + 1 }} 页，每页 {{ filesLimit }} 条
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -594,6 +611,9 @@ const props = defineProps({
   librariesLimit: { type: Number, default: 20 },
   librariesOffset: { type: Number, default: 0 },
   librariesHasMore: { type: Boolean, default: false },
+  filesLimit: { type: Number, default: 20 },
+  filesOffset: { type: Number, default: 0 },
+  filesHasMore: { type: Boolean, default: false },
 })
 
 const displayLibraries = computed(() => {
@@ -621,10 +641,9 @@ function libraryTypeText(lib) {
   padding-top: 8px;
   border-top: 1px solid #e5e7eb;
   display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  align-items: flex-end;
-  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
   font-size: 12px;
   color: #6b7280;
 }
@@ -632,6 +651,16 @@ function libraryTypeText(lib) {
 .audit-pagination-actions {
   display: flex;
   gap: 8px;
+}
+
+.page-icon-btn {
+  width: 34px;
+  min-width: 34px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .global-file-results {
@@ -1033,13 +1062,6 @@ function libraryTypeText(lib) {
   gap: 8px;
   min-width: 0;
   overflow: hidden;
-}
-
-.file-checkbox {
-  width: 14px;
-  height: 14px;
-  border-radius: 4px;
-  border: 1px solid #d1d5db;
 }
 
 .file-item-link {

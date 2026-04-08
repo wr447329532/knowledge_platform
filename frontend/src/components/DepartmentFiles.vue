@@ -52,6 +52,7 @@
                 <th>类型</th>
                 <th>描述</th>
                 <th>创建者</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -76,9 +77,51 @@
                 <td class="dept-file-owner">
                   {{ r.owner }}
                 </td>
+                <td class="dept-file-actions">
+                  <button
+                    v-if="r.raw?.is_owner"
+                    type="button"
+                    class="btn-icon"
+                    title="编辑"
+                    @click.stop="$emit('edit-lib', r.raw)"
+                  >⋯</button>
+                  <button
+                    v-if="r.raw?.is_owner"
+                    type="button"
+                    class="btn-icon danger"
+                    title="删除"
+                    @click.stop="$emit('del-lib', r.raw)"
+                  >🗑</button>
+                  <span v-if="!r.raw?.is_owner" class="dept-action-placeholder">-</span>
+                </td>
               </tr>
             </tbody>
           </table>
+        </div>
+        <div v-if="rows.length" class="audit-pagination">
+          <div class="audit-pagination-actions">
+            <button
+              type="button"
+              class="admin-btn-secondary page-icon-btn"
+              :disabled="offset <= 0 || loading"
+              title="上一页"
+              @click="prevPage"
+            >
+              <Icons name="arrow-left" />
+            </button>
+            <button
+              type="button"
+              class="admin-btn-secondary page-icon-btn"
+              :disabled="!hasMore || loading"
+              title="下一页"
+              @click="nextPage"
+            >
+              <Icons name="chevron-right" />
+            </button>
+          </div>
+          <div class="audit-pagination-info">
+            第 {{ Math.floor(offset / limit) + 1 }} 页，每页 {{ limit }} 条
+          </div>
         </div>
         <div v-else class="dept-empty">
           <Icons name="folder" class="dept-empty-icon" />
@@ -101,12 +144,15 @@ const props = defineProps({
   reloadKey: { type: Number, default: 0 },
 })
 
-const emit = defineEmits(['back', 'open-lib'])
+const emit = defineEmits(['back', 'open-lib', 'edit-lib', 'del-lib'])
 
 const loading = ref(false)
 const err = ref('')
 const deptInfo = ref(null)
 const rows = ref([])
+const limit = ref(20)
+const offset = ref(0)
+const hasMore = ref(false)
 
 async function loadDept(id) {
   if (!id) {
@@ -118,11 +164,15 @@ async function loadDept(id) {
   err.value = ''
   deptInfo.value = null
   rows.value = []
+  hasMore.value = false
   try {
     const info = await api.getDepartmentInfo(id)
     deptInfo.value = info
     if (info?.has_access) {
-      const libs = await api.listDepartmentLibraries(id)
+      const libs = await api.listDepartmentLibraries(id, {
+        limit: limit.value,
+        offset: offset.value,
+      })
       rows.value = Array.isArray(libs)
         ? libs.map((lib) => ({
             id: lib.id,
@@ -133,6 +183,7 @@ async function loadDept(id) {
             raw: lib,
           }))
         : []
+      hasMore.value = rows.value.length === limit.value
     }
   } catch (e) {
     err.value = e?.message || '加载部门信息失败'
@@ -144,6 +195,7 @@ async function loadDept(id) {
 watch(
   () => props.activeDeptId,
   (id) => {
+    offset.value = 0
     loadDept(id)
   },
   { immediate: true },
@@ -153,9 +205,22 @@ watch(
 watch(
   () => props.reloadKey,
   () => {
+    offset.value = 0
     if (props.activeDeptId) loadDept(props.activeDeptId)
   },
 )
+
+function prevPage() {
+  if (offset.value <= 0 || loading.value) return
+  offset.value = Math.max(0, offset.value - limit.value)
+  if (props.activeDeptId) loadDept(props.activeDeptId)
+}
+
+function nextPage() {
+  if (!hasMore.value || loading.value) return
+  offset.value += limit.value
+  if (props.activeDeptId) loadDept(props.activeDeptId)
+}
 </script>
 
 <style scoped>
@@ -333,6 +398,64 @@ watch(
 .dept-file-owner {
   font-size: 13px;
   color: #4b5563;
+}
+
+.dept-file-actions {
+  white-space: nowrap;
+}
+
+.dept-file-actions .btn-icon + .btn-icon {
+  margin-left: 8px;
+}
+
+.btn-icon {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #374151;
+  font-size: 15px;
+  padding: 0;
+}
+
+.btn-icon:hover {
+  opacity: 0.78;
+}
+
+.btn-icon.danger {
+  color: #dc2626;
+}
+
+.dept-action-placeholder {
+  color: #9ca3af;
+}
+
+.audit-pagination {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.audit-pagination-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.page-icon-btn {
+  width: 34px;
+  min-width: 34px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .dept-empty {
