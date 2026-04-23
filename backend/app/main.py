@@ -92,7 +92,7 @@ def _ensure_libraries_has_visibility() -> None:
 
 
 def _ensure_libraries_has_allow_download() -> None:
-    """兼容旧库：若 libraries 表缺少 allow_download 列则自动添加，默认允许下载"""
+    """兼容旧库：若 libraries 表缺少 allow_download 列则自动添加；历史行默认 True，新建资料库由接口默认 False"""
     from sqlalchemy import inspect, text
 
     insp = inspect(engine)

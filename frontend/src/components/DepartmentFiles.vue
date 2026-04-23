@@ -42,87 +42,189 @@
         </p>
       </div>
 
-      <!-- 部门文件库表格（用作部门文件视图） -->
+      <!-- 部门文件库：列表 / 网格与「我的文件库」同款（LibraryPage） -->
       <div v-else class="dept-files-wrap">
-        <div v-if="rows.length" class="dept-files-table card">
-          <table>
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>类型</th>
-                <th>描述</th>
-                <th>创建者</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="r in rows"
+        <template v-if="sortedRows.length">
+          <div class="lib-grid-wrap">
+            <!-- 行视图：与 LibraryPage 一级库列表一致 -->
+            <div v-if="fileViewMode === 'list'" class="lib-list-container">
+              <div class="lib-list-table">
+                <div class="lib-list-head">
+                  <div class="lib-col-name">名称</div>
+                  <div class="lib-col-desc">描述</div>
+                  <div class="lib-col-type">类型</div>
+                  <div class="lib-col-source">来源</div>
+                  <div class="lib-col-actions">操作</div>
+                </div>
+                <div
+                  v-for="r in sortedRows"
+                  :key="r.id"
+                  class="lib-list-row"
+                >
+                  <div class="lib-col-name">
+                    <div class="lib-name-inner">
+                      <Icons name="folder" class="lib-folder-icon" />
+                      <a
+                        href="#"
+                        class="lib-name-text"
+                        :title="r.name"
+                        @click.prevent="$emit('open-lib', r.raw)"
+                      >
+                        {{ r.name }}
+                      </a>
+                      <span v-if="!r.raw?.is_owner" class="lib-badge-shared">共享给我</span>
+                    </div>
+                  </div>
+                  <div class="lib-col-desc">
+                    {{ r.description || '-' }}
+                  </div>
+                  <div class="lib-col-type">
+                    <span
+                      class="shared-library-type"
+                      :class="libraryTypeClass(r.raw)"
+                    >{{ libraryTypeText(r.raw) }}</span>
+                  </div>
+                  <div class="lib-col-source">
+                    <template v-if="r.raw?.is_owner">-</template>
+                    <template v-else>
+                      分享者：{{ r.raw?.owner_username || r.owner || '-' }}
+                      <template v-if="r.raw?.department_name">
+                        · 来源部门：{{ r.raw.department_name }}
+                      </template>
+                    </template>
+                  </div>
+                  <div class="lib-col-actions">
+                    <div class="lib-actions">
+                      <button
+                        v-if="r.raw?.is_owner"
+                        type="button"
+                        class="btn-icon"
+                        title="编辑"
+                        @click.stop="$emit('edit-lib', r.raw)"
+                      >
+                        ⋯
+                      </button>
+                      <button
+                        v-if="r.raw?.is_owner"
+                        type="button"
+                        class="btn-icon"
+                        title="移动"
+                        @click.stop="$emit('move-lib', r.raw)"
+                      >
+                        ⇄
+                      </button>
+                      <button
+                        v-if="r.raw?.is_owner"
+                        type="button"
+                        class="btn-icon danger"
+                        title="删除"
+                        @click.stop="$emit('del-lib', r.raw)"
+                      >
+                        🗑
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 网格视图：与 LibraryPage 一级库卡片一致 -->
+            <div v-else class="lib-grid dept-files-lib-grid">
+              <div
+                v-for="r in sortedRows"
                 :key="r.id"
-                class="dept-file-row"
+                class="lib-card"
                 @click="$emit('open-lib', r.raw)"
               >
-                <td>
-                  <div class="dept-file-name">
-                    <Icons :name="r.type === 'folder' ? 'folder' : 'file-text'" class="dept-file-icon" />
-                    <span class="dept-file-title">{{ r.name }}</span>
+                <button
+                  v-if="r.raw?.is_owner"
+                  type="button"
+                  class="lib-card-more"
+                  title="更多操作"
+                  @click.stop="toggleDeptCardMenu('d-' + r.id)"
+                >
+                  ⋯
+                </button>
+                <div
+                  v-if="deptCardMenuId === 'd-' + r.id"
+                  class="action-dropdown lib-card-dropdown"
+                  @click.stop
+                >
+                  <button
+                    type="button"
+                    class="btn-small"
+                    @click="$emit('edit-lib', r.raw); closeDeptCardMenu()"
+                  >
+                    编辑
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-small"
+                    @click="$emit('move-lib', r.raw); closeDeptCardMenu()"
+                  >
+                    移动
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-small danger"
+                    @click="$emit('del-lib', r.raw); closeDeptCardMenu()"
+                  >
+                    删除
+                  </button>
+                </div>
+                <div class="lib-card-icon-wrap">
+                  <Icons name="folder" class="lib-card-icon" />
+                </div>
+                <div class="lib-card-text">
+                  <p class="lib-card-name" :title="r.name">
+                    {{ r.name }}
+                  </p>
+                  <p v-if="r.description" class="lib-card-desc">
+                    {{ r.description }}
+                  </p>
+                </div>
+                <div class="lib-card-meta">
+                  <span v-if="!r.raw?.is_owner" class="lib-badge-shared">共享给我</span>
+                  <span
+                    v-else
+                    class="shared-library-type"
+                    :class="libraryTypeClass(r.raw)"
+                  >{{ libraryTypeText(r.raw) }}</span>
+                  <div v-if="!r.raw?.is_owner" class="lib-card-share-meta">
+                    <span>分享者：{{ r.raw?.owner_username || r.owner || '-' }}</span>
+                    <span v-if="r.raw?.department_name">来源：{{ r.raw.department_name }}</span>
                   </div>
-                </td>
-                <td class="dept-file-type">
-                  {{ r.type === 'folder' ? '部门库' : '文件库' }}
-                </td>
-                <td class="dept-file-desc">
-                  {{ r.description || '-' }}
-                </td>
-                <td class="dept-file-owner">
-                  {{ r.owner }}
-                </td>
-                <td class="dept-file-actions">
-                  <button
-                    v-if="r.raw?.is_owner"
-                    type="button"
-                    class="btn-icon"
-                    title="编辑"
-                    @click.stop="$emit('edit-lib', r.raw)"
-                  >⋯</button>
-                  <button
-                    v-if="r.raw?.is_owner"
-                    type="button"
-                    class="btn-icon danger"
-                    title="删除"
-                    @click.stop="$emit('del-lib', r.raw)"
-                  >🗑</button>
-                  <span v-if="!r.raw?.is_owner" class="dept-action-placeholder">-</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div v-if="rows.length" class="audit-pagination">
-          <div class="audit-pagination-actions">
-            <button
-              type="button"
-              class="admin-btn-secondary page-icon-btn"
-              :disabled="offset <= 0 || loading"
-              title="上一页"
-              @click="prevPage"
-            >
-              <Icons name="arrow-left" />
-            </button>
-            <button
-              type="button"
-              class="admin-btn-secondary page-icon-btn"
-              :disabled="!hasMore || loading"
-              title="下一页"
-              @click="nextPage"
-            >
-              <Icons name="chevron-right" />
-            </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="audit-pagination">
+              <div class="audit-pagination-actions">
+                <button
+                  type="button"
+                  class="admin-btn-secondary page-icon-btn"
+                  :disabled="offset <= 0 || loading"
+                  title="上一页"
+                  @click="prevPage"
+                >
+                  <Icons name="arrow-left" />
+                </button>
+                <button
+                  type="button"
+                  class="admin-btn-secondary page-icon-btn"
+                  :disabled="!hasMore || loading"
+                  title="下一页"
+                  @click="nextPage"
+                >
+                  <Icons name="chevron-right" />
+                </button>
+              </div>
+              <div class="audit-pagination-info">
+                第 {{ Math.floor(offset / limit) + 1 }} 页，每页 {{ limit }} 条
+              </div>
+            </div>
           </div>
-          <div class="audit-pagination-info">
-            第 {{ Math.floor(offset / limit) + 1 }} 页，每页 {{ limit }} 条
-          </div>
-        </div>
+        </template>
         <div v-else class="dept-empty">
           <Icons name="folder" class="dept-empty-icon" />
           <p class="dept-empty-text">该部门暂无文件库</p>
@@ -134,17 +236,20 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import Icons from './Icons.vue'
 import * as api from '../api/client'
+import { libraryTypeClass, libraryTypeText } from '../utils/libraryDisplay.js'
 
 const props = defineProps({
   me: { type: Object, default: null },
   activeDeptId: { type: Number, default: null },
   reloadKey: { type: Number, default: 0 },
+  fileSortOrder: { type: String, default: 'modified' },
+  fileViewMode: { type: String, default: 'list' },
 })
 
-const emit = defineEmits(['back', 'open-lib', 'edit-lib', 'del-lib'])
+const emit = defineEmits(['back', 'open-lib', 'edit-lib', 'del-lib', 'move-lib'])
 
 const loading = ref(false)
 const err = ref('')
@@ -153,6 +258,39 @@ const rows = ref([])
 const limit = ref(20)
 const offset = ref(0)
 const hasMore = ref(false)
+const deptCardMenuId = ref(null)
+
+function toggleDeptCardMenu(id) {
+  deptCardMenuId.value = deptCardMenuId.value === id ? null : id
+}
+
+function closeDeptCardMenu() {
+  deptCardMenuId.value = null
+}
+
+watch(deptCardMenuId, (id) => {
+  if (!id) return
+  const onDoc = () => {
+    deptCardMenuId.value = null
+    document.removeEventListener('click', onDoc)
+  }
+  setTimeout(() => document.addEventListener('click', onDoc), 0)
+})
+
+const sortedRows = computed(() => {
+  const arr = [...(rows.value || [])]
+  const order = props.fileSortOrder || 'modified'
+  if (order === 'name') {
+    arr.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+  } else if (order === 'size') {
+    arr.sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0))
+  } else if (order === 'created') {
+    arr.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+  } else {
+    arr.sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))
+  }
+  return arr
+})
 
 async function loadDept(id) {
   if (!id) {
@@ -169,21 +307,31 @@ async function loadDept(id) {
     const info = await api.getDepartmentInfo(id)
     deptInfo.value = info
     if (info?.has_access) {
-      const libs = await api.listDepartmentLibraries(id, {
-        limit: limit.value,
-        offset: offset.value,
-      })
-      rows.value = Array.isArray(libs)
-        ? libs.map((lib) => ({
-            id: lib.id,
-            name: lib.name,
-            type: 'folder',
-            description: lib.description || '',
-            owner: lib.owner_username || (lib.is_owner ? (props.me?.username || '我') : '-'),
-            raw: lib,
-          }))
-        : []
-      hasMore.value = rows.value.length === limit.value
+      const pageSize = limit.value
+      let off = offset.value
+      let list = []
+      for (;;) {
+        const libs = await api.listDepartmentLibraries(id, {
+          limit: pageSize + 1,
+          offset: off,
+        })
+        list = Array.isArray(libs) ? libs : []
+        if (list.length > 0 || off <= 0) break
+        off = Math.max(0, off - pageSize)
+      }
+      offset.value = off
+      hasMore.value = list.length > pageSize
+      rows.value = list.slice(0, pageSize).map((lib) => ({
+        id: lib.id,
+        name: lib.name,
+        type: 'folder',
+        description: lib.description || '',
+        owner: lib.owner_username || (lib.is_owner ? (props.me?.username || '我') : '-'),
+        size_bytes: Number(lib.size_bytes || lib.total_size || 0),
+        updated_at: lib.updated_at || null,
+        created_at: lib.created_at || null,
+        raw: lib,
+      }))
     }
   } catch (e) {
     err.value = e?.message || '加载部门信息失败'
@@ -227,7 +375,7 @@ function nextPage() {
 .dept-page {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  min-height: min-content;
 }
 
 .dept-header {
@@ -295,9 +443,9 @@ function nextPage() {
 }
 
 .dept-body {
-  flex: 1;
+  flex: none;
   padding: 0 24px 20px;
-  overflow: auto;
+  overflow: visible;
 }
 
 .dept-lock {
@@ -341,106 +489,315 @@ function nextPage() {
   margin-top: 12px;
 }
 
-.dept-files-table {
-  border-radius: 12px;
+/* —— 以下与 LibraryPage「我的文件库」一级列表 / 卡片对齐 —— */
+.lib-grid-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lib-list-container {
+  background: #ffffff;
+  border-radius: 10px;
   border: 1px solid #e5e7eb;
   overflow: hidden;
 }
 
-.dept-files-table table {
+.lib-list-table {
   width: 100%;
-  border-collapse: collapse;
 }
 
-.dept-files-table thead {
+.lib-list-head {
+  display: grid;
+  grid-template-columns: minmax(0, 2.8fr) minmax(0, 2.6fr) minmax(0, 1.2fr) minmax(0, 2fr) 120px;
+  padding: 10px 16px;
   background: #f9fafb;
   border-bottom: 1px solid #e5e7eb;
-}
-
-.dept-files-table th,
-.dept-files-table td {
-  padding: 10px 16px;
-  font-size: 13px;
-  text-align: left;
-}
-
-.dept-files-table th {
+  font-size: 12px;
   font-weight: 600;
   color: #6b7280;
   text-transform: uppercase;
-  font-size: 12px;
 }
 
-.dept-file-row:hover {
-  background: #f9fafb;
+.lib-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2.8fr) minmax(0, 2.6fr) minmax(0, 1.2fr) minmax(0, 2fr) 120px;
+  padding: 10px 16px;
+  font-size: 14px;
+  align-items: center;
+  border-bottom: 1px solid #f3f4f6;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.dept-file-name {
+.lib-list-row:hover {
+  background-color: #f9fafb;
+}
+
+.lib-col-name,
+.lib-col-desc,
+.lib-col-type,
+.lib-col-source,
+.lib-col-actions {
+  overflow: hidden;
+}
+
+.lib-col-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.lib-name-inner {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
-.dept-file-icon {
+.lib-folder-icon {
   width: 18px;
   height: 18px;
   color: #4a90e2;
+  flex-shrink: 0;
 }
 
-.dept-file-title {
-  font-size: 14px;
-  font-weight: 500;
+.lib-name-text {
   color: #111827;
+  text-decoration: none;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  font-weight: 500;
 }
 
-.dept-file-type,
-.dept-file-desc,
-.dept-file-owner {
-  font-size: 13px;
+.lib-col-desc {
+  color: #6b7280;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.lib-col-type {
   color: #4b5563;
 }
 
-.dept-file-actions {
+.lib-col-source {
+  color: #6b7280;
+  font-size: 12px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.dept-file-actions .btn-icon + .btn-icon {
-  margin-left: 8px;
+.lib-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
 }
 
 .btn-icon {
-  width: 22px;
-  height: 22px;
   border: none;
   background: transparent;
-  border-radius: 0;
-  cursor: pointer;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #374151;
-  font-size: 15px;
-  padding: 0;
+  color: #4b5563;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .btn-icon:hover {
-  opacity: 0.78;
+  background-color: #e5e7eb;
+  color: #111827;
 }
 
 .btn-icon.danger {
   color: #dc2626;
 }
 
-.dept-action-placeholder {
-  color: #9ca3af;
+.btn-icon.danger:hover {
+  background-color: #fee2e2;
+  color: #b91c1c;
+}
+
+.lib-badge-shared {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background-color: #eff6ff;
+  color: #1d4ed8;
+}
+
+.lib-grid {
+  margin-top: 4px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.dept-files-lib-grid {
+  overflow: visible;
+}
+
+.lib-card {
+  position: relative;
+  background: #ffffff;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  padding: 14px 10px 10px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  transition: box-shadow 0.18s ease, border-color 0.18s ease, transform 0.1s ease;
+}
+
+.lib-card:hover {
+  border-color: #4a90e2;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.lib-card-more {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  font-size: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.lib-card:hover .lib-card-more {
+  opacity: 1;
+}
+
+.lib-card-more:hover {
+  background-color: #e5e7eb;
+  color: #111827;
+}
+
+.lib-card-icon-wrap {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: #eff6ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lib-card-icon {
+  width: 30px;
+  height: 30px;
+  color: #4a90e2;
+}
+
+.lib-card-text {
+  width: 100%;
+  text-align: center;
+}
+
+.lib-card-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lib-card-desc {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #6b7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lib-card-meta {
+  margin-top: 2px;
+}
+
+.lib-card-share-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #6b7280;
+  text-align: center;
+}
+
+.action-dropdown {
+  position: absolute;
+  right: 6px;
+  top: 32px;
+  background: #ffffff;
+  border-radius: 18px;
+  border: 1px solid #e5e7eb;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: 0 14px 40px rgba(15, 23, 42, 0.16);
+  z-index: 40;
+}
+
+.action-dropdown .btn-small {
+  min-width: 80px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  color: #111827;
+  font-size: 13px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.action-dropdown .btn-small:hover {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+
+.action-dropdown .btn-small.danger {
+  background: #ef4444;
+  border-color: #ef4444;
+  color: #ffffff;
+}
+
+.action-dropdown .btn-small.danger:hover {
+  background: #dc2626;
+  border-color: #dc2626;
 }
 
 .audit-pagination {
-  margin-top: 12px;
+  margin-top: 8px;
+  padding: 10px 0 8px;
+  border-top: none;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
+  font-size: 12px;
+  color: #6b7280;
 }
 
 .audit-pagination-actions {

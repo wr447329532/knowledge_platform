@@ -83,4 +83,16 @@ tr:hover { background: #fafbfc; }
   margin-bottom: 16px;
   border: 1px solid rgba(0,0,0,0.06);
 }
+
+/* 文件库类型标签：与「共享文件库」表格一致，供 LibraryPage / DepartmentFiles / SharedPage 共用 */
+.shared-library-type {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.shared-library-type.type-dept { background: #ede9fe; color: #6d28d9; }
+.shared-library-type.type-personal { background: #e0f2fe; color: #0369a1; }
+.shared-library-type.type-public { background: #dcfce7; color: #166534; }
 </style>

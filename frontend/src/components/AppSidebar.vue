@@ -6,18 +6,6 @@
       <span class="logo-text">文件共享和知识管理平台</span>
     </div>
 
-    <!-- 存储空间 -->
-    <div class="sidebar-storage">
-      <div class="storage-label">存储空间</div>
-      <div class="storage-value">
-        <span class="storage-used">{{ storageStats?.used_display || '0 B' }}</span>
-        <span class="storage-total">/ {{ storageStats?.total_display || '--' }}</span>
-      </div>
-      <div class="storage-bar">
-        <div class="storage-fill" :style="{ width: Math.min((storageStats?.percent || 0), 100) + '%' }"></div>
-      </div>
-    </div>
-
     <!-- 主导航 -->
     <nav class="sidebar-nav">
       <a
@@ -78,7 +66,6 @@ defineProps({
   activeTab: String,
   activeDeptId: { type: Number, default: null },
   deptKeyword: { type: String, default: '' },
-  storageStats: Object,
   trashMode: { type: String, default: 'personal' },
 })
 
@@ -106,28 +93,6 @@ const emit = defineEmits(['nav', 'dept-select'])
 }
 .logo-icon { width: 28px; height: 28px; font-size: 28px; color: var(--sidebar-accent); }
 .logo-text { margin-left: 12px; font-size: 14px; font-weight: 600; line-height: 1.3; }
-.sidebar-storage {
-  padding: 16px 24px;
-  border-bottom: 1px solid rgba(75,85,99,0.5);
-  flex-shrink: 0;
-}
-.storage-label { font-size: 12px; color: rgba(156,163,175); margin-bottom: 6px; }
-.storage-value { display: flex; align-items: baseline; gap: 6px; margin-bottom: 6px; }
-.storage-used { font-size: 20px; font-weight: 600; }
-.storage-total { font-size: 12px; color: rgba(156,163,175); }
-.storage-bar {
-  width: 100%;
-  height: 6px;
-  background: rgba(75,85,99);
-  border-radius: 999px;
-  overflow: hidden;
-}
-.storage-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--sidebar-accent), #357abd);
-  border-radius: 999px;
-  transition: width 0.3s;
-}
 .sidebar-nav {
   padding: 12px;
   border-bottom: 1px solid rgba(75,85,99,0.5);

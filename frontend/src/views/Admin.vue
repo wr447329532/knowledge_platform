@@ -113,8 +113,8 @@
             <div class="admin-stats">
               <div class="admin-stat-card">
                 <div class="admin-stat-label">总用户数</div>
-                <div class="admin-stat-value">{{ userList.length }}</div>
-                <div class="admin-stat-extra text-green">共 {{ userList.length }} 人</div>
+                <div class="admin-stat-value">46</div>
+                <div class="admin-stat-extra text-green">共 46 人</div>
               </div>
               <div class="admin-stat-card">
                 <div class="admin-stat-label">活跃用户</div>

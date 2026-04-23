@@ -172,11 +172,37 @@ export async function getLibrary(id) {
   return api(`/libraries/${id}`)
 }
 
-export async function createLibrary(name, description = '', departmentId = null, visibility = 'private', memberUserIds = [], allowDownload = true) {
+export async function createLibrary(name, description = '', departmentId = null, visibility = 'private', memberUserIds = [], allowDownload = false, parentId = null) {
   const body = { name, description, visibility, allow_download: allowDownload }
   if (departmentId != null) body.department_id = departmentId
+  if (parentId != null) body.parent_id = parentId
   if (Array.isArray(memberUserIds) && memberUserIds.length) body.member_user_ids = memberUserIds
   return api('/libraries/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+/** 直接子资料库（二级/三级） */
+export async function listLibraryChildren(libraryId) {
+  return api(`/libraries/${libraryId}/children`)
+}
+
+/** 从根库到当前库的面包屑 */
+export async function getLibraryBreadcrumb(libraryId) {
+  return api(`/libraries/${libraryId}/breadcrumb`)
+}
+
+/** 可移动到的父级列表（含一级根目录选项） */
+export async function listLibraryMoveTargets(libraryId) {
+  return api(`/libraries/${libraryId}/move-targets`)
+}
+
+/** 移动资料库：parentId 为 null 表示作为一级资料库 */
+export async function moveLibrary(libraryId, parentId = null) {
+  const body = { parent_id: parentId }
+  return api(`/libraries/${libraryId}/move`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

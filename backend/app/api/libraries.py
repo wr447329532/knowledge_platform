@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List
+from typing import List, Set
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
@@ -15,6 +15,9 @@ from backend.app.core.library_access import (
     get_accessible_library_ids,
     has_library_access,
     libraries_accessible_base_query,
+    library_depth_from_root,
+    resolve_root_library,
+    user_can_manage_library,
     write_access_for_listed_library,
 )
 from backend.app.api.notifications import create_notification
@@ -28,6 +31,8 @@ from backend.app.models.user import User
 class LibraryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="资料库名称")
     description: str | None = None
+    # 若指定，则创建为子库（二级/三级），继承根库权限与部门/可见性/下载策略
+    parent_id: int | None = None
     department_id: int | None = None  # 指定则创建为部门库
     # 可见性：private=私有；department=部门可见；public=全员可见（仅个人库）
     visibility: str = "private"
@@ -50,9 +55,18 @@ class LibraryRead(BaseModel):
     member_count: int | None = None
     is_owner: bool | None = None  # 当前用户是否拥有者
     is_writeable: bool | None = None  # 当前用户是否可写
+    parent_id: int | None = None
+    root_library_id: int | None = None
+    depth: int = 1  # 一级=1，二级=2，三级=3
+    can_manage: bool = False  # 是否可编辑/删除资料库（含根拥有者与部门负责人）
 
     class Config:
         from_attributes = True
+
+
+class LibraryBreadcrumbItem(BaseModel):
+    id: int
+    name: str
 
 
 class LibraryTrashRead(LibraryRead):
@@ -84,6 +98,19 @@ class LibraryUpdate(BaseModel):
     allow_download: bool | None = None
 
 
+class MoveLibraryBody(BaseModel):
+    """移动资料库：挂到目标父库下（二级/三级），或 parent_id=null 移到一级根目录。"""
+
+    parent_id: int | None = Field(None, description="目标父资料库 id；null 表示作为一级资料库")
+
+
+class LibraryMoveTarget(BaseModel):
+    """可选移动目标（提交 move 时的 parent_id 与此一致）"""
+
+    parent_id: int | None = Field(None, description="父资料库 id；null 表示移到一级根目录")
+    label: str
+
+
 router = APIRouter(prefix="/libraries", tags=["libraries"])
 
 _LIB_READ_AUTO = object()
@@ -99,28 +126,111 @@ def _library_name_taken(
     *,
     department_id: int | None,
     owner_id: int | None,
+    parent_id: int | None = None,
     exclude_library_id: int | None = None,
 ) -> bool:
-    """同一范围内（个人库按拥有者，部门库按部门）已存在未删除的同名资料库则视为占用。"""
+    """同级范围内名称唯一：子库按 parent_id；否则个人库按拥有者、部门库按部门。"""
     norm = _normalize_library_name(name)
     if not norm:
         return False
-    # 在应用层比对 strip 后的名称，避免各数据库对 TRIM/空白字符语义不一致导致查询异常
     q = db.query(Library.id, Library.name).filter(Library.deleted_at.is_(None))
     if exclude_library_id is not None:
         q = q.filter(Library.id != exclude_library_id)
-    if department_id is not None:
+    if parent_id is not None:
+        q = q.filter(Library.parent_id == parent_id)
+    elif department_id is not None:
         q = q.filter(Library.department_id == department_id)
     else:
         q = q.filter(Library.department_id.is_(None))
         if owner_id is not None:
             q = q.filter(Library.owner_id == owner_id)
     for row in q.all():
-        # 显式按下标取值，避免个别 SQLAlchemy Row 解包差异导致异常→500
         existing_name = row[1]
         if _normalize_library_name(existing_name or "") == norm:
             return True
     return False
+
+
+def _collect_descendant_library_ids(db: Session, root_node_id: int) -> Set[int]:
+    """包含 root_node_id 及其所有下级资料库 id（未删除）。"""
+    rows = (
+        db.query(Library.id, Library.parent_id)
+        .filter(Library.deleted_at.is_(None))
+        .all()
+    )
+    children_by_parent: dict[int, list[int]] = {}
+    for lid, pid in rows:
+        if pid is None:
+            continue
+        children_by_parent.setdefault(int(pid), []).append(int(lid))
+    out: Set[int] = {int(root_node_id)}
+    stack = [int(root_node_id)]
+    while stack:
+        pid = int(stack.pop())
+        for cid in children_by_parent.get(pid, []):
+            if cid not in out:
+                out.add(cid)
+                stack.append(cid)
+    return out
+
+
+def _subtree_depth_span(db: Session, mov: Library) -> int:
+    """mov 子树内相对 mov 的最大层数差（含自身为 0）。"""
+    ids = _collect_descendant_library_ids(db, mov.id)
+    base = library_depth_from_root(db, mov)
+    span = 0
+    for lid in ids:
+        lib = db.query(Library).filter(Library.id == lid).first()
+        if lib:
+            span = max(span, library_depth_from_root(db, lib) - base)
+    return span
+
+
+def _merge_library_members(
+    db: Session,
+    from_lib_id: int,
+    to_lib_id: int,
+    *,
+    delete_from_source: bool,
+) -> None:
+    rows = db.query(LibraryMember).filter(LibraryMember.library_id == from_lib_id).all()
+    for r in rows:
+        existing = (
+            db.query(LibraryMember)
+            .filter(
+                LibraryMember.library_id == to_lib_id,
+                LibraryMember.user_id == r.user_id,
+            )
+            .first()
+        )
+        if existing:
+            if r.role == "write" or existing.role == "write":
+                existing.role = "write"
+        else:
+            db.add(
+                LibraryMember(
+                    library_id=to_lib_id,
+                    user_id=r.user_id,
+                    role=r.role,
+                )
+            )
+    if delete_from_source:
+        db.query(LibraryMember).filter(LibraryMember.library_id == from_lib_id).delete()
+
+
+def _sync_subtree_fields_from_acl_root(db: Session, mov: Library) -> None:
+    """将 mov 整棵子树的部门/可见性/下载策略与解析后的根库一致。"""
+    acl = resolve_root_library(db, mov)
+    ids = _collect_descendant_library_ids(db, mov.id)
+    dept_id = getattr(acl, "department_id", None)
+    vis = str(getattr(acl, "visibility", "private") or "private")
+    ad = bool(getattr(acl, "allow_download", False))
+    for lid in ids:
+        row = db.query(Library).filter(Library.id == lid).first()
+        if row:
+            row.department_id = dept_id
+            row.visibility = vis
+            row.allow_download = ad
 
 
 def _lib_to_read(
@@ -128,6 +238,7 @@ def _lib_to_read(
     lib: Library,
     current_user_id: int,
     *,
+    current_user_obj: User | None = None,
     is_owner: bool = False,
     is_write: bool = False,
     dept_name: str | None | object = _LIB_READ_AUTO,
@@ -145,14 +256,21 @@ def _lib_to_read(
             owner = db.query(User).filter(User.id == lib.owner_id).first()
             if owner:
                 owner_username = owner.username or owner.email or f"用户{owner.id}"
+    root = resolve_root_library(db, lib)
     if member_count is None:
-        member_count = len(getattr(lib, "members", []) or [])
+        root_members = getattr(root, "members", []) or []
+        member_count = len(root_members)
     else:
         member_count = int(member_count)
+    depth = library_depth_from_root(db, lib)
+    pid = getattr(lib, "parent_id", None)
+    can_manage = False
+    if current_user_obj is not None:
+        can_manage = user_can_manage_library(db, lib, current_user_obj)
     # SQLite 等驱动可能把 BOOLEAN 读成 0/1，Pydantic 对 bool 校验较严时会触发响应校验 500
     _ad = getattr(lib, "allow_download", None)
     if _ad is None:
-        allow_download_out = True
+        allow_download_out = False
     else:
         allow_download_out = bool(_ad)
     return LibraryRead(
@@ -170,6 +288,10 @@ def _lib_to_read(
         member_count=member_count,
         is_owner=bool(is_owner),
         is_writeable=bool(is_write),
+        parent_id=int(pid) if pid is not None else None,
+        root_library_id=int(root.id),
+        depth=int(depth),
+        can_manage=bool(can_manage),
     )
 
 
@@ -180,9 +302,29 @@ def create_library(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    parent_lib: Library | None = None
+    if lib_in.parent_id is not None:
+        parent_lib = db.query(Library).filter(Library.id == lib_in.parent_id).first()
+        if not parent_lib or getattr(parent_lib, "deleted_at", None) is not None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上级资料库不存在")
+        _, _can_write_parent = has_library_access(
+            db, parent_lib.id, current_user, require_write=True
+        )
+        if not _can_write_parent:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权在上级资料库下创建子库")
+        pd = library_depth_from_root(db, parent_lib)
+        if pd >= 3:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="最多支持三级资料库，无法在第三级下再创建子库")
+        if lib_in.member_user_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="子库继承一级库的访问权限，创建时请勿指定成员",
+            )
+
     dept_id = lib_in.department_id
     dept = None
-    if dept_id is not None:
+    # 一级资料库：校验所属部门权限
+    if lib_in.parent_id is None and dept_id is not None:
         dept = db.query(Department).filter(Department.id == dept_id).first()
         if not dept:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门不存在")
@@ -190,26 +332,47 @@ def create_library(
         if dept_id not in acc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权在该部门创建资料库")
 
-    # visibility 校验
     visibility = lib_in.visibility or "private"
-    if visibility not in {"private", "department", "public"}:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="可见性取值非法")
-    # 部门可见库必须指定所属部门
-    if visibility == "department" and dept_id is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门可见库必须指定所属部门")
-    # 部门库不允许设置为 public，避免「部门库但全员可见」的混淆语义
-    if visibility == "public" and dept_id is not None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门库不支持设置为公开库")
+    allow_dl = False if lib_in.allow_download is None else bool(lib_in.allow_download)
+
+    # 创建子库：字段继承根库（可见性、部门、下载策略与一级库一致）
+    if lib_in.parent_id is not None and parent_lib is not None:
+        root_acl = resolve_root_library(db, parent_lib)
+        dept_id = getattr(root_acl, "department_id", None)
+        dept = None
+        if dept_id is not None:
+            dept = db.query(Department).filter(Department.id == dept_id).first()
+        visibility = str(getattr(root_acl, "visibility", "private") or "private")
+        allow_dl = bool(getattr(root_acl, "allow_download", False))
+
+    # visibility 校验（一级新建）
+    if lib_in.parent_id is None:
+        if visibility not in {"private", "department", "public"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="可见性取值非法")
+        if visibility == "department" and dept_id is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门可见库必须指定所属部门")
+        if visibility == "public" and dept_id is not None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门库不支持设置为公开库")
 
     display_name = _normalize_library_name(lib_in.name)
     if not display_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="资料库名称不能为空")
-    if _library_name_taken(
-        db,
-        display_name,
-        department_id=dept_id,
-        owner_id=current_user.id,
-    ):
+    if lib_in.parent_id is not None and parent_lib is not None:
+        taken = _library_name_taken(
+            db,
+            display_name,
+            department_id=None,
+            owner_id=None,
+            parent_id=parent_lib.id,
+        )
+    else:
+        taken = _library_name_taken(
+            db,
+            display_name,
+            department_id=dept_id,
+            owner_id=current_user.id,
+        )
+    if taken:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="与已有文件库重名，请重新输入其他名称",
@@ -221,7 +384,8 @@ def create_library(
         owner_id=current_user.id,
         department_id=dept_id,
         visibility=visibility,
-        allow_download=True if lib_in.allow_download is None else bool(lib_in.allow_download),
+        allow_download=allow_dl,
+        parent_id=parent_lib.id if lib_in.parent_id is not None and parent_lib else None,
     )
     db.add(lib)
 
@@ -230,8 +394,8 @@ def create_library(
     audit_username = (current_user.username or "")[:50]
     try:
         db.flush()
-        # 指定成员：创建初始成员（默认 role=read）
-        if lib_in.member_user_ids:
+        # 指定成员：仅一级资料库支持（成员挂在根库）
+        if lib_in.parent_id is None and lib_in.member_user_ids:
             # bool 是 int 子类，需排除，避免 JSON 异常数据导致误解析
             user_ids = {
                 int(uid)
@@ -258,7 +422,7 @@ def create_library(
             "create_library",
             "library",
             lib.id,
-            f"name={lib_in.name} dept={dept_id}",
+            f"name={lib_in.name} dept={dept_id} parent={lib_in.parent_id}",
             ip_address=get_client_ip(request),
         )
         db.commit()
@@ -274,6 +438,7 @@ def create_library(
         db,
         lib,
         current_user.id,
+        current_user_obj=current_user,
         is_owner=True,
         is_write=True,
         dept_name=dept_name,
@@ -311,6 +476,7 @@ def list_library_trash(
             db,
             l,
             current_user.id,
+            current_user_obj=current_user,
             is_owner=l.owner_id == current_user.id,
             is_write=True,
         )
@@ -332,29 +498,22 @@ def list_libraries(
     limit: int = Query(50, ge=1, le=200, description="每页数量"),
     offset: int = Query(0, ge=0, description="起始偏移量"),
     include_department: bool = Query(True, description="是否包含部门库"),
+    roots_only: bool = Query(True, description="仅列出根级（一级）资料库；首页「我的文件库」与部门根列表"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """列出当前用户可访问的资料库（拥有、分享、部门库）。支持简单 limit/offset 分页。"""
     q = libraries_accessible_base_query(db, current_user)
+    if roots_only:
+        q = q.filter(Library.parent_id.is_(None))
     if not include_department:
         q = q.filter(Library.department_id.is_(None))
     q = q.order_by(Library.created_at.desc())
     libs = q.offset(offset).limit(limit).all()
     if not libs:
         return []
-    lib_ids = [l.id for l in libs]
-    acc_dept_ids = _get_accessible_department_ids(db, current_user)
 
-    member_by_lib = {
-        m.library_id: m
-        for m in db.query(LibraryMember)
-        .filter(
-            LibraryMember.user_id == current_user.id,
-            LibraryMember.library_id.in_(lib_ids),
-        )
-        .all()
-    }
+    acc_dept_ids = _get_accessible_department_ids(db, current_user)
 
     owner_ids = {l.owner_id for l in libs if getattr(l, "owner_id", None)}
     owner_username_by_id: dict[int, str] = {}
@@ -368,31 +527,33 @@ def list_libraries(
         for d in db.query(Department).filter(Department.id.in_(dept_ids)).all():
             dept_name_by_id[d.id] = d.name
 
+    root_ids_needed = list({resolve_root_library(db, l).id for l in libs})
     cnt_rows = (
         db.query(LibraryMember.library_id, func.count(LibraryMember.id))
-        .filter(LibraryMember.library_id.in_(lib_ids))
+        .filter(LibraryMember.library_id.in_(root_ids_needed))
         .group_by(LibraryMember.library_id)
         .all()
     )
-    member_count_by_lib: dict[int, int] = {}
+    member_count_by_root: dict[int, int] = {}
     for row in cnt_rows:
         lid_raw, cnt_raw = row[0], row[1]
         if lid_raw is None:
             continue
-        member_count_by_lib[int(lid_raw)] = int(cnt_raw) if cnt_raw is not None else 0
+        member_count_by_root[int(lid_raw)] = int(cnt_raw) if cnt_raw is not None else 0
 
     result: list[LibraryRead] = []
     for l in libs:
-        m = member_by_lib.get(l.id)
-        is_write = write_access_for_listed_library(l, current_user, m, acc_dept_ids)
+        is_write = write_access_for_listed_library(db, l, current_user, acc_dept_ids)
         dept_name = dept_name_by_id.get(l.department_id) if l.department_id else None
         owner_username = owner_username_by_id.get(l.owner_id) if l.owner_id else None
-        mc = member_count_by_lib.get(l.id, 0)
+        rid = resolve_root_library(db, l).id
+        mc = member_count_by_root.get(rid, 0)
         result.append(
             _lib_to_read(
                 db,
                 l,
                 current_user.id,
+                current_user_obj=current_user,
                 is_owner=l.owner_id == current_user.id,
                 is_write=is_write,
                 dept_name=dept_name,
@@ -551,6 +712,305 @@ def list_shared_libraries_to_me(
     return result
 
 
+@router.get("/{library_id}/children", response_model=List[LibraryRead])
+def list_child_libraries(
+    library_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出指定资料库的直接子库（二级 / 三级）。"""
+    lib, _ = has_library_access(db, library_id, current_user)
+    children = (
+        db.query(Library)
+        .filter(Library.parent_id == lib.id, Library.deleted_at.is_(None))
+        .order_by(Library.updated_at.desc())
+        .all()
+    )
+    acc_dept_ids = _get_accessible_department_ids(db, current_user)
+    rid = resolve_root_library(db, lib).id
+    mc_rows = (
+        db.query(func.count(LibraryMember.id)).filter(LibraryMember.library_id == rid).scalar()
+        or 0
+    )
+    mc = int(mc_rows)
+    out: list[LibraryRead] = []
+    for ch in children:
+        iw = write_access_for_listed_library(db, ch, current_user, acc_dept_ids)
+        out.append(
+            _lib_to_read(
+                db,
+                ch,
+                current_user.id,
+                current_user_obj=current_user,
+                is_owner=ch.owner_id == current_user.id,
+                is_write=iw,
+                member_count=mc,
+            )
+        )
+    return out
+
+
+@router.get("/{library_id}/breadcrumb", response_model=List[LibraryBreadcrumbItem])
+def library_breadcrumb(
+    library_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """从一级根库到当前资料库的面包屑路径。"""
+    lib, _ = has_library_access(db, library_id, current_user)
+    chain_rev: list[LibraryBreadcrumbItem] = []
+    cur: Library | None = lib
+    hops = 0
+    while cur is not None and hops < 32:
+        hops += 1
+        chain_rev.append(LibraryBreadcrumbItem(id=int(cur.id), name=(cur.name or "") or ""))
+        if cur.parent_id is None:
+            break
+        cur = db.query(Library).filter(Library.id == cur.parent_id).first()
+    return list(reversed(chain_rev))
+
+
+def _breadcrumb_label_chain(db: Session, lib: Library, max_parts: int = 4) -> str:
+    parts: list[str] = []
+    cur: Library | None = lib
+    hops = 0
+    while cur is not None and hops < max_parts + 16:
+        hops += 1
+        parts.append((cur.name or "").strip() or f"#{cur.id}")
+        if cur.parent_id is None:
+            break
+        cur = db.query(Library).filter(Library.id == cur.parent_id).first()
+    chain = list(reversed(parts))
+    if len(chain) > max_parts:
+        chain = chain[-max_parts:]
+        return "… / " + " / ".join(chain)
+    return " / ".join(chain)
+
+
+def _library_move_scope_kind(lib: Library) -> str:
+    """资料库所在权限树的类型：仅可挂到同类根树下（部门库 / 个人库 / 公开库）。"""
+    if getattr(lib, "department_id", None) is not None:
+        return "department"
+    vis = str(getattr(lib, "visibility", "private") or "private").lower()
+    if vis == "public":
+        return "public"
+    return "personal"
+
+
+def _same_department_for_move(mov_root: Library, cand_root: Library) -> bool:
+    """部门资料库只能挂到同一 department_id 下的资料库树内（不允许跨部门）。"""
+    if _library_move_scope_kind(mov_root) != "department":
+        return True
+    a = getattr(mov_root, "department_id", None)
+    b = getattr(cand_root, "department_id", None)
+    if a is None or b is None:
+        return False
+    return int(a) == int(b)
+
+
+@router.get("/{library_id}/move-targets", response_model=List[LibraryMoveTarget])
+def list_library_move_targets(
+    library_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出可将当前资料库移动到的父级（含「一级根目录」选项）。用于前端选择。"""
+    mov, _ = has_library_access(db, library_id, current_user)
+    check_can_manage_library(mov, current_user, db)
+    desc = _collect_descendant_library_ids(db, mov.id)
+    span = _subtree_depth_span(db, mov)
+    mov_root = resolve_root_library(db, mov)
+    mov_kind = _library_move_scope_kind(mov_root)
+
+    targets: list[LibraryMoveTarget] = []
+
+    if mov.parent_id is not None:
+        if 1 + span <= 3:
+            taken_root = _library_name_taken(
+                db,
+                mov.name or "",
+                department_id=mov.department_id,
+                owner_id=mov.owner_id,
+                parent_id=None,
+                exclude_library_id=mov.id,
+            )
+            if not taken_root:
+                targets.append(
+                    LibraryMoveTarget(
+                        parent_id=None,
+                        label="一级资料库（根目录）",
+                    )
+                )
+
+    base_q = libraries_accessible_base_query(db, current_user).filter(
+        Library.deleted_at.is_(None)
+    )
+    for cand in base_q.all():
+        if cand.id in desc or cand.id == mov.id:
+            continue
+        cand_root = resolve_root_library(db, cand)
+        if _library_move_scope_kind(cand_root) != mov_kind:
+            continue
+        if not _same_department_for_move(mov_root, cand_root):
+            continue
+        try:
+            _, iw = has_library_access(db, cand.id, current_user, require_write=True)
+        except HTTPException:
+            continue
+        if not iw:
+            continue
+        dp = library_depth_from_root(db, cand)
+        if dp >= 3:
+            continue
+        if dp + 1 + span > 3:
+            continue
+        taken = _library_name_taken(
+            db,
+            mov.name or "",
+            department_id=None,
+            owner_id=None,
+            parent_id=cand.id,
+            exclude_library_id=mov.id,
+        )
+        if taken:
+            continue
+        label = _breadcrumb_label_chain(db, cand)
+        targets.append(LibraryMoveTarget(parent_id=int(cand.id), label=label))
+
+    targets.sort(key=lambda t: (t.parent_id is None, (t.label or "").lower()))
+    return targets
+
+
+@router.post("/{library_id}/move", response_model=LibraryRead)
+def move_library(
+    library_id: int,
+    body: MoveLibraryBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """移动资料库到新的父级，或设为一级资料库。"""
+    mov = db.query(Library).filter(Library.id == library_id).first()
+    if not mov or getattr(mov, "deleted_at", None) is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料库不存在")
+    _, _rw = has_library_access(db, library_id, current_user)
+    check_can_manage_library(mov, current_user, db)
+
+    old_root = resolve_root_library(db, mov)
+    desc = _collect_descendant_library_ids(db, mov.id)
+    span = _subtree_depth_span(db, mov)
+
+    new_parent_id = body.parent_id
+    if new_parent_id is not None:
+        if int(new_parent_id) == int(mov.id) or int(new_parent_id) in desc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="不能将资料库移动到自身或其下级之下",
+            )
+        plib = db.query(Library).filter(Library.id == int(new_parent_id)).first()
+        if not plib or getattr(plib, "deleted_at", None) is not None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标父资料库不存在")
+        has_library_access(db, plib.id, current_user, require_write=True)
+        mov_root_for_move = resolve_root_library(db, mov)
+        parent_root = resolve_root_library(db, plib)
+        if _library_move_scope_kind(mov_root_for_move) != _library_move_scope_kind(parent_root):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="只能将资料库移动到同类文件库之下：部门库→部门库，个人库→个人库，公开库→公开库",
+            )
+        if not _same_department_for_move(mov_root_for_move, parent_root):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="部门文件库仅可在本部门内调整位置，不能挂载到其他部门的资料库下",
+            )
+        prospective_acl_id = parent_root.id
+        d_new = library_depth_from_root(db, plib) + 1
+        taken = _library_name_taken(
+            db,
+            mov.name or "",
+            department_id=None,
+            owner_id=None,
+            parent_id=int(new_parent_id),
+            exclude_library_id=mov.id,
+        )
+    else:
+        plib = None
+        prospective_acl_id = int(mov.id)
+        d_new = 1
+        taken = _library_name_taken(
+            db,
+            mov.name or "",
+            department_id=mov.department_id,
+            owner_id=mov.owner_id,
+            parent_id=None,
+            exclude_library_id=mov.id,
+        )
+
+    if old_root.id != prospective_acl_id:
+        if mov.id != old_root.id and new_parent_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="不能将子资料库移入另一权限树下的资料库；可先移到一级根目录，再移入目标树，或直接移动整棵一级资料库",
+            )
+
+    if d_new + span > 3:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="移动后资料库层级将超过三级，请调整目标位置或先缩短子树",
+        )
+    if taken:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="目标位置下已存在同名资料库，请先改名",
+        )
+
+    old_acl_id = int(old_root.id)
+
+    mov.parent_id = int(new_parent_id) if new_parent_id is not None else None
+    db.flush()
+
+    new_acl = resolve_root_library(db, mov)
+    new_acl_id = int(new_acl.id)
+
+    _sync_subtree_fields_from_acl_root(db, mov)
+
+    if old_acl_id != new_acl_id:
+        if mov.id == old_root.id:
+            _merge_library_members(db, mov.id, new_acl_id, delete_from_source=True)
+        elif new_parent_id is None:
+            _merge_library_members(db, old_acl_id, mov.id, delete_from_source=False)
+
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "move_library",
+        "library",
+        mov.id,
+        f"parent={new_parent_id}",
+        ip_address=get_client_ip(request),
+    )
+    db.commit()
+    db.refresh(mov)
+
+    acc_dept_ids = _get_accessible_department_ids(db, current_user)
+    iw = write_access_for_listed_library(db, mov, current_user, acc_dept_ids)
+    rid = resolve_root_library(db, mov).id
+    mc_rows = (
+        db.query(func.count(LibraryMember.id)).filter(LibraryMember.library_id == rid).scalar()
+        or 0
+    )
+    return _lib_to_read(
+        db,
+        mov,
+        current_user.id,
+        current_user_obj=current_user,
+        is_owner=mov.owner_id == current_user.id,
+        is_write=iw,
+        member_count=int(mc_rows),
+    )
+
+
 @router.get("/{library_id}", response_model=LibraryRead)
 def get_library(
     library_id: int,
@@ -558,7 +1018,14 @@ def get_library(
     current_user: User = Depends(get_current_user),
 ):
     lib, is_write = has_library_access(db, library_id, current_user)
-    return _lib_to_read(db, lib, current_user.id, is_owner=lib.owner_id == current_user.id, is_write=is_write)
+    return _lib_to_read(
+        db,
+        lib,
+        current_user.id,
+        current_user_obj=current_user,
+        is_owner=lib.owner_id == current_user.id,
+        is_write=is_write,
+    )
 
 
 @router.patch("/{library_id}", response_model=LibraryRead)
@@ -571,17 +1038,35 @@ def update_library(
 ):
     lib, _ = has_library_access(db, library_id, current_user)
     check_can_manage_library(lib, current_user, db)
+    is_child = getattr(lib, "parent_id", None) is not None
+    if is_child and (lib_in.visibility is not None or lib_in.allow_download is not None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="子库的可见性与下载策略继承一级库，请在一级资料库中修改",
+        )
     if lib_in.name is not None:
         display_name = _normalize_library_name(lib_in.name)
         if not display_name:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="资料库名称不能为空")
-        if _library_name_taken(
-            db,
-            display_name,
-            department_id=lib.department_id,
-            owner_id=lib.owner_id,
-            exclude_library_id=lib.id,
-        ):
+        parent_id_for_name = getattr(lib, "parent_id", None)
+        if parent_id_for_name is not None:
+            taken = _library_name_taken(
+                db,
+                display_name,
+                department_id=None,
+                owner_id=None,
+                parent_id=parent_id_for_name,
+                exclude_library_id=lib.id,
+            )
+        else:
+            taken = _library_name_taken(
+                db,
+                display_name,
+                department_id=lib.department_id,
+                owner_id=lib.owner_id,
+                exclude_library_id=lib.id,
+            )
+        if taken:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="与已有文件库重名，请重新输入其他名称",
@@ -613,7 +1098,14 @@ def update_library(
         f"name={lib.name}",
         ip_address=get_client_ip(request),
     )
-    return _lib_to_read(db, lib, current_user.id, is_owner=lib.owner_id == current_user.id, is_write=True)
+    return _lib_to_read(
+        db,
+        lib,
+        current_user.id,
+        current_user_obj=current_user,
+        is_owner=lib.owner_id == current_user.id,
+        is_write=True,
+    )
 
 
 @router.get("/{library_id}/members")
@@ -622,14 +1114,15 @@ def list_library_members(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """列出资料库成员（仅拥有者或管理员可查看）"""
+    """列出资料库成员（仅拥有者或管理员可查看）。子库成员与一级根库相同。"""
     lib, _ = has_library_access(db, library_id, current_user)
-    if not (current_user.is_superuser or lib.owner_id == current_user.id):
+    root = resolve_root_library(db, lib)
+    if not (current_user.is_superuser or root.owner_id == current_user.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅资料库拥有者或管理员可查看成员")
     rows = (
         db.query(LibraryMember, User)
         .join(User, LibraryMember.user_id == User.id)
-        .filter(LibraryMember.library_id == library_id)
+        .filter(LibraryMember.library_id == root.id)
         .all()
     )
     return [
@@ -651,8 +1144,13 @@ def add_or_update_library_member(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """添加或更新资料库成员（仅拥有者或管理员）"""
+    """添加或更新资料库成员（仅拥有者或管理员），仅一级资料库可改"""
     lib, _ = has_library_access(db, library_id, current_user)
+    if getattr(lib, "parent_id", None) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="子库继承一级库权限，请在一级资料库中管理成员",
+        )
     if not (current_user.is_superuser or lib.owner_id == current_user.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅资料库拥有者或管理员可管理成员")
     if role not in {"read", "write"}:
@@ -703,8 +1201,13 @@ def remove_library_member(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """移除资料库成员（仅拥有者或管理员）"""
+    """移除资料库成员（仅拥有者或管理员），仅一级资料库可改"""
     lib, _ = has_library_access(db, library_id, current_user)
+    if getattr(lib, "parent_id", None) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="子库继承一级库权限，请在一级资料库中管理成员",
+        )
     if not (current_user.is_superuser or lib.owner_id == current_user.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅资料库拥有者或管理员可管理成员")
     member = (
@@ -773,13 +1276,24 @@ def restore_library(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="资料库未在回收站")
     check_can_manage_library(lib, current_user, db)
 
-    if _library_name_taken(
-        db,
-        lib.name,
-        department_id=lib.department_id,
-        owner_id=lib.owner_id,
-        exclude_library_id=lib.id,
-    ):
+    if getattr(lib, "parent_id", None) is not None:
+        restore_taken = _library_name_taken(
+            db,
+            lib.name or "",
+            department_id=None,
+            owner_id=None,
+            parent_id=lib.parent_id,
+            exclude_library_id=lib.id,
+        )
+    else:
+        restore_taken = _library_name_taken(
+            db,
+            lib.name or "",
+            department_id=lib.department_id,
+            owner_id=lib.owner_id,
+            exclude_library_id=lib.id,
+        )
+    if restore_taken:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="已存在同名资料库，请先重命名回收站中的资料库或删除/重命名现有资料库后再恢复",
@@ -798,7 +1312,14 @@ def restore_library(
         f"name={lib.name}",
         ip_address=get_client_ip(request),
     )
-    return _lib_to_read(db, lib, current_user.id, is_owner=lib.owner_id == current_user.id, is_write=True)
+    return _lib_to_read(
+        db,
+        lib,
+        current_user.id,
+        current_user_obj=current_user,
+        is_owner=lib.owner_id == current_user.id,
+        is_write=True,
+    )
 
 
 @router.delete("/trash/{library_id}", status_code=status.HTTP_204_NO_CONTENT)

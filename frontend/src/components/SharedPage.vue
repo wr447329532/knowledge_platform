@@ -147,6 +147,7 @@
 
 <script setup>
 import Icons from './Icons.vue'
+import { libraryTypeClass, libraryTypeText } from '../utils/libraryDisplay.js'
 
 defineProps({
   sharedSubTab: String,
@@ -161,20 +162,6 @@ const emit = defineEmits(['tab', 'open-shared-lib'])
 function formatDateStr(s) {
   if (!s) return ''
   return String(s).slice(0, 10)
-}
-
-function libraryTypeText(row) {
-  const vis = String(row?.visibility || '').toLowerCase()
-  if (vis === 'public') return '公开库'
-  if (vis === 'department' || row?.department_name) return '部门库'
-  return '个人库'
-}
-
-function libraryTypeClass(row) {
-  const vis = String(row?.visibility || '').toLowerCase()
-  if (vis === 'public') return 'type-public'
-  if (vis === 'department' || row?.department_name) return 'type-dept'
-  return 'type-personal'
 }
 </script>
 
@@ -318,16 +305,6 @@ function libraryTypeClass(row) {
 .shared-permission { display: inline-block; padding: 2px 8px; font-size: 12px; font-weight: 500; border-radius: 6px; }
 .shared-permission.perm-read { background: #f3f4f6; color: #4b5563; }
 .shared-permission.perm-download { background: #dbeafe; color: #1d4ed8; }
-.shared-library-type {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 500;
-}
-.shared-library-type.type-dept { background: #ede9fe; color: #6d28d9; }
-.shared-library-type.type-personal { background: #e0f2fe; color: #0369a1; }
-.shared-library-type.type-public { background: #dcfce7; color: #166534; }
 .shared-link-btn {
   padding: 4px 8px;
   border: none;

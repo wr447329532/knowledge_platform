@@ -441,6 +441,34 @@ async def upload_file(
     if not relative_path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="路径不能为空")
 
+    # 安全兜底：禁止上传可执行/脚本类文件（前端也会拦截，但后端必须再校验一次，避免绕过）
+    blocked_ext = {
+        ".exe",
+        ".bat",
+        ".cmd",
+        ".com",
+        ".msi",
+        ".dll",
+        ".scr",
+        ".ps1",
+        ".vbs",
+        ".js",
+        ".jar",
+        ".sh",
+    }
+    ext = ""
+    try:
+        filename = getattr(file, "filename", None) or ""
+        if isinstance(filename, str) and "." in filename:
+            ext = "." + filename.rsplit(".", 1)[-1].lower()
+    except Exception:
+        ext = ""
+    if ext in blocked_ext:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"不支持上传此文件类型：{ext}",
+        )
+
     # 查找或创建 FileEntry
     # 说明：
     # - 若同路径文件尚未删除，则在原记录上追加新版本；
@@ -627,7 +655,7 @@ def list_files(
             .all()
         )
         latest_size = {r[0]: r[1] for r in rows}
-    bulk_can_dl = can_download_in_library_list_context(lib, current_user)
+    bulk_can_dl = can_download_in_library_list_context(db, lib, current_user)
     result = []
     for e in entries:
         can_dl = bulk_can_dl if not e.is_dir else None
@@ -1443,7 +1471,7 @@ def search_files(
             .all()
         )
         latest_size = {r[0]: r[1] for r in rows}
-    bulk_can_dl = can_download_in_library_list_context(lib, current_user)
+    bulk_can_dl = can_download_in_library_list_context(db, lib, current_user)
     result = []
     for e in entries:
         can_dl = bulk_can_dl if not e.is_dir else None
@@ -1524,7 +1552,7 @@ def search_files_global(
     lib_rows = db.query(Library).filter(Library.id.in_(unique_entry_lib_ids)).all()
     lib_by_id = {L.id: L for L in lib_rows}
     can_dl_by_lib: dict[int, bool] = {
-        lid: can_download_in_library_list_context(lib_by_id[lid], current_user)
+        lid: can_download_in_library_list_context(db, lib_by_id[lid], current_user)
         for lid in unique_entry_lib_ids
         if lid in lib_by_id
     }

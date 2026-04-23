@@ -7,7 +7,6 @@
       :me="me"
       :active-tab="tab"
       :active-dept-id="activeDeptId"
-      :storage-stats="storageStats"
       :trash-mode="trashMode"
       @nav="onSidebarNav"
       @dept-select="handleDeptSelect"
@@ -31,8 +30,9 @@
         :me="me"
         @search="doSearchNow"
         @new-lib="openNewLib"
+        @new-sub-lib="openNewLibSub"
         @upload="openUploadModal"
-        @clear-lib="currentLib = null; pathPrefix = ''"
+        @clear-lib="onTopbarClearLib"
         @set-path="p => pathPrefix = p"
         @toggle-notify="toggleNotifyPanel"
         @go-account="goAccount"
@@ -41,207 +41,299 @@
         @logout="logout"
       />
 
-      <!-- Toast 提示 -->
-      <Transition name="toast">
-        <div v-if="successMessage" class="success-toast">{{ successMessage }}</div>
-      </Transition>
-      <Transition name="toast">
-        <div v-if="errorMessage" class="error-toast">{{ errorMessage }}</div>
-      </Transition>
+      <div class="app-main-scroll">
+        <!-- Toast 提示 -->
+        <Transition name="toast">
+          <div v-if="successMessage" class="success-toast">{{ successMessage }}</div>
+        </Transition>
+        <Transition name="toast">
+          <div v-if="errorMessage" class="error-toast">{{ errorMessage }}</div>
+        </Transition>
 
-      <!-- 部门视图：选中部门且未在顶部搜索时显示；有搜索关键词时改显 LibraryPage 以展示全局搜文件/库结果 -->
-      <DepartmentFiles
-        v-if="showDepartmentFilesPanel"
-        :key="deptFilesReloadKey"
-        :me="me"
-        :active-dept-id="activeDeptId"
-        :reload-key="deptFilesReloadKey"
-        @back="clearDeptView"
-        @open-lib="openDeptLib"
-        @edit-lib="openEditLib"
-        @del-lib="delLib"
-      />
+        <!-- 部门视图：选中部门且未在顶部搜索时显示；有搜索关键词时改显 LibraryPage 以展示全局搜文件/库结果 -->
+        <DepartmentFiles
+          v-if="showDepartmentFilesPanel"
+          :key="deptFilesReloadKey"
+          :me="me"
+          :active-dept-id="activeDeptId"
+          :reload-key="deptFilesReloadKey"
+          :file-sort-order="fileSortOrder"
+          :file-view-mode="fileViewMode"
+          @back="clearDeptView"
+          @open-lib="openDeptLib"
+          @edit-lib="openEditLib"
+          @del-lib="delLib"
+          @move-lib="openMoveLib"
+        />
 
-      <!-- 我的文件库：未选中部门时显示 -->
-      <LibraryPage
-        v-else-if="tab === 'lib'"
-        :active-dept-id="null"
-        :active-dept-info="null"
-        :active-dept-libraries="[]"
-        :active-dept-loading="false"
-        :active-dept-err="''"
-        :current-lib="currentLib"
-        :libraries="sortedLibraries"
-        :file-view-mode="fileViewMode"
-        :is-dragging="isDragging"
-        :files-loading="filesLoading"
-        :files="files"
-        :search-results="searchResults"
-        :sorted-search-results="sortedSearchResults"
-        :sorted-files="sortedFiles"
-        :search-keyword="searchKeyword"
-        :search-applied="searchApplied"
-        :root-search-libraries="rootSearchLibraries"
-        :root-search-files="rootSearchFiles"
-        :path-prefix="pathPrefix"
-        :open-action-menu-id="openActionMenuId"
-        :format-date="formatDate"
-        :format-size="formatSize"
-        :open-dept-lib="openDeptLib"
-        :select-lib="selectLib"
-        :open-edit-lib="openEditLib"
-        :del-lib="delLib"
-        :on-file-drop="onFileDrop"
-        :go-to-path="goToPath"
-        :on-file-click="onFileClick"
-        :open-global-search-file-result="openGlobalSearchFileResult"
-        :open-global-search-file-preview="openGlobalSearchFilePreview"
-        :toggle-action-menu="toggleActionMenu"
-        :download="download"
-        :open-share="openShare"
-        :open-rename="openRename"
-        :go-up="goUp"
-        :open-versions="openVersions"
-        :del-file="delFile"
-        :enter-dir="enterDir"
-        :clear-search="clearSearch"
-        :close-action-menu="closeActionMenu"
-        :on-drag-over="onDragOver"
-        :on-drag-leave="onDragLeave"
-        :libraries-limit="librariesLimit"
-        :libraries-offset="librariesOffset"
-        :libraries-has-more="librariesHasMore"
-        :files-limit="filesLimit"
-        :files-offset="filesOffset"
-        :files-has-more="filesHasMore"
-        @prev-page="goPrevLibrariesPage"
-        @next-page="goNextLibrariesPage"
-        @prev-files-page="goPrevFilesPage"
-        @next-files-page="goNextFilesPage"
-      />
+        <!-- 我的文件库：未选中部门时显示 -->
+        <LibraryPage
+          v-else-if="tab === 'lib'"
+          :active-dept-id="null"
+          :active-dept-info="null"
+          :active-dept-libraries="[]"
+          :active-dept-loading="false"
+          :active-dept-err="''"
+          :current-lib="currentLib"
+          :libraries="sortedLibraries"
+          :file-view-mode="fileViewMode"
+          :is-dragging="isDragging"
+          :files-loading="filesLoading"
+          :files="files"
+          :search-results="searchResults"
+          :sorted-search-results="sortedSearchResults"
+          :sorted-files="sortedFiles"
+          :search-keyword="searchKeyword"
+          :search-applied="searchApplied"
+          :root-search-libraries="rootSearchLibraries"
+          :root-search-files="rootSearchFiles"
+          :path-prefix="pathPrefix"
+          :child-libraries="libChildrenLibraries"
+          :open-action-menu-id="openActionMenuId"
+          :format-date="formatDate"
+          :format-size="formatSize"
+          :open-dept-lib="openDeptLib"
+          :select-lib="selectLib"
+          :open-edit-lib="openEditLib"
+          :move-lib="openMoveLib"
+          :del-lib="delLib"
+          :on-file-drop="onFileDrop"
+          :go-to-path="goToPath"
+          :on-file-click="onFileClick"
+          :open-global-search-file-result="openGlobalSearchFileResult"
+          :open-global-search-file-preview="openGlobalSearchFilePreview"
+          :toggle-action-menu="toggleActionMenu"
+          :download="download"
+          :open-share="openShare"
+          :open-rename="openRename"
+          :go-up="goUp"
+          :open-versions="openVersions"
+          :del-file="delFile"
+          :enter-dir="enterDir"
+          :clear-search="clearSearch"
+          :close-action-menu="closeActionMenu"
+          :on-drag-over="onDragOver"
+          :on-drag-leave="onDragLeave"
+          :libraries-limit="librariesLimit"
+          :libraries-offset="librariesOffset"
+          :libraries-has-more="librariesHasMore"
+          :files-limit="filesLimit"
+          :files-offset="filesOffset"
+          :files-has-more="filesHasMore"
+          @prev-page="goPrevLibrariesPage"
+          @next-page="goNextLibrariesPage"
+          @prev-files-page="goPrevFilesPage"
+          @next-files-page="goNextFilesPage"
+        />
 
-      <!-- 共享文件 -->
-      <SharedPage
-        v-if="tab === 'shared'"
-        :shared-sub-tab="sharedSubTab"
-        :my-shares-list="filteredMySharesList"
-        :my-shares-loading="mySharesLoading"
-        :received-shares-list="filteredReceivedSharesList"
-        :received-shares-loading="receivedSharesLoading"
-        @tab="onSharedTab"
-        @open-shared-lib="openSharedLib"
-      />
+        <!-- 共享文件 -->
+        <SharedPage
+          v-if="tab === 'shared'"
+          :shared-sub-tab="sharedSubTab"
+          :my-shares-list="filteredMySharesList"
+          :my-shares-loading="mySharesLoading"
+          :received-shares-list="filteredReceivedSharesList"
+          :received-shares-loading="receivedSharesLoading"
+          @tab="onSharedTab"
+          @open-shared-lib="openSharedLib"
+        />
 
 
-      <!-- 回收站 -->
-      <TrashPage
-        v-if="tab === 'trash'"
-        :mode="trashMode"
-        :trash-items="filteredTrashItems"
-        :trash-loading="trashLoading"
-        :dept-trash-list="filteredDeptTrashList"
-        :dept-trash-loading="deptTrashLoading"
-        :libraries="libraries"
-        :format-date="formatDate"
-        @restore-item="restoreTrashItem"
-        @perm-delete-item="permDeleteTrashItem"
-        @restore-dept="restoreDeptFile"
-        @perm-delete-dept="permDeleteDeptFile"
-      />
+        <!-- 回收站 -->
+        <TrashPage
+          v-if="tab === 'trash'"
+          :mode="trashMode"
+          :trash-items="filteredTrashItems"
+          :trash-loading="trashLoading"
+          :dept-trash-list="filteredDeptTrashList"
+          :dept-trash-loading="deptTrashLoading"
+          :libraries="libraries"
+          :format-date="formatDate"
+          @restore-item="restoreTrashItem"
+          @perm-delete-item="permDeleteTrashItem"
+          @restore-dept="restoreDeptFile"
+          @perm-delete-dept="permDeleteDeptFile"
+        />
 
-      <NotificationPanel
-        :is-open="showNotifyPanel"
-        :notifications="notifications"
-        :unread-count="unreadNotifyCount"
-        @close="showNotifyPanel = false"
-        @mark-all="markAllNotifications"
-        @item-click="onNotificationClick"
-      />
+        <NotificationPanel
+          :is-open="showNotifyPanel"
+          :notifications="notifications"
+          :unread-count="unreadNotifyCount"
+          @close="showNotifyPanel = false"
+          @mark-all="markAllNotifications"
+          @item-click="onNotificationClick"
+        />
+
+      </div><!-- /app-main-scroll -->
 
     </div><!-- /app-main -->
 
     <!-- ============ 弹窗区 ============ -->
 
-    <!-- 新建文件库 -->
-    <div v-if="showNewLib" class="modal">
-      <div class="card">
-        <h3>新建文件库</h3>
-        <div class="form-group">
-          <label>名称 <span class="label-opt">必填</span></label>
-          <input v-model="newLibName" placeholder="文件库名称" />
+    <!-- 新建文件库 / 子资料库（与上传文件弹窗同一套样式） -->
+    <div v-if="showNewLib" class="upload-modal-overlay" @click.self="closeNewLibModal">
+      <div class="upload-modal-card new-lib-modal-card">
+        <div class="upload-modal-header">
+          <div>
+            <h2 class="upload-modal-title">{{ newLibParentId ? '新建子资料库' : '新建文件库' }}</h2>
+            <p v-if="newLibParentId" class="upload-modal-subtitle">
+              子资料库继承一级资料库的访问成员与导出策略，仅可填写名称与描述。
+            </p>
+          </div>
+          <button
+            type="button"
+            class="upload-modal-close"
+            :disabled="newLibCreating"
+            aria-label="关闭"
+            @click="closeNewLibModal"
+          >
+            <Icons name="x" class="upload-modal-close-icon" />
+          </button>
         </div>
-        <div class="form-group">
-          <label>描述 <span class="label-opt">选填</span></label>
-          <input v-model="newLibDesc" placeholder="简要描述" />
-        </div>
-        <div class="form-group">
-          <label>所属部门</label>
-          <select v-model="newLibDepartmentId" class="admin-select" style="width:100%;">
-            <option :value="null">无（个人库）</option>
-            <option v-for="opt in deptOptionsForUser" :key="opt.id" :value="opt.id">
-              {{ '　'.repeat(opt.level) + opt.name }}
-            </option>
-          </select>
-          <p class="form-hint">选择部门则创建为部门共享库，部门成员均可访问</p>
-        </div>
-        <div class="form-group">
-          <label>访问权限</label>
-          <select v-model="newLibMode" class="admin-select" style="width:100%;" @change="onNewLibModeChange">
-            <option v-if="!newLibDepartmentId" value="self">仅自己</option>
-            <option v-if="!newLibDepartmentId" value="self_plus">仅自己 + 指定成员</option>
-            <option v-if="!newLibDepartmentId" value="members_only">仅指定成员</option>
-            <option v-if="!newLibDepartmentId" value="public">公开（所有用户）</option>
-            <option v-if="newLibDepartmentId" value="dept">所属部门</option>
-            <option v-if="newLibDepartmentId" value="dept_plus">所属部门 + 指定成员</option>
-          </select>
-          <p class="form-hint">个人库支持「仅自己 / 指定成员 / 公开」；选择所属部门后，将作为部门库对部门成员开放。</p>
-        </div>
-        <div class="form-group" v-if="['self_plus', 'dept_plus', 'members_only'].includes(newLibMode)">
-          <label>指定成员</label>
-          <div class="member-selector">
-            <p v-if="newLibMembersLoading" class="empty-hint">成员列表加载中...</p>
-            <template v-else>
-              <p v-if="!newLibUsers.length" class="empty-hint">暂未获取到用户列表，可能是当前账号无权限查看全部用户，请联系管理员协助配置。</p>
-              <div v-else class="member-multi-dropdown">
-                <div class="member-select-trigger" @click="showNewLibMemberPanel = !showNewLibMemberPanel">
-                  <span v-if="!newLibMembers.length">请选择成员</span>
-                  <span v-else>已选择 {{ newLibMembers.length }} 位成员</span>
-                </div>
-                <div v-if="showNewLibMemberPanel" class="member-panel">
-                  <input v-model="newLibMemberKeyword" placeholder="搜索姓名或邮箱..." class="member-search" />
-                  <div class="member-list">
-                    <div v-for="u in filteredNewLibUsers" :key="u.id" class="member-option">
-                      <input type="checkbox" :value="u.id" v-model="newLibMembers" />
-                      <span class="member-name">{{ u.username || u.email }}</span>
-                      <span class="member-email" v-if="u.email">（{{ u.email }}）</span>
-                    </div>
-                  </div>
-                  <div class="member-panel-actions">
-                    <button type="button" class="btn-small primary" @click="showNewLibMemberPanel = false">确定</button>
-                  </div>
+        <div
+          class="upload-modal-body new-lib-modal-body"
+          :class="{ 'new-lib-body-picker-open': newLibDeptPickerOpen || newLibModePickerOpen }"
+        >
+          <div class="form-group">
+            <label>名称 <span class="label-opt">必填</span></label>
+            <input v-model="newLibName" placeholder="文件库名称" />
+          </div>
+          <div class="form-group">
+            <label>描述 <span class="label-opt">选填</span></label>
+            <input v-model="newLibDesc" placeholder="简要描述" />
+          </div>
+          <div v-if="!newLibParentId" class="form-group">
+            <label for="new-lib-dept-trigger">所属部门</label>
+            <div class="move-target-picker">
+              <button
+                id="new-lib-dept-trigger"
+                type="button"
+                class="move-target-picker-trigger"
+                :disabled="newLibCreating"
+                :aria-expanded="newLibDeptPickerOpen"
+                aria-haspopup="listbox"
+                @click.stop="
+                  newLibModePickerOpen = false;
+                  newLibDeptPickerOpen = !newLibDeptPickerOpen
+                "
+              >
+                <span class="move-target-picker-value">{{ selectedNewLibDeptLabel }}</span>
+                <span class="move-target-picker-chevron" aria-hidden="true">▾</span>
+              </button>
+              <div
+                v-if="newLibDeptPickerOpen"
+                class="move-target-picker-panel"
+                role="listbox"
+                @click.stop
+              >
+                <button
+                  v-for="opt in newLibDeptOptions"
+                  :key="'nd-' + (opt.value == null ? 'x' : opt.value)"
+                  type="button"
+                  role="option"
+                  class="move-target-picker-option"
+                  :class="{ selected: newLibDeptOptionSelected(opt) }"
+                  @click="selectNewLibDept(opt)"
+                >
+                  {{ opt.label }}
+                </button>
+              </div>
+            </div>
+            <p class="form-hint">选择部门则创建为部门共享库，部门成员均可访问</p>
+          </div>
+          <template v-if="!newLibParentId">
+            <div class="form-group">
+              <label for="new-lib-mode-trigger">访问权限</label>
+              <div class="move-target-picker">
+                <button
+                  id="new-lib-mode-trigger"
+                  type="button"
+                  class="move-target-picker-trigger"
+                  :disabled="newLibCreating"
+                  :aria-expanded="newLibModePickerOpen"
+                  aria-haspopup="listbox"
+                  @click.stop="
+                    newLibDeptPickerOpen = false;
+                    newLibModePickerOpen = !newLibModePickerOpen
+                  "
+                >
+                  <span class="move-target-picker-value">{{ selectedNewLibModeLabel }}</span>
+                  <span class="move-target-picker-chevron" aria-hidden="true">▾</span>
+                </button>
+                <div
+                  v-if="newLibModePickerOpen"
+                  class="move-target-picker-panel"
+                  role="listbox"
+                  @click.stop
+                >
+                  <button
+                    v-for="opt in newLibModeOptions"
+                    :key="'nm-' + opt.value"
+                    type="button"
+                    role="option"
+                    class="move-target-picker-option"
+                    :class="{ selected: newLibModeOptionSelected(opt) }"
+                    @click="selectNewLibMode(opt)"
+                  >
+                    {{ opt.label }}
+                  </button>
                 </div>
               </div>
-              <p v-if="newLibMembers.length" class="form-hint">已选择 {{ newLibMembers.length }} 位成员。</p>
-            </template>
-          </div>
+              <p class="form-hint">个人库支持「仅自己 / 指定成员 / 公开」；选择所属部门后，将作为部门库对部门成员开放。</p>
+            </div>
+            <div class="form-group" v-if="['self_plus', 'dept_plus', 'members_only'].includes(newLibMode)">
+              <label>指定成员</label>
+              <div class="member-selector">
+                <p v-if="newLibMembersLoading" class="empty-hint">成员列表加载中...</p>
+                <template v-else>
+                  <p v-if="!newLibUsers.length" class="empty-hint">暂未获取到用户列表，可能是当前账号无权限查看全部用户，请联系管理员协助配置。</p>
+                  <div v-else class="member-multi-dropdown">
+                    <div class="member-select-trigger" @click="showNewLibMemberPanel = !showNewLibMemberPanel">
+                      <span v-if="!newLibMembers.length">请选择成员</span>
+                      <span v-else>已选择 {{ newLibMembers.length }} 位成员</span>
+                    </div>
+                    <div v-if="showNewLibMemberPanel" class="member-panel">
+                      <input v-model="newLibMemberKeyword" placeholder="搜索姓名或邮箱..." class="member-search" />
+                      <div class="member-list">
+                        <div v-for="u in filteredNewLibUsers" :key="u.id" class="member-option">
+                          <input type="checkbox" :value="u.id" v-model="newLibMembers" />
+                          <span class="member-name">{{ u.username || u.email }}</span>
+                          <span class="member-email" v-if="u.email">（{{ u.email }}）</span>
+                        </div>
+                      </div>
+                      <div class="member-panel-actions">
+                        <button type="button" class="btn-small primary" @click="showNewLibMemberPanel = false">确定</button>
+                      </div>
+                    </div>
+                  </div>
+                  <p v-if="newLibMembers.length" class="form-hint">已选择 {{ newLibMembers.length }} 位成员。</p>
+                </template>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>导出权限</label>
+              <div class="toggle-row">
+                <span class="toggle-label">允许导出原文件（下载）</span>
+                <label class="toggle">
+                  <input type="checkbox" v-model="newLibAllowDownload" />
+                  <span class="toggle-track" aria-hidden="true"></span>
+                </label>
+              </div>
+              <p class="form-hint">关闭后，成员仅可受控预览（带水印），不可下载原文件。</p>
+            </div>
+          </template>
+          <p v-if="err" class="text-danger new-lib-modal-err">{{ err }}</p>
         </div>
-        <div class="form-group">
-          <label>导出权限</label>
-          <div class="toggle-row">
-            <span class="toggle-label">允许导出原文件（下载）</span>
-            <label class="toggle">
-              <input type="checkbox" v-model="newLibAllowDownload" />
-              <span class="toggle-track" aria-hidden="true"></span>
-            </label>
+        <div class="upload-modal-footer">
+          <div class="upload-modal-footer-left" />
+          <div class="upload-modal-footer-actions">
+            <button type="button" class="upload-btn-secondary" :disabled="newLibCreating" @click="closeNewLibModal">
+              取消
+            </button>
+            <button type="button" class="upload-btn-primary" :disabled="newLibCreating" @click="createLib">
+              {{ newLibCreating ? '创建中…' : '确定' }}
+            </button>
           </div>
-          <p class="form-hint">关闭后，成员仅可受控预览（带水印），不可下载原文件。</p>
-        </div>
-        <p v-if="err" class="text-danger">{{ err }}</p>
-        <div class="modal-actions">
-          <button type="button" class="primary" :disabled="newLibCreating" @click="createLib">
-            {{ newLibCreating ? '创建中…' : '确定' }}
-          </button>
-          <button type="button" :disabled="newLibCreating" @click="showNewLib = false; newLibDepartmentId = null">取消</button>
         </div>
       </div>
     </div>
@@ -261,8 +353,68 @@
       </div>
     </div>
 
+    <!-- 移动资料库 -->
+    <div v-if="showMoveLib" class="modal">
+      <div class="card move-lib-modal-card">
+        <h3>移动资料库</h3>
+        <p class="form-hint" style="margin-top:8px;">
+          将「{{ libToMove?.name }}」移动到目标位置。个人库与公开库按类型互挂；部门库仅限同一部门内调整，不可挂到其他部门的资料库下；也可先作为一级资料库。子库跨权限树时请先移到一级根目录。
+        </p>
+        <div v-if="moveTargetsLoading" class="empty-hint" style="margin-top:12px;">加载可选位置…</div>
+        <template v-else-if="moveTargets.length">
+          <div class="form-group" style="margin-top:12px;">
+            <label for="move-target-picker-trigger">目标位置</label>
+            <div class="move-target-picker">
+              <button
+                id="move-target-picker-trigger"
+                type="button"
+                class="move-target-picker-trigger"
+                :disabled="moveTargetsLoading || moveLibSubmitting"
+                :aria-expanded="moveTargetPickerOpen"
+                aria-haspopup="listbox"
+                @click.stop="moveTargetPickerOpen = !moveTargetPickerOpen"
+              >
+                <span class="move-target-picker-value">{{ selectedMoveTargetLabel }}</span>
+                <span class="move-target-picker-chevron" aria-hidden="true">▾</span>
+              </button>
+              <div
+                v-if="moveTargetPickerOpen"
+                class="move-target-picker-panel"
+                role="listbox"
+                @click.stop
+              >
+                <button
+                  v-for="t in moveTargets"
+                  :key="moveTargetOptionKey(t)"
+                  type="button"
+                  role="option"
+                  class="move-target-picker-option"
+                  :class="{ selected: moveTargetOptionValue(t) === moveTargetKey }"
+                  @click="selectMoveTargetOption(t)"
+                >
+                  {{ t.label }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
+        <p v-else class="empty-hint" style="margin-top:12px;">当前没有可移动的目标位置（名称冲突、层级超限或无写权限）。</p>
+        <p v-if="err" class="text-danger">{{ err }}</p>
+        <div class="modal-actions" style="margin-top:16px;">
+          <button
+            class="primary"
+            :disabled="moveLibSubmitting || !moveTargets.length || moveTargetsLoading"
+            @click="confirmMoveLib"
+          >
+            {{ moveLibSubmitting ? '移动中…' : '确定' }}
+          </button>
+          <button :disabled="moveLibSubmitting" @click="closeMoveLibModal">取消</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 上传文件（新 UI：拖拽、多文件、进度） -->
-    <div v-if="showUpload" class="upload-modal-overlay" @click.self="closeUploadModal">
+    <div v-if="showUpload" class="upload-modal-overlay" @click.self="abandonUploadModal">
       <div class="upload-modal-card">
         <div class="upload-modal-header">
           <div>
@@ -276,10 +428,13 @@
               <h2 class="upload-modal-title">上传文件</h2>
               <p v-if="uploadFiles.length" class="upload-modal-subtitle">
                 {{ uploadCompletedCount }} / {{ uploadFiles.length }} 个文件已上传
+                <template v-if="uploadPendingNotQueuedCount > 0">
+                  · 另有 {{ uploadPendingNotQueuedCount }} 个待上传（请先点「开始上传」）
+                </template>
               </p>
             </template>
           </div>
-          <button type="button" class="upload-modal-close" @click="closeUploadModal" aria-label="关闭">
+          <button type="button" class="upload-modal-close" @click="abandonUploadModal" aria-label="关闭">
             <Icons name="x" class="upload-modal-close-icon" />
           </button>
         </div>
@@ -346,7 +501,8 @@
                   </div>
                   <div class="upload-file-item-meta">
                     <span class="upload-file-item-size">{{ formatUploadSize(uf.file.size) }}</span>
-                    <span v-if="uf.status === 'uploading'" class="upload-file-item-progress">{{ uf.progress }}%</span>
+                    <span v-if="uf.status === 'pending'" class="upload-file-item-status">等待上传</span>
+                    <span v-else-if="uf.status === 'uploading'" class="upload-file-item-progress">{{ uf.progress }}%</span>
                     <span v-else-if="uf.status === 'success'" class="upload-file-item-status success">上传成功</span>
                     <span v-else-if="uf.status === 'error'" class="upload-file-item-status error">{{ uf.error || '上传失败' }}</span>
                   </div>
@@ -415,7 +571,13 @@
               </template>
             </div>
             <div class="upload-modal-footer-actions">
-              <button type="button" class="upload-btn-secondary" @click="closeUploadModal">取消</button>
+              <button type="button" class="upload-btn-secondary" @click="abandonUploadModal">取消</button>
+              <button
+                type="button"
+                class="upload-btn-primary"
+                :disabled="uploadPendingNotQueuedCount === 0 || uploadFiles.some(f => f.status === 'uploading')"
+                @click="startPendingDirectUploads"
+              >开始上传</button>
               <button type="button" class="upload-btn-primary" :disabled="uploadCompletedCount === 0" @click="finishUploadModal">完成</button>
             </div>
           </template>
@@ -689,7 +851,10 @@
         <div style="margin-bottom: 8px;">
           <input v-model="editLibDesc" placeholder="描述（选填）" style="width:100%;" />
         </div>
-        <div class="form-group" style="margin-bottom: 8px;">
+        <p v-if="editLibDepth > 1" class="form-hint" style="margin-bottom:10px;">
+          子资料库的访问成员与导出策略继承一级资料库，请在一级资料库中修改；此处仅可修改名称与描述。
+        </p>
+        <div v-if="editLibDepth <= 1" class="form-group" style="margin-bottom: 8px;">
           <label>访问权限</label>
           <select v-model="editLibMode" class="admin-select" style="width:100%;" @change="onEditLibModeChange">
             <option v-if="!editLibDepartmentId" value="self">仅自己</option>
@@ -701,7 +866,7 @@
           </select>
           <p class="form-hint">个人库可控制是否公开或仅指定成员；部门库始终对所在部门成员开放，可额外指定跨部门成员。</p>
         </div>
-        <div class="form-group" v-if="['self_plus', 'dept_plus', 'members_only'].includes(editLibMode)">
+        <div class="form-group" v-if="editLibDepth <= 1 && ['self_plus', 'dept_plus', 'members_only'].includes(editLibMode)">
           <label>指定成员</label>
           <div class="member-selector">
             <p v-if="editLibMembersLoading" class="empty-hint">成员列表加载中...</p>
@@ -730,7 +895,7 @@
             </template>
           </div>
         </div>
-        <div class="form-group" style="margin-bottom: 8px;">
+        <div v-if="editLibDepth <= 1" class="form-group" style="margin-bottom: 8px;">
           <label>导出权限</label>
           <div class="toggle-row">
             <span class="toggle-label">允许导出原文件（下载）</span>
@@ -786,6 +951,10 @@ const filesHasMore = ref(false)
 /** 防止多次 loadLibraries 乱序返回把列表覆盖成空或过期的页 */
 let librariesLoadSeq = 0
 const currentLib = ref(null)
+/** 创建子库时的父库 id；一级新建时为 null */
+const newLibParentId = ref(null)
+/** 当前打开库的直接子库（用于库内列表上方展示） */
+const libChildrenLibraries = ref([])
 const pathPrefix = ref('')
 const fileSortOrder = ref('modified')
 const fileViewMode = ref('list')
@@ -799,7 +968,7 @@ const newLibDesc = ref('')
 const newLibDepartmentId = ref(null)
 const newLibVisibility = ref('private')
 const newLibMode = ref('self')
-const newLibAllowDownload = ref(true)
+const newLibAllowDownload = ref(false)
 const newLibUsers = ref([])
 const newLibMembers = ref([])
 const newLibMembersLoading = ref(false)
@@ -811,6 +980,15 @@ const uploadPath = ref('')
 const selectedFile = ref(null)
 const showDeleteLibConfirm = ref(false)
 const libToDelete = ref(null)
+const showMoveLib = ref(false)
+const libToMove = ref(null)
+const moveTargets = ref([])
+const moveTargetKey = ref('')
+const moveTargetsLoading = ref(false)
+const moveLibSubmitting = ref(false)
+const moveTargetPickerOpen = ref(false)
+const newLibDeptPickerOpen = ref(false)
+const newLibModePickerOpen = ref(false)
 const uploadFiles = ref([])
 const uploadDropzoneActive = ref(false)
 const uploadModalInputRef = ref(null)
@@ -848,6 +1026,8 @@ const oldPassword = ref('')
 const newPassword = ref('')
 const newPassword2 = ref('')
 const showEditLib = ref(false)
+/** 1=一级库；>1 为子库，编辑时不展示成员与导出等继承项 */
+const editLibDepth = ref(1)
 const editLibId = ref(null)
 const editLibName = ref('')
 const editLibDesc = ref('')
@@ -869,7 +1049,6 @@ const searchResults = ref([])
 const searchApplied = ref(false)
 const rootSearchLibraries = ref([])
 const rootSearchFiles = ref([])
-const storageStats = ref(null)
 const showRename = ref(false)
 const renameEntry = ref(null)
 const renameNewPath = ref('')
@@ -923,6 +1102,11 @@ const showNotifyPanel = ref(false)
 const unreadNotifyCount = ref(0)
 
 const uploadCompletedCount = computed(() => uploadFiles.value.filter(f => f.status === 'success').length)
+/** 未排进版本确认队列的待上传文件（需用户点「开始上传」） */
+const uploadPendingNotQueuedCount = computed(() => {
+  const queued = new Set((vmQueue.value || []).map(q => q.ufId))
+  return uploadFiles.value.filter(f => f.status === 'pending' && !queued.has(f.id)).length
+})
 
 // ---- computed ----
 
@@ -974,6 +1158,48 @@ function _flattenDepts(nodes, level = 0) {
 
 const deptOptionsForUser = computed(() => _flattenDepts(deptTreeForTable.value))
 
+/** 新建文件库：访问权限下拉选项（随是否选择部门切换） */
+function _newLibModeRows(isDept) {
+  if (!isDept) {
+    return [
+      { value: 'self', label: '仅自己' },
+      { value: 'self_plus', label: '仅自己 + 指定成员' },
+      { value: 'members_only', label: '仅指定成员' },
+      { value: 'public', label: '公开（所有用户）' },
+    ]
+  }
+  return [
+    { value: 'dept', label: '所属部门' },
+    { value: 'dept_plus', label: '所属部门 + 指定成员' },
+  ]
+}
+
+const newLibDeptOptions = computed(() => {
+  const opts = [{ value: null, label: '无（个人库）' }]
+  for (const opt of deptOptionsForUser.value || []) {
+    opts.push({ value: opt.id, label: '\u3000'.repeat(opt.level) + opt.name })
+  }
+  return opts
+})
+
+const newLibModeOptions = computed(() => _newLibModeRows(!!newLibDepartmentId.value))
+
+const selectedNewLibDeptLabel = computed(() => {
+  const id = newLibDepartmentId.value
+  const hit = newLibDeptOptions.value.find(
+    o =>
+      (o.value == null && (id == null || id === '')) ||
+      (o.value != null && Number(o.value) === Number(id)),
+  )
+  return hit?.label ?? '无（个人库）'
+})
+
+const selectedNewLibModeLabel = computed(() => {
+  const rows = newLibModeOptions.value
+  const hit = rows.find(r => r.value === newLibMode.value)
+  return hit?.label ?? '请选择'
+})
+
 const sortedLibraries = computed(() => {
   const list = libraries.value || []
   if (!list.length) return list
@@ -982,6 +1208,15 @@ const sortedLibraries = computed(() => {
   else if (fileSortOrder.value === 'size') arr.sort((a, b) => (b.member_count || 0) - (a.member_count || 0))
   else if (fileSortOrder.value === 'created') arr.sort((a, b) => (a.id || 0) - (b.id || 0))
   return arr
+})
+
+/** 移动资料库弹窗：当前选中目标的展示文案（配合自定义下拉） */
+const selectedMoveTargetLabel = computed(() => {
+  const key = moveTargetKey.value
+  const list = moveTargets.value || []
+  const t = list.find(x => (x.parent_id == null ? key === 'root' : String(x.parent_id) === key))
+  const lab = t?.label != null ? String(t.label).trim() : ''
+  return lab || '请选择目标位置'
 })
 
 const sortedFiles = computed(() => _sortFileList(files.value || []))
@@ -1194,7 +1429,6 @@ onMounted(async () => {
     loadLibraries(),
     loadDepartments(),
   ])
-  loadStorageStats()
   await restorePreviewReturnContext()
   // 通知不阻塞首屏；失败时静默忽略
   loadNotifications(true).catch(() => {})
@@ -1210,15 +1444,24 @@ onUnmounted(() => {
 async function loadLibraries() {
   const seq = ++librariesLoadSeq
   try {
-    const params = {
-      limit: librariesLimit.value,
-      offset: librariesOffset.value,
-      include_department: false,
+    const pageSize = librariesLimit.value
+    let off = librariesOffset.value
+    let arr = []
+    for (;;) {
+      const list = await api.listLibraries({
+        limit: pageSize + 1,
+        offset: off,
+        include_department: false,
+      })
+      if (seq !== librariesLoadSeq) return
+      arr = Array.isArray(list) ? list : []
+      if (arr.length > 0 || off <= 0) break
+      off = Math.max(0, off - pageSize)
     }
-    const list = await api.listLibraries(params)
     if (seq !== librariesLoadSeq) return
-    libraries.value = Array.isArray(list) ? list : []
-    librariesHasMore.value = libraries.value.length === librariesLimit.value
+    librariesOffset.value = off
+    librariesHasMore.value = arr.length > pageSize
+    libraries.value = arr.slice(0, pageSize)
   } catch (e) {
     if (seq !== librariesLoadSeq) return
     err.value = e.message || '加载文件库失败'
@@ -1259,6 +1502,30 @@ watch(showNewDropdown, open => {
   const onDocClick = () => { showNewDropdown.value = false; document.removeEventListener('click', onDocClick) }
   setTimeout(() => document.addEventListener('click', onDocClick), 0)
 })
+watch(moveTargetPickerOpen, open => {
+  if (!open) return
+  const onDocClick = () => {
+    moveTargetPickerOpen.value = false
+    document.removeEventListener('click', onDocClick)
+  }
+  setTimeout(() => document.addEventListener('click', onDocClick), 0)
+})
+watch(newLibDeptPickerOpen, open => {
+  if (!open) return
+  const onDocClick = () => {
+    newLibDeptPickerOpen.value = false
+    document.removeEventListener('click', onDocClick)
+  }
+  setTimeout(() => document.addEventListener('click', onDocClick), 0)
+})
+watch(newLibModePickerOpen, open => {
+  if (!open) return
+  const onDocClick = () => {
+    newLibModePickerOpen.value = false
+    document.removeEventListener('click', onDocClick)
+  }
+  setTimeout(() => document.addEventListener('click', onDocClick), 0)
+})
 watch(openActionMenuId, id => {
   if (!id) return
   const onDocClick = () => { openActionMenuId.value = null; document.removeEventListener('click', onDocClick) }
@@ -1268,12 +1535,12 @@ watch(newLibDepartmentId, val => {
   if (val) { if (!['dept', 'dept_plus'].includes(newLibMode.value)) newLibMode.value = 'dept' }
   else { if (!['self', 'self_plus', 'members_only', 'public'].includes(newLibMode.value)) newLibMode.value = 'self' }
 })
-
-// ---- 存储统计 ----
-
-async function loadStorageStats() {
-  try { storageStats.value = await api.getStorageStats() } catch { storageStats.value = null }
-}
+watch(currentLib, lib => {
+  if (!lib) libChildrenLibraries.value = []
+})
+watch(pathPrefix, async p => {
+  if (currentLib.value?.id && p === '') await loadChildLibrariesForCurrent()
+})
 
 // ---- 搜索 ----
 
@@ -1284,6 +1551,15 @@ function clearSearch() {
   searchKeyword.value = ''
   searchApplied.value = false
 }
+
+function onTopbarClearLib() {
+  currentLib.value = null
+  pathPrefix.value = ''
+  if (activeDeptId.value != null) {
+    clearSearch()
+  }
+}
+
 async function doSearch() {
   if (!currentLib.value || !searchKeyword.value?.trim()) {
     if (!searchKeyword.value?.trim()) {
@@ -1347,9 +1623,18 @@ async function searchLibrariesGlobal(keyword, options = {}) {
   while (offset <= 2000) {
     let rows = []
     if (Number.isFinite(departmentId) && departmentId > 0) {
-      rows = await api.listDepartmentLibraries(departmentId, { limit, offset })
+      rows = await api.listDepartmentLibraries(departmentId, {
+        limit,
+        offset,
+        roots_only: false,
+      })
     } else {
-      rows = await api.listLibraries({ limit, offset, include_department: includeDepartment })
+      rows = await api.listLibraries({
+        limit,
+        offset,
+        include_department: includeDepartment,
+        roots_only: false,
+      })
     }
     const list = rows || []
     all.push(...list)
@@ -1402,22 +1687,52 @@ async function loadFiles() {
   if (!currentLib.value) return
   filesLoading.value = true
   try {
-    const list = await api.listFiles(
-      currentLib.value.id,
-      pathPrefix.value,
-      true,
-      { limit: filesLimit.value, offset: filesOffset.value }
-    )
-    files.value = Array.isArray(list) ? list : []
-    filesHasMore.value = files.value.length === filesLimit.value
+    const pageSize = filesLimit.value
+    let off = filesOffset.value
+    let arr = []
+    for (;;) {
+      const list = await api.listFiles(
+        currentLib.value.id,
+        pathPrefix.value,
+        true,
+        { limit: pageSize + 1, offset: off }
+      )
+      arr = Array.isArray(list) ? list : []
+      if (arr.length > 0 || off <= 0) break
+      off = Math.max(0, off - pageSize)
+    }
+    filesOffset.value = off
+    filesHasMore.value = arr.length > pageSize
+    files.value = arr.slice(0, pageSize)
   }
   catch (e) { err.value = e.message }
   finally { filesLoading.value = false }
 }
-function selectLib(lib) {
-  currentLib.value = lib
+async function loadChildLibrariesForCurrent() {
+  if (!currentLib.value?.id) {
+    libChildrenLibraries.value = []
+    return
+  }
+  try {
+    const rows = await api.listLibraryChildren(currentLib.value.id)
+    libChildrenLibraries.value = Array.isArray(rows) ? rows : []
+  } catch {
+    libChildrenLibraries.value = []
+  }
+}
+
+async function selectLib(lib) {
+  if (!lib?.id) return
   pathPrefix.value = ''
   filesOffset.value = 0
+  err.value = ''
+  try {
+    currentLib.value = await api.getLibrary(lib.id)
+  } catch (e) {
+    err.value = e?.message || ''
+    currentLib.value = lib
+  }
+  await loadChildLibrariesForCurrent()
   loadFiles()
 }
 function goUp() {
@@ -1464,7 +1779,7 @@ function goNextFilesPage() {
 async function delFile(f) {
   if (!confirm('确定删除到回收站？')) return
   err.value = ''
-  try { await api.deleteFile(f.id); loadFiles(); loadStorageStats(); showSuccess('删除成功') }
+  try { await api.deleteFile(f.id); loadFiles(); showSuccess('删除成功') }
   catch (e) { err.value = e.message }
 }
 async function download(entryId, versionNo = null) {
@@ -1576,12 +1891,63 @@ function openUploadModal() {
   uploadFiles.value = []
   uploadDropzoneActive.value = false
   uploadStep.value = 'list'
+  vmQueue.value = []
+  vmFile.value = null
+  vmUfId.value = null
+  vmMode.value = 'version'
+  vmComment.value = ''
+  vmSelectedEntry.value = null
+  vmSearchResults.value = []
+  vmKeyword.value = ''
 }
-function closeUploadModal() {
+
+function resetUploadModal() {
   showUpload.value = false
   uploadFiles.value = []
   uploadDropzoneActive.value = false
   uploadStep.value = 'list'
+  vmQueue.value = []
+  vmFile.value = null
+  vmUfId.value = null
+  vmMode.value = 'version'
+  vmComment.value = ''
+  vmSelectedEntry.value = null
+  vmSearchResults.value = []
+  vmKeyword.value = ''
+}
+/** 撤销本会话中已成功写入服务端的上传（新文件整文件进回收站；已有文件则删除刚上传的最新版本） */
+async function rollbackUploadSessionEntry(entryId) {
+  if (entryId == null) return
+  try {
+    const vers = await api.listVersions(entryId)
+    if (!vers?.length) return
+    if (vers.length === 1) {
+      await api.deleteFile(entryId)
+    } else {
+      const maxNo = Math.max(...vers.map(v => v.version_no))
+      await api.deleteVersion(entryId, maxNo)
+    }
+  } catch {
+    // 忽略：例如已手动删除或网络失败
+  }
+}
+async function rollbackSuccessfulUploadsFromList(filesList) {
+  const items = filesList.filter(f => f.status === 'success' && f.entryId != null)
+  for (const f of items) {
+    await rollbackUploadSessionEntry(f.entryId)
+  }
+}
+async function abandonUploadModal() {
+  const snapshot = uploadFiles.value.slice()
+  await rollbackSuccessfulUploadsFromList(snapshot)
+  resetUploadModal()
+  await loadFiles()
+}
+function startPendingDirectUploads() {
+  const queued = new Set((vmQueue.value || []).map(q => q.ufId))
+  uploadFiles.value
+    .filter(f => f.status === 'pending' && !queued.has(f.id))
+    .forEach(f => { startUploadOne(f.id) })
 }
 function vmExtractKeyword(filename) {
   if (!filename || typeof filename !== 'string') return ''
@@ -1668,6 +2034,21 @@ function vmBuildCandidateKeywords(filename) {
   pushKw(vmExtractKeyword(relaxed))
   return out
 }
+
+const UPLOAD_BLOCKED_EXT = new Set([
+  'exe', 'bat', 'cmd', 'com', 'msi', 'dll', 'scr',
+  'ps1', 'vbs', 'js', 'jar', 'sh',
+])
+function isBlockedUploadFileName(name) {
+  const n = String(name || '')
+  const ext = n.includes('.') ? n.split('.').pop().toLowerCase() : ''
+  return UPLOAD_BLOCKED_EXT.has(ext)
+}
+function blockedUploadMessage(name) {
+  const n = String(name || '')
+  const ext = n.includes('.') ? '.' + n.split('.').pop().toLowerCase() : ''
+  return `不支持上传此文件类型：${ext || '未知'}`
+}
 // 测试用例：
 // vmExtractKeyword('XXXX（1）.pdf')           → 'XXXX'
 // vmExtractKeyword('XXXX(1).pdf')             → 'XXXX'
@@ -1687,7 +2068,13 @@ function vmBuildCandidateKeywords(filename) {
 
 async function addUploadFiles(files) {
   if (!files?.length || !currentLib.value?.id) return
-  const arr = Array.from(files)
+  const all = Array.from(files)
+  const blocked = all.filter(f => isBlockedUploadFileName(f?.name))
+  if (blocked.length) {
+    showError(blocked.length === 1 ? blockedUploadMessage(blocked[0].name) : `包含不支持上传的文件类型（如 .exe/.bat），已拦截 ${blocked.length} 个文件`)
+  }
+  const arr = all.filter(f => !isBlockedUploadFileName(f?.name))
+  if (!arr.length) return
 
   const list = arr.map(file => ({
     id: `${file.name}-${Date.now()}-${Math.random()}`,
@@ -1717,9 +2104,6 @@ async function addUploadFiles(files) {
 
   const searched = await Promise.all(searchPromises)
   const toQueue = searched.filter(s => s.results.length > 0)
-  const toDirect = searched.filter(s => s.results.length === 0)
-
-  toDirect.forEach(s => startUploadOne(s.ufId))
 
   if (toQueue.length > 0) {
     vmQueue.value = toQueue.map(s => ({
@@ -1784,11 +2168,11 @@ async function vmDoUpload() {
           )
         }
       )
+      const vid = vmSelectedEntry.value?.id
       uploadFiles.value = uploadFiles.value.map(f =>
-        f.id === ufId ? { ...f, progress: 100, status: 'success' } : f
+        f.id === ufId ? { ...f, progress: 100, status: 'success', entryId: vid } : f
       )
       loadFiles()
-      loadStorageStats()
     } catch (e) {
       let errMsg = e.message
       if (e.message?.includes('SAME_AS_LATEST')) {
@@ -1830,7 +2214,12 @@ function onUploadFileSelect(e) {
   if (files?.length) addUploadFiles(Array.from(files))
   e.target.value = ''
 }
-function removeUploadFile(id) {
+async function removeUploadFile(id) {
+  const uf = uploadFiles.value.find(f => f.id === id)
+  if (uf?.status === 'success' && uf.entryId != null) {
+    await rollbackUploadSessionEntry(uf.entryId)
+    await loadFiles()
+  }
   uploadFiles.value = uploadFiles.value.filter(f => f.id !== id)
 }
 function formatUploadSize(bytes) {
@@ -1852,14 +2241,13 @@ async function startUploadOne(id) {
   const fullPath = pathPrefix.value ? pathPrefix.value + uf.file.name : uf.file.name
   uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, status: 'uploading' } : f)
   try {
-    await api.uploadFileWithProgress(currentLib.value.id, fullPath, uf.file, (p) => {
+    const data = await api.uploadFileWithProgress(currentLib.value.id, fullPath, uf.file, (p) => {
       uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, progress: p } : f)
     })
-    uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, progress: 100, status: 'success' } : f)
-    // 单个文件上传成功后，立即刷新当前库文件列表和存储统计
+    const entryId = data?.id
+    uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, progress: 100, status: 'success', entryId } : f)
     if (currentLib.value?.id) {
       await loadFiles()
-      await loadStorageStats()
     }
   } catch (e) {
     uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, status: 'error', error: e.message } : f)
@@ -1867,9 +2255,8 @@ async function startUploadOne(id) {
 }
 function finishUploadModal() {
   const n = uploadCompletedCount.value
-  closeUploadModal()
+  resetUploadModal()
   loadFiles()
-  loadStorageStats()
   if (n > 0) showSuccess(n === 1 ? '上传成功' : `已上传 ${n} 个文件`)
 }
 async function onFileDrop(e) {
@@ -1887,7 +2274,7 @@ async function onFileDrop(e) {
       } catch (e) { uploadErr.value = e.message; fail++ }
     }
   }
-  if (ok) { loadFiles(); loadStorageStats(); showSuccess(fail ? `已上传 ${ok} 个，失败 ${fail} 个` : `已上传 ${ok} 个文件`) }
+  if (ok) { loadFiles(); showSuccess(fail ? `已上传 ${ok} 个，失败 ${fail} 个` : `已上传 ${ok} 个文件`) }
 }
 function onDragOver() { isDragging.value = true }
 function onDragLeave() { isDragging.value = false }
@@ -1896,7 +2283,7 @@ async function doMkdir() {
   err.value = ''
   try {
     await api.createDir(currentLib.value.id, path)
-    showMkdir.value = false; mkdirPath.value = ''; loadFiles(); loadStorageStats(); showSuccess('目录已创建')
+    showMkdir.value = false; mkdirPath.value = ''; loadFiles(); showSuccess('目录已创建')
   } catch (e) { err.value = e.message }
 }
 
@@ -2046,7 +2433,6 @@ async function restoreTrashItem(item) {
     if (item.type === 'library') {
       await api.restoreLibrary(item.id)
       libraries.value = await api.listLibraries({ include_department: false })
-      loadStorageStats()
       showSuccess('资料库已恢复')
     } else if (item.type === 'file_version') {
       await api.restoreVersionTrash(item.id)
@@ -2069,7 +2455,6 @@ async function permDeleteTrashItem(item) {
       await api.permanentDeleteLibrary(item.id)
       libraries.value = await api.listLibraries({ include_department: false })
       if (currentLib.value?.id === item.id) currentLib.value = null
-      loadStorageStats()
       showSuccess('资料库已彻底删除')
     } else if (item.type === 'file_version') {
       await api.permanentDeleteVersionTrash(item.id)
@@ -2153,18 +2538,110 @@ function onNewLibModeChange() {
 }
 function openNewLib() {
   newLibCreating.value = false
+  newLibParentId.value = null
   newLibName.value = ''; newLibDesc.value = ''; err.value = ''
+  newLibAllowDownload.value = false
   newLibDepartmentId.value = activeDeptId.value || null
   newLibMode.value = newLibDepartmentId.value ? 'dept' : 'self'
   newLibMembers.value = []
   if (['self_plus', 'dept_plus', 'members_only'].includes(newLibMode.value)) loadNewLibUsers()
+  newLibDeptPickerOpen.value = false
+  newLibModePickerOpen.value = false
   showNewLib.value = true
+}
+function openNewLibSub() {
+  const d = currentLib.value?.depth ?? 1
+  if (Number(d) >= 3) {
+    showError('最多三级资料库，无法在第三级下再创建子库')
+    return
+  }
+  if (!currentLib.value?.is_writeable) {
+    showError('您没有权限在此创建子资料库')
+    return
+  }
+  newLibCreating.value = false
+  newLibParentId.value = currentLib.value.id
+  newLibName.value = ''
+  newLibDesc.value = ''
+  err.value = ''
+  newLibDeptPickerOpen.value = false
+  newLibModePickerOpen.value = false
+  showNewLib.value = true
+}
+
+function closeNewLibModal() {
+  if (newLibCreating.value) return
+  showNewLib.value = false
+  newLibDepartmentId.value = null
+  newLibParentId.value = null
+  err.value = ''
+  showNewLibMemberPanel.value = false
+  newLibDeptPickerOpen.value = false
+  newLibModePickerOpen.value = false
+}
+
+function selectNewLibDept(opt) {
+  newLibDepartmentId.value = opt.value == null ? null : opt.value
+  newLibDeptPickerOpen.value = false
+}
+
+function selectNewLibMode(opt) {
+  newLibMode.value = opt.value
+  newLibModePickerOpen.value = false
+  onNewLibModeChange()
+}
+
+function newLibDeptOptionSelected(opt) {
+  const id = newLibDepartmentId.value
+  return (
+    (opt.value == null && (id == null || id === '')) ||
+    (opt.value != null && Number(opt.value) === Number(id))
+  )
+}
+
+function newLibModeOptionSelected(opt) {
+  return opt.value === newLibMode.value
 }
 async function createLib() {
   if (newLibCreating.value) return
   err.value = ''
   const name = (newLibName.value || '').trim()
   if (!name) { err.value = '请填写文件库名称'; return }
+  if (newLibParentId.value != null) {
+    newLibCreating.value = true
+    try {
+      const created = await api.createLibrary(
+        name,
+        (newLibDesc.value || '').trim(),
+        null,
+        'private',
+        [],
+        false,
+        newLibParentId.value
+      )
+      const parentWas = Number(newLibParentId.value)
+      newLibParentId.value = null
+      showNewLib.value = false
+      newLibName.value = ''
+      newLibDesc.value = ''
+      newLibDepartmentId.value = null
+      newLibMembers.value = []
+      newLibUsers.value = []
+      const stillOnParent = Number(currentLib.value?.id) === parentWas
+      // 停留在父资料库视图并刷新「子资料库」列表（不要自动进入新建库，否则只看到空文件区，误以为未创建）
+      if (stillOnParent) {
+        await loadChildLibrariesForCurrent()
+      } else {
+        await loadLibraries()
+      }
+      showSuccess('子资料库已创建')
+    } catch (e) {
+      err.value = e.message || '创建失败'
+    } finally {
+      newLibCreating.value = false
+    }
+    return
+  }
   const raw = newLibDepartmentId.value
   const deptId = raw === '' || raw === null || raw === undefined ? null : Number(raw)
   const mode = newLibMode.value || 'self'
@@ -2187,8 +2664,14 @@ async function createLib() {
     } else {
       libraries.value = await api.listLibraries({ include_department: false })
     }
-    showNewLib.value = false; newLibName.value = ''; newLibDesc.value = ''; newLibDepartmentId.value = null
-    newLibVisibility.value = 'private'; newLibMembers.value = []; newLibUsers.value = []
+    showNewLib.value = false
+    newLibParentId.value = null
+    newLibName.value = ''
+    newLibDesc.value = ''
+    newLibDepartmentId.value = null
+    newLibVisibility.value = 'private'
+    newLibMembers.value = []
+    newLibUsers.value = []
     if (deptId != null && Number(activeDeptId.value) === Number(deptId)) {
       // 触发 DepartmentFiles 重新拉取部门文件库列表
       deptFilesReloadKey.value += 1
@@ -2210,8 +2693,12 @@ async function doConfirmDeleteLib() {
   try {
     await api.deleteLibrary(lib.id)
     libraries.value = await api.listLibraries({ include_department: false })
-    if (currentLib.value?.id === lib.id) currentLib.value = null
-    loadStorageStats()
+    if (currentLib.value?.id === lib.id) {
+      currentLib.value = null
+      libChildrenLibraries.value = []
+    } else {
+      await loadChildLibrariesForCurrent()
+    }
     if (tab.value === 'trash') trashLibraryList.value = await api.listLibraryTrash()
     showSuccess('已移入回收站')
   } catch (e) { err.value = e.message; showError(e.message) }
@@ -2220,18 +2707,115 @@ async function doConfirmDeleteLib() {
     libToDelete.value = null
   }
 }
+
+function moveTargetOptionValue(t) {
+  return t.parent_id == null ? 'root' : String(t.parent_id)
+}
+
+function moveTargetOptionKey(t) {
+  return t.parent_id == null ? 'root' : `p-${t.parent_id}`
+}
+
+function selectMoveTargetOption(t) {
+  moveTargetKey.value = moveTargetOptionValue(t)
+  moveTargetPickerOpen.value = false
+}
+
+async function openMoveLib(lib) {
+  if (!lib?.id) return
+  libToMove.value = lib
+  err.value = ''
+  moveTargetKey.value = ''
+  moveTargets.value = []
+  moveTargetPickerOpen.value = false
+  moveTargetsLoading.value = true
+  showMoveLib.value = true
+  try {
+    const rows = await api.listLibraryMoveTargets(lib.id)
+    moveTargets.value = Array.isArray(rows) ? rows : []
+    if (moveTargets.value.length) {
+      moveTargetKey.value = moveTargetOptionValue(moveTargets.value[0])
+    }
+  } catch (e) {
+    err.value = e?.message || '无法加载可移动位置'
+    moveTargets.value = []
+  } finally {
+    moveTargetsLoading.value = false
+  }
+}
+
+function closeMoveLibModal() {
+  showMoveLib.value = false
+  libToMove.value = null
+  moveTargets.value = []
+  moveTargetKey.value = ''
+  moveTargetPickerOpen.value = false
+  err.value = ''
+}
+
+async function confirmMoveLib() {
+  const lib = libToMove.value
+  if (!lib?.id || moveLibSubmitting.value) return
+  const key = moveTargetKey.value
+  const parentId = key === 'root' ? null : Number(key)
+  if (key !== 'root' && !Number.isFinite(parentId)) {
+    err.value = '请选择目标位置'
+    return
+  }
+  err.value = ''
+  moveLibSubmitting.value = true
+  try {
+    const updated = await api.moveLibrary(lib.id, parentId)
+    await loadLibraries()
+    if (currentLib.value?.id === lib.id) {
+      try {
+        currentLib.value = await api.getLibrary(lib.id)
+      } catch {
+        currentLib.value = updated
+      }
+    }
+    await loadChildLibrariesForCurrent()
+    if (Number(activeDeptId.value) > 0) {
+      deptFilesReloadKey.value += 1
+      try {
+        activeDeptLibraries.value = await api.listDepartmentLibraries(activeDeptId.value)
+      } catch {
+        /* 列表由 DepartmentFiles 的 reloadKey 同步拉取 */
+      }
+    }
+    closeMoveLibModal()
+    showSuccess('资料库已移动')
+  } catch (e) {
+    err.value = e?.message || '移动失败'
+    showError(err.value)
+  } finally {
+    moveLibSubmitting.value = false
+  }
+}
+
 async function openEditLib(lib) {
-  editLibId.value = lib.id; editLibName.value = lib.name; editLibDesc.value = lib.description || ''
-  editLibAllowDownload.value = lib.allow_download !== false
-  editLibDepartmentId.value = lib.department_id || null
-  const vis = lib.visibility || 'private'
-  const hasMembers = (lib.member_count || 0) > 0
+  let full = lib
+  try {
+    full = await api.getLibrary(lib.id)
+  } catch {
+    /* 使用列表项 */
+  }
+  editLibDepth.value = Number(full.depth) || 1
+  editLibId.value = full.id
+  editLibName.value = full.name
+  editLibDesc.value = full.description || ''
+  editLibAllowDownload.value = full.allow_download !== false
+  editLibDepartmentId.value = full.department_id || null
+  const vis = full.visibility || 'private'
+  const hasMembers = (full.member_count || 0) > 0
   const isDeptLib = !!editLibDepartmentId.value
   if (isDeptLib) editLibMode.value = hasMembers ? 'dept_plus' : 'dept'
   else if (vis === 'public') editLibMode.value = 'public'
   else editLibMode.value = hasMembers ? 'self_plus' : 'self'
   editLibUsers.value = []; editLibMembers.value = []; editLibInitialMembers.value = []
-  if (['self_plus', 'dept_plus', 'members_only'].includes(editLibMode.value)) await loadEditLibUsersAndMembers(lib.id)
+  if (editLibDepth.value <= 1 && ['self_plus', 'dept_plus', 'members_only'].includes(editLibMode.value)) {
+    await loadEditLibUsersAndMembers(full.id)
+  }
   showEditLib.value = true; err.value = ''
 }
 async function loadEditLibUsersAndMembers(libraryId) {
@@ -2252,6 +2836,23 @@ function onEditLibModeChange() {
 async function saveEditLib() {
   err.value = ''
   try {
+    if (editLibDepth.value > 1) {
+      const saved = await api.updateLibrary(
+        editLibId.value,
+        editLibName.value.trim(),
+        editLibDesc.value.trim(),
+        undefined,
+        undefined
+      )
+      libraries.value = await api.listLibraries({ include_department: false })
+      if (currentLib.value?.id === editLibId.value) {
+        currentLib.value = saved
+      }
+      await loadChildLibrariesForCurrent()
+      showEditLib.value = false
+      showSuccess('资料库已更新')
+      return
+    }
     const mode = editLibMode.value || 'self'
     const isDeptLib = !!editLibDepartmentId.value
     let visibility = 'private'
@@ -2264,7 +2865,7 @@ async function saveEditLib() {
     }
     const memberIds = (editLibMembers.value || []).map(id => Number(id)).filter(id => !Number.isNaN(id))
     if (['self_plus', 'dept_plus', 'members_only'].includes(mode) && memberIds.length === 0) { err.value = '请选择至少一位指定成员'; return }
-    await api.updateLibrary(
+    const saved = await api.updateLibrary(
       editLibId.value,
       editLibName.value.trim(),
       editLibDesc.value.trim(),
@@ -2272,7 +2873,18 @@ async function saveEditLib() {
       editLibAllowDownload.value
     )
     libraries.value = await api.listLibraries({ include_department: false })
-    if (currentLib.value?.id === editLibId.value) currentLib.value = libraries.value.find(l => l.id === editLibId.value)
+    // 部门库不在「我的文件库」列表里，不能用 find 更新 currentLib，否则会变成 undefined，界面仍显示旧名称
+    if (currentLib.value?.id === editLibId.value) {
+      currentLib.value = saved
+    }
+    if (
+      editLibDepartmentId.value != null &&
+      activeDeptId.value != null &&
+      Number(editLibDepartmentId.value) === Number(activeDeptId.value)
+    ) {
+      deptFilesReloadKey.value += 1
+      await loadDeptFiles(activeDeptId.value)
+    }
     if (editLibId.value) {
       const libId = editLibId.value
       const oldSet = new Set((editLibInitialMembers.value || []).map(id => Number(id)))
@@ -2282,6 +2894,14 @@ async function saveEditLib() {
         for (const id of newSet) { if (!oldSet.has(id)) await api.addLibraryMember(libId, id, 'read') }
       } else {
         for (const id of oldSet) await api.removeLibraryMember(libId, id)
+      }
+    }
+    // 成员变更后补拉一次，保证 member_count 等与后端一致
+    if (currentLib.value?.id === editLibId.value) {
+      try {
+        currentLib.value = await api.getLibrary(editLibId.value)
+      } catch {
+        /* 保留 saved */
       }
     }
     showEditLib.value = false; showSuccess('资料库已更新')
@@ -2435,6 +3055,14 @@ async function resetUserPassword(u) {
   overflow: hidden;
   background: var(--bg-page);
 }
+.app-main-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  position: relative;
+}
 .success-toast {
   position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 9999;
   background: var(--success-bg, #e8f5e9); color: var(--success, #2e7d32);
@@ -2452,7 +3080,6 @@ async function resetUserPassword(u) {
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, -20px); } to { opacity: 1; transform: translate(-50%, 0); } }
 @keyframes toast-out { from { opacity: 1; transform: translate(-50%, 0); } to { opacity: 0; transform: translate(-50%, -20px); } }
 .text-danger { color: var(--danger); font-size: 14px; margin: 0 0 8px 0; }
-.app-content { flex: 1; min-height: 0; padding: 24px; overflow: auto; }
 .app-content .card { background: #fff; }
 .empty-hint { color: var(--text-secondary); font-size: 14px; margin: 12px 0; }
 .modal {
@@ -2460,6 +3087,7 @@ async function resetUserPassword(u) {
   display: flex; align-items: center; justify-content: center; z-index: 10;
 }
 .modal .card { max-width: 440px; width: 90%; max-height: 90vh; overflow: auto; background: #fff; }
+.modal .card.move-lib-modal-card { overflow: visible; }
 .modal .card h3 { margin-top: 0; }
 .modal .form-group { margin-bottom: 16px; }
 .modal .form-group label { display: block; font-size: 14px; font-weight: 500; color: var(--text); margin-bottom: 6px; }
@@ -2523,6 +3151,84 @@ async function resetUserPassword(u) {
 .badge-user { background: #f3f4f6; color: var(--text-secondary); }
 .btn-small { font-size: 12px; padding: 4px 10px; }
 .admin-select { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; min-width: 120px; }
+
+/* 移动资料库：自定义目标位置下拉（替代原生 select） */
+.move-target-picker { position: relative; width: 100%; }
+.move-target-picker-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  background: #fff;
+  color: var(--text, #111827);
+  text-align: left;
+  box-sizing: border-box;
+}
+.move-target-picker-trigger:hover:not(:disabled) {
+  border-color: var(--primary);
+}
+.move-target-picker-trigger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.move-target-picker-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.move-target-picker-chevron {
+  flex-shrink: 0;
+  color: var(--text-secondary, #6b7280);
+  font-size: 12px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+.move-target-picker-trigger[aria-expanded="true"] .move-target-picker-chevron {
+  transform: rotate(180deg);
+}
+.move-target-picker-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+  padding: 4px 0;
+}
+.move-target-picker-option {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text, #111827);
+}
+.move-target-picker-option:hover {
+  background: #f3f4f6;
+}
+.move-target-picker-option.selected {
+  background: #eef2ff;
+  color: var(--primary);
+  font-weight: 500;
+}
+
 .member-multi-dropdown { position: relative; }
 .member-select-trigger { width: 100%; min-height: 32px; border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px; font-size: 13px; cursor: pointer; background: #fff; }
 .member-select-trigger:hover { border-color: var(--primary); }
@@ -2619,6 +3325,43 @@ async function resetUserPassword(u) {
   max-height: 80vh;
   display: flex;
   flex-direction: column;
+}
+.upload-modal-card.new-lib-modal-card {
+  max-width: 34rem;
+}
+.new-lib-modal-body .form-group {
+  margin-bottom: 16px;
+}
+.new-lib-modal-body .form-group:last-of-type {
+  margin-bottom: 0;
+}
+.new-lib-modal-body .form-group label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  color: #111827;
+  margin-bottom: 6px;
+}
+.new-lib-modal-body .form-group input:not([type='checkbox']),
+.new-lib-modal-body .form-group select.admin-select {
+  width: 100%;
+  box-sizing: border-box;
+}
+.new-lib-modal-body .form-hint {
+  margin: 6px 0 0 0;
+  font-size: 12px;
+  color: #6b7280;
+}
+.new-lib-modal-err {
+  margin-top: 12px;
+}
+.upload-modal-close:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* 打开自定义下拉时避免被 upload-modal-body 裁切 */
+.upload-modal-card.new-lib-modal-card .upload-modal-body.new-lib-modal-body.new-lib-body-picker-open {
+  overflow: visible;
 }
 .upload-modal-header {
   display: flex;

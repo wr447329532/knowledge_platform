@@ -14,14 +14,49 @@
         />
       </div>
       <div class="topbar-actions">
-        <template v-if="activeTab === 'lib'">
-          <button v-if="!currentLib" class="btn-primary" @click="emit('new-lib')">
-            + 新建文件库
+        <div
+          v-if="activeTab === 'lib' && showNewDropdown"
+          class="new-menu-wrap"
+          ref="newMenuWrapRef"
+        >
+          <button
+            type="button"
+            class="btn-primary btn-new-split"
+            aria-haspopup="menu"
+            :aria-expanded="newMenuOpen"
+            @click.stop="toggleNewMenu"
+          >
+            + 新建
+            <span class="btn-new-chevron" aria-hidden="true">▾</span>
           </button>
-          <button v-else-if="currentLib?.is_writeable" class="btn-primary" @click="emit('upload')">
-            上传文件
-          </button>
-        </template>
+          <Transition name="dropdown">
+            <div
+              v-if="newMenuOpen"
+              class="new-dropdown"
+              role="menu"
+            >
+              <template v-if="!currentLib">
+                <button type="button" class="new-dropdown-item" role="menuitem" @click="chooseNewLib">
+                  新建文件库
+                </button>
+              </template>
+              <template v-else-if="currentLib?.is_writeable">
+                <button
+                  v-if="canCreateSubLib"
+                  type="button"
+                  class="new-dropdown-item"
+                  role="menuitem"
+                  @click="chooseNewSubLib"
+                >
+                  新建文件库
+                </button>
+                <button type="button" class="new-dropdown-item" role="menuitem" @click="chooseUpload">
+                  上传文件
+                </button>
+              </template>
+            </div>
+          </Transition>
+        </div>
         <button
           type="button"
           class="notify-btn"
@@ -79,10 +114,10 @@
       </div>
     </div>
 
-    <!-- 第二行：面包屑 + 视图切换（仅我的文件库，非部门视图） -->
-    <div v-if="activeTab === 'lib' && (!activeDeptId || currentLib)" class="file-toolbar file-toolbar-topbar">
+    <!-- 第二行：面包屑 + 视图切换（我的文件库与部门文件共用） -->
+    <div v-if="activeTab === 'lib'" class="file-toolbar file-toolbar-topbar">
       <div class="file-toolbar-left">
-        <template v-if="activeDeptId && currentLib">
+        <template v-if="activeDeptId">
           <span class="file-breadcrumb-item">{{ activeDeptName || '部门' }}</span>
         </template>
         <template v-else>
@@ -96,6 +131,10 @@
             <a v-if="seg.path !== undefined" href="#" @click.prevent="emit('set-path', seg.path)" class="file-breadcrumb-link">{{ seg.label }}</a>
             <span v-else class="file-breadcrumb-current">{{ seg.label }}</span>
           </template>
+        </template>
+        <template v-else-if="activeDeptId">
+          <span class="file-breadcrumb-sep">/</span>
+          <span class="file-breadcrumb-current">部门文件库</span>
         </template>
         <template v-else>
           <span class="file-breadcrumb-sep">/</span>
@@ -123,7 +162,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import Icons from './Icons.vue'
 
 const props = defineProps({
@@ -141,13 +180,30 @@ const props = defineProps({
 
 const emit = defineEmits([
   'update:searchKeyword', 'update:fileSortOrder', 'update:fileViewMode',
-  'search', 'new-lib', 'upload', 'clear-lib', 'set-path', 'toggle-notify',
+  'search', 'new-lib', 'new-sub-lib', 'upload', 'clear-lib', 'set-path', 'toggle-notify',
   'go-account', 'go-admin', 'go-dept-manage', 'logout',
 ])
 
 const userMenuWrapRef = ref(null)
 const userDropdownRef = ref(null)
 const userMenuOpen = ref(false)
+
+const newMenuWrapRef = ref(null)
+const newMenuOpen = ref(false)
+
+/** 全部文件列表：新建根库；进入资料库且可写：下拉含新建（子库）与上传文件 */
+const showNewDropdown = computed(() => {
+  if (props.activeTab !== 'lib') return false
+  if (!props.currentLib) return true
+  return !!props.currentLib?.is_writeable
+})
+
+/** 一级 depth=1；最多三级，depth < 3 时可再建子库 */
+const canCreateSubLib = computed(() => {
+  const d = props.currentLib?.depth
+  if (d == null || d === undefined) return true
+  return Number(d) < 3
+})
 
 const avatarLetter = computed(() => {
   const name = props.me?.username || ''
@@ -171,6 +227,29 @@ function closeUserMenu() {
   userMenuOpen.value = false
 }
 
+function closeNewMenu() {
+  newMenuOpen.value = false
+}
+
+function toggleNewMenu() {
+  newMenuOpen.value = !newMenuOpen.value
+}
+
+function chooseNewLib() {
+  closeNewMenu()
+  emit('new-lib')
+}
+
+function chooseNewSubLib() {
+  closeNewMenu()
+  emit('new-sub-lib')
+}
+
+function chooseUpload() {
+  closeNewMenu()
+  emit('upload')
+}
+
 function onGoAccount() {
   closeUserMenu()
   emit('go-account')
@@ -191,10 +270,17 @@ function onLogout() {
 function onDocumentClick(e) {
   const wrap = userMenuWrapRef.value
   const dropdown = userDropdownRef.value
+  const newWrap = newMenuWrapRef.value
   if (wrap && wrap.contains(e.target)) return
   if (dropdown && dropdown.contains(e.target)) return
   closeUserMenu()
+  if (newWrap && !newWrap.contains(e.target)) closeNewMenu()
 }
+
+watch(
+  () => [props.activeTab, props.currentLib?.id],
+  () => closeNewMenu()
+)
 
 onMounted(() => {
   document.addEventListener('click', onDocumentClick)
@@ -206,6 +292,7 @@ onUnmounted(() => {
 
 <style scoped>
 .app-topbar {
+  flex-shrink: 0;
   background: #fff;
   border-bottom: 1px solid var(--border);
   display: flex;
@@ -350,6 +437,61 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .btn-primary:hover { background: var(--primary-dark); }
+.btn-secondary {
+  background: #fff;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  cursor: pointer;
+}
+.btn-secondary:hover {
+  background: #eff6ff;
+}
+
+.new-menu-wrap {
+  position: relative;
+}
+.btn-new-split {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding-left: 14px;
+  padding-right: 12px;
+}
+.btn-new-chevron {
+  font-size: 10px;
+  opacity: 0.85;
+}
+.new-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 148px;
+  padding: 4px 0;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border: 1px solid #e5e7eb;
+  z-index: 998;
+}
+.new-dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: 14px;
+  color: #111827;
+  cursor: pointer;
+}
+.new-dropdown-item:hover {
+  background: #f3f4f6;
+}
+
 .file-toolbar {
   display: flex;
   align-items: center;

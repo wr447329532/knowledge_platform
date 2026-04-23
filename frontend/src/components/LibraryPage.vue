@@ -94,7 +94,10 @@
                 {{ lib.description || '-' }}
               </div>
               <div class="lib-col-type">
-                {{ libraryTypeText(lib) }}
+                <span
+                  class="shared-library-type"
+                  :class="libraryTypeClass(lib)"
+                >{{ libraryTypeText(lib) }}</span>
               </div>
               <div class="lib-col-source">
                 <template v-if="lib.is_owner">-</template>
@@ -114,6 +117,14 @@
                     @click.stop="openEditLib(lib)"
                   >
                     ⋯
+                  </button>
+                  <button
+                    v-if="lib.is_owner"
+                    class="btn-icon"
+                    title="移动"
+                    @click.stop="moveLib(lib)"
+                  >
+                    ⇄
                   </button>
                   <button
                     v-if="lib.is_owner"
@@ -155,6 +166,11 @@
                 @click="openEditLib(lib); closeActionMenu()"
               >编辑</button>
               <button
+                v-if="lib.is_owner"
+                class="btn-small"
+                @click="moveLib(lib); closeActionMenu()"
+              >移动</button>
+              <button
                 class="btn-small danger"
                 @click="delLib(lib); closeActionMenu()"
               >删除</button>
@@ -172,7 +188,11 @@
             </div>
             <div class="lib-card-meta">
               <span v-if="!lib.is_owner" class="lib-badge-shared">共享给我</span>
-              <span v-else class="lib-badge-owner">{{ libraryTypeText(lib) }}</span>
+              <span
+                v-else
+                class="shared-library-type"
+                :class="libraryTypeClass(lib)"
+              >{{ libraryTypeText(lib) }}</span>
               <div v-if="!lib.is_owner" class="lib-card-share-meta">
                 <span>分享者：{{ lib.owner_username || '-' }}</span>
                 <span v-if="lib.department_name">来源：{{ lib.department_name }}</span>
@@ -244,6 +264,152 @@
       @drop.prevent="onFileDrop"
     >
       <div class="file-content-area">
+        <section
+          v-if="!pathPrefix && !searchApplied && childLibraries?.length"
+          class="child-libs-wrap"
+        >
+          <div class="child-libs-title">子资料库</div>
+          <!-- 与「全部文件」一级资料库列表相同的行视图 / 卡片视图 -->
+          <div v-if="fileViewMode === 'list'" class="lib-list-container">
+            <div class="lib-list-table">
+              <div class="lib-list-head">
+                <div class="lib-col-name">名称</div>
+                <div class="lib-col-desc">描述</div>
+                <div class="lib-col-type">类型</div>
+                <div class="lib-col-source">来源</div>
+                <div class="lib-col-actions">操作</div>
+              </div>
+              <div
+                v-for="lib in childLibraries"
+                :key="'ch-' + lib.id"
+                class="lib-list-row"
+              >
+                <div class="lib-col-name">
+                  <div class="lib-name-inner">
+                    <Icons name="folder" class="lib-folder-icon" />
+                    <a
+                      href="#"
+                      @click.prevent="selectLib(lib)"
+                      class="lib-name-text"
+                      :title="lib.name"
+                    >
+                      {{ lib.name }}
+                    </a>
+                    <span
+                      v-if="!lib.is_owner"
+                      class="lib-badge-shared"
+                    >共享给我</span>
+                  </div>
+                </div>
+                <div class="lib-col-desc">
+                  {{ lib.description || '-' }}
+                </div>
+                <div class="lib-col-type">
+                  <span
+                    class="shared-library-type"
+                    :class="libraryTypeClass(lib)"
+                  >{{ libraryTypeText(lib) }}</span>
+                </div>
+                <div class="lib-col-source">
+                  <template v-if="lib.is_owner">-</template>
+                  <template v-else>
+                    分享者：{{ lib.owner_username || '-' }}
+                    <template v-if="lib.department_name">
+                      · 来源部门：{{ lib.department_name }}
+                    </template>
+                  </template>
+                </div>
+                <div class="lib-col-actions">
+                  <div class="lib-actions">
+                    <button
+                      v-if="childLibCanManage(lib)"
+                      class="btn-icon"
+                      title="编辑"
+                      @click.stop="openEditLib(lib)"
+                    >
+                      ⋯
+                    </button>
+                    <button
+                      v-if="childLibCanManage(lib)"
+                      class="btn-icon"
+                      title="移动"
+                      @click.stop="moveLib(lib)"
+                    >
+                      ⇄
+                    </button>
+                    <button
+                      v-if="childLibCanManage(lib)"
+                      class="btn-icon danger"
+                      title="删除"
+                      @click.stop="delLib(lib)"
+                    >
+                      🗑
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-else class="lib-grid">
+            <div
+              v-for="lib in childLibraries"
+              :key="'chg-' + lib.id"
+              class="lib-card"
+              @click="selectLib(lib)"
+            >
+              <button
+                v-if="childLibCanManage(lib)"
+                class="lib-card-more"
+                title="更多操作"
+                @click.stop="toggleActionMenu('cl-' + lib.id)"
+              >
+                ⋯
+              </button>
+              <div
+                v-if="openActionMenuId === 'cl-' + lib.id"
+                class="action-dropdown lib-card-dropdown"
+                @click.stop
+              >
+                <button
+                  class="btn-small"
+                  @click="openEditLib(lib); closeActionMenu()"
+                >编辑</button>
+                <button
+                  v-if="childLibCanManage(lib)"
+                  class="btn-small"
+                  @click="moveLib(lib); closeActionMenu()"
+                >移动</button>
+                <button
+                  class="btn-small danger"
+                  @click="delLib(lib); closeActionMenu()"
+                >删除</button>
+              </div>
+              <div class="lib-card-icon-wrap">
+                <Icons name="folder" class="lib-card-icon" />
+              </div>
+              <div class="lib-card-text">
+                <p class="lib-card-name" :title="lib.name">
+                  {{ lib.name }}
+                </p>
+                <p v-if="lib.description" class="lib-card-desc">
+                  {{ lib.description }}
+                </p>
+              </div>
+              <div class="lib-card-meta">
+                <span v-if="!lib.is_owner" class="lib-badge-shared">共享给我</span>
+                <span
+                  v-else
+                  class="shared-library-type"
+                  :class="libraryTypeClass(lib)"
+                >{{ libraryTypeText(lib) }}</span>
+                <div v-if="!lib.is_owner" class="lib-card-share-meta">
+                  <span>分享者：{{ lib.owner_username || '-' }}</span>
+                  <span v-if="lib.department_name">来源：{{ lib.department_name }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
         <p v-if="filesLoading" class="empty-hint">加载中...</p>
         <div v-else-if="searchApplied" class="search-results-section">
           <div class="search-results-header">
@@ -552,6 +718,7 @@
 <script setup>
 import { computed } from 'vue'
 import Icons from './Icons.vue'
+import { libraryTypeClass, libraryTypeText } from '../utils/libraryDisplay.js'
 
 const props = defineProps({
   activeDeptId: Number,
@@ -573,6 +740,8 @@ const props = defineProps({
   sortedFiles: { type: Array, default: () => [] },
   searchKeyword: { type: String, default: '' },
   pathPrefix: { type: String, default: '' },
+  /** 当前库的直接子库（二级/三级），仅在根路径下展示 */
+  childLibraries: { type: Array, default: () => [] },
   openActionMenuId: [String, Number, null],
   formatDate: { type: Function, required: true },
   formatSize: { type: Function, required: true },
@@ -583,6 +752,7 @@ const props = defineProps({
   openGlobalSearchFilePreview: { type: Function, required: true },
   openEditLib: { type: Function, required: true },
   delLib: { type: Function, required: true },
+  moveLib: { type: Function, required: true },
   onFileDrop: { type: Function, required: true },
   goToPath: { type: Function, required: true },
   onFileClick: { type: Function, required: true },
@@ -611,15 +781,18 @@ const displayLibraries = computed(() => {
   return props.libraries || []
 })
 
-function libraryTypeText(lib) {
-  const vis = String(lib?.visibility || '').toLowerCase()
-  if (lib?.department_id != null) return '部门库'
-  if (vis === 'public') return '公开库'
-  return '个人库'
+/** 一级列表用 is_owner；子资料库还可由根拥有者 / 部门负责人管理 */
+function childLibCanManage(lib) {
+  return !!(lib?.can_manage || lib?.is_owner)
 }
 </script>
 
 <style scoped>
+.app-content {
+  padding: 24px;
+  box-sizing: border-box;
+}
+
 .lib-grid-wrap {
   display: flex;
   flex-direction: column;
@@ -628,7 +801,7 @@ function libraryTypeText(lib) {
 
 .audit-pagination {
   margin-top: 8px;
-  padding-top: 8px;
+  padding: 10px 0 8px;
   border-top: 1px solid #e5e7eb;
   display: flex;
   align-items: center;
@@ -636,6 +809,21 @@ function libraryTypeText(lib) {
   gap: 12px;
   font-size: 12px;
   color: #6b7280;
+  position: sticky;
+  bottom: 0;
+  z-index: 8;
+  background: linear-gradient(to top, #fff 75%, rgba(255, 255, 255, 0.9) 100%);
+}
+
+/* 「全部文件」库列表分页：与 DepartmentFiles 部门库分页一致（无顶部分割线、不吸底） */
+.lib-grid-wrap .audit-pagination {
+  position: static;
+  bottom: auto;
+  z-index: auto;
+  background: transparent;
+  border-top: none;
+  margin-top: 12px;
+  padding: 0;
 }
 
 .audit-pagination-actions {
@@ -855,24 +1043,15 @@ function libraryTypeText(lib) {
   color: #b91c1c;
 }
 
-.lib-badge-shared,
-.lib-badge-owner {
+.lib-badge-shared {
   display: inline-flex;
   align-items: center;
   padding: 2px 8px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 500;
-}
-
-.lib-badge-shared {
   background-color: #eff6ff;
   color: #1d4ed8;
-}
-
-.lib-badge-owner {
-  background-color: #ecfdf5;
-  color: #15803d;
 }
 
 .lib-grid {
@@ -980,6 +1159,21 @@ function libraryTypeText(lib) {
   font-size: 11px;
   color: #6b7280;
   text-align: center;
+}
+
+/* 子资料库：布局与一级资料库列表一致，仅标题区分 */
+.child-libs-wrap {
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.child-libs-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  margin: 0;
+  padding: 0 2px;
 }
 
 /* 文件列表（当前库「全部文件」） */

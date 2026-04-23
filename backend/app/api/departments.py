@@ -579,6 +579,10 @@ def list_department_libraries(
     department_id: int,
     limit: int = Query(20, ge=1, le=200, description="每页数量"),
     offset: int = Query(0, ge=0, description="起始偏移量"),
+    roots_only: bool = Query(
+        True,
+        description="True：仅挂在一级、且 department_id 为本部门的根资料库；False：包含该 department_id 下的二级、三级子资料库（用于搜索等）",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -595,21 +599,26 @@ def list_department_libraries(
 
     from backend.app.core.library_access import has_library_access
 
-    libs = (
-        db.query(Library)
-        .filter(
-            Library.department_id == department_id,
-            Library.deleted_at.is_(None),
-        )
-        .order_by(Library.created_at.desc())
-        .all()
+    q = db.query(Library).filter(
+        Library.department_id == department_id,
+        Library.deleted_at.is_(None),
     )
+    if roots_only:
+        q = q.filter(Library.parent_id.is_(None))
+    libs = q.order_by(Library.created_at.desc()).all()
     visible: list[LibraryRead] = []
     for lib in libs:
         try:
             _, is_write = has_library_access(db, lib.id, current_user)
             visible.append(
-                _lib_to_read(db, lib, current_user.id, is_owner=lib.owner_id == current_user.id, is_write=is_write)
+                _lib_to_read(
+                    db,
+                    lib,
+                    current_user.id,
+                    current_user_obj=current_user,
+                    is_owner=lib.owner_id == current_user.id,
+                    is_write=is_write,
+                )
             )
         except HTTPException as e:
             # 仅展示当前用户有访问权限的部门库
