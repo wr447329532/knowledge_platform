@@ -37,6 +37,7 @@ npm-debug.log*
 
 # 本地打包备份（体积大，勿入库）
 *.tar
+*.tar.gz
 
 # 系统
 .DS_Store

@@ -106,6 +106,7 @@
           :download="download"
           :open-share="openShare"
           :open-rename="openRename"
+          :open-move-file="openMoveFile"
           :go-up="goUp"
           :open-versions="openVersions"
           :del-file="delFile"
@@ -409,6 +410,109 @@
             {{ moveLibSubmitting ? '移动中…' : '确定' }}
           </button>
           <button :disabled="moveLibSubmitting" @click="closeMoveLibModal">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 移动文件/文件夹：可选其他一级/二级/三级资料库（个人/部门规则与「移动资料库」一致）及库内文件夹 -->
+    <div v-if="showMoveFile" class="modal">
+      <div class="card move-lib-modal-card">
+        <h3>移动</h3>
+        <p class="form-hint" style="margin-top:8px;">
+          将「{{ fileMoveEntry?.path?.split('/').pop() }}{{ fileMoveEntry?.is_dir ? '/' : '' }}」移到您有写入权限的资料库（一级/二级/三级子库均可）及库内目标文件夹；部门库仅可移到本部门下的其他资料库；个人库与公开库不可与部门库混移（不改变名称）。
+        </p>
+        <div v-if="fileMoveLibrariesLoading" class="empty-hint" style="margin-top:12px;">加载目标资料库…</div>
+        <template v-else-if="fileMoveLibraries.length">
+          <div class="form-group" style="margin-top:12px;">
+            <label for="file-move-library-picker-trigger">目标资料库</label>
+            <div class="move-target-picker">
+              <button
+                id="file-move-library-picker-trigger"
+                type="button"
+                class="move-target-picker-trigger"
+                :disabled="fileMoveLibrariesLoading || fileMoveSubmitting"
+                :aria-expanded="fileMoveLibraryPickerOpen"
+                aria-haspopup="listbox"
+                @click.stop="fileMoveLibraryPickerOpen = !fileMoveLibraryPickerOpen"
+              >
+                <span class="move-target-picker-value">{{ selectedFileMoveLibraryLabel }}</span>
+                <span class="move-target-picker-chevron" aria-hidden="true">▾</span>
+              </button>
+              <div
+                v-if="fileMoveLibraryPickerOpen"
+                class="move-target-picker-panel"
+                role="listbox"
+                @click.stop
+              >
+                <button
+                  v-for="t in fileMoveLibraries"
+                  :key="'mlib-' + t.library_id"
+                  type="button"
+                  role="option"
+                  class="move-target-picker-option"
+                  :class="{ selected: Number(fileMoveTargetLibraryId) === Number(t.library_id) }"
+                  @click="selectFileMoveLibrary(t)"
+                >
+                  {{ t.label }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
+        <p v-else class="empty-hint" style="margin-top:12px;">暂无可写入的目标资料库（与当前库同类：个人/部门/公开）。</p>
+        <div v-if="fileMoveTargetsLoading" class="empty-hint" style="margin-top:12px;">加载目标文件夹…</div>
+        <template v-else-if="fileMoveTargets.length && fileMoveLibraries.length">
+          <div class="form-group" style="margin-top:12px;">
+            <label for="file-move-target-picker-trigger">目标文件夹</label>
+            <div class="move-target-picker">
+              <button
+                id="file-move-target-picker-trigger"
+                type="button"
+                class="move-target-picker-trigger"
+                :disabled="fileMoveTargetsLoading || fileMoveSubmitting"
+                :aria-expanded="fileMoveTargetPickerOpen"
+                aria-haspopup="listbox"
+                @click.stop="fileMoveTargetPickerOpen = !fileMoveTargetPickerOpen"
+              >
+                <span class="move-target-picker-value">{{ selectedFileMoveTargetLabel }}</span>
+                <span class="move-target-picker-chevron" aria-hidden="true">▾</span>
+              </button>
+              <div
+                v-if="fileMoveTargetPickerOpen"
+                class="move-target-picker-panel"
+                role="listbox"
+                @click.stop
+              >
+                <button
+                  v-for="t in fileMoveTargets"
+                  :key="'fd-' + (t.path === '' ? 'root' : t.path)"
+                  type="button"
+                  role="option"
+                  class="move-target-picker-option"
+                  :class="{ selected: fileMoveTargetDirPath === (t.path || '') }"
+                  @click="selectFileMoveTarget(t)"
+                >
+                  {{ t.label }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
+        <p
+          v-else-if="fileMoveLibraries.length && !fileMoveTargetsLoading"
+          class="empty-hint"
+          style="margin-top:12px;"
+        >当前资料库下没有可选文件夹（例如条目已在根目录且库内无子路径）。可尝试更换目标资料库。</p>
+        <p v-if="err" class="text-danger">{{ err }}</p>
+        <div class="modal-actions" style="margin-top:16px;">
+          <button
+            class="primary"
+            :disabled="fileMoveSubmitting || !fileMoveLibraries.length || fileMoveLibrariesLoading || !fileMoveTargets.length || fileMoveTargetsLoading || fileMoveTargetLibraryId == null"
+            @click="confirmMoveFile"
+          >
+            {{ fileMoveSubmitting ? '移动中…' : '确定' }}
+          </button>
+          <button :disabled="fileMoveSubmitting" @click="closeMoveFileModal">取消</button>
         </div>
       </div>
     </div>
@@ -1052,6 +1156,17 @@ const rootSearchFiles = ref([])
 const showRename = ref(false)
 const renameEntry = ref(null)
 const renameNewPath = ref('')
+const showMoveFile = ref(false)
+const fileMoveEntry = ref(null)
+const fileMoveTargets = ref([])
+const fileMoveTargetDirPath = ref('')
+const fileMoveTargetsLoading = ref(false)
+const fileMoveSubmitting = ref(false)
+const fileMoveTargetPickerOpen = ref(false)
+const fileMoveLibraries = ref([])
+const fileMoveLibrariesLoading = ref(false)
+const fileMoveTargetLibraryId = ref(null)
+const fileMoveLibraryPickerOpen = ref(false)
 const isDragging = ref(false)
 const showShare = ref(false)
 const shareFile = ref(null)
@@ -1217,6 +1332,22 @@ const selectedMoveTargetLabel = computed(() => {
   const t = list.find(x => (x.parent_id == null ? key === 'root' : String(x.parent_id) === key))
   const lab = t?.label != null ? String(t.label).trim() : ''
   return lab || '请选择目标位置'
+})
+
+const selectedFileMoveTargetLabel = computed(() => {
+  const cur = fileMoveTargetDirPath.value != null ? String(fileMoveTargetDirPath.value) : ''
+  const list = fileMoveTargets.value || []
+  const t = list.find(x => String(x.path || '') === cur)
+  const lab = t?.label != null ? String(t.label).trim() : ''
+  return lab || '请选择目标文件夹'
+})
+
+const selectedFileMoveLibraryLabel = computed(() => {
+  const id = fileMoveTargetLibraryId.value
+  const list = fileMoveLibraries.value || []
+  const t = list.find(x => Number(x.library_id) === Number(id))
+  const lab = t?.label != null ? String(t.label).trim() : ''
+  return lab || '请选择目标资料库'
 })
 
 const sortedFiles = computed(() => _sortFileList(files.value || []))
@@ -1506,6 +1637,22 @@ watch(moveTargetPickerOpen, open => {
   if (!open) return
   const onDocClick = () => {
     moveTargetPickerOpen.value = false
+    document.removeEventListener('click', onDocClick)
+  }
+  setTimeout(() => document.addEventListener('click', onDocClick), 0)
+})
+watch(fileMoveTargetPickerOpen, open => {
+  if (!open) return
+  const onDocClick = () => {
+    fileMoveTargetPickerOpen.value = false
+    document.removeEventListener('click', onDocClick)
+  }
+  setTimeout(() => document.addEventListener('click', onDocClick), 0)
+})
+watch(fileMoveLibraryPickerOpen, open => {
+  if (!open) return
+  const onDocClick = () => {
+    fileMoveLibraryPickerOpen.value = false
     document.removeEventListener('click', onDocClick)
   }
   setTimeout(() => document.addEventListener('click', onDocClick), 0)
@@ -1823,10 +1970,11 @@ function onFileClick(file) { if (file.is_dir) return; openPreview(file) }
 
 const IMG_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp']
 const TEXT_EXT = ['.txt', '.md', '.json', '.xml', '.html', '.htm', '.css', '.js', '.yaml', '.yml']
+const OFFICE_EXT = ['.ppt', '.pptx', '.doc', '.docx', '.xls', '.xlsx']
 function previewTypeOf(path) {
   const ext = '.' + (path || '').split('.').pop().toLowerCase()
   if (IMG_EXT.includes(ext)) return 'image'
-  if (ext === '.pdf') return 'pdf'
+  if (ext === '.pdf' || OFFICE_EXT.includes(ext)) return 'pdf'
   if (TEXT_EXT.includes(ext)) return 'text'
   return ''
 }
@@ -1881,6 +2029,117 @@ async function doRename() {
     await api.renameFile(renameEntry.value.id, newPath)
     loadFiles(); if (searchResults.value.length) doSearch(); closeRename(); showSuccess('重命名成功')
   } catch (e) { err.value = e.message }
+}
+
+function selectFileMoveTarget(t) {
+  fileMoveTargetDirPath.value = t?.path != null ? String(t.path) : ''
+  fileMoveTargetPickerOpen.value = false
+}
+
+async function selectFileMoveLibrary(t) {
+  if (t?.library_id == null) return
+  fileMoveTargetLibraryId.value = Number(t.library_id)
+  fileMoveLibraryPickerOpen.value = false
+  await loadFileMoveDirTargets()
+}
+
+async function loadFileMoveDirTargets() {
+  const f = fileMoveEntry.value
+  const libId = fileMoveTargetLibraryId.value
+  if (!f?.id || libId == null) {
+    fileMoveTargets.value = []
+    return
+  }
+  fileMoveTargetsLoading.value = true
+  try {
+    const srcLib = f.library_id ?? currentLib.value?.id
+    const excludeId = Number(libId) === Number(srcLib) ? f.id : null
+    const rows = await api.listFileDirMoveTargets(libId, excludeId)
+    fileMoveTargets.value = Array.isArray(rows) ? rows : []
+    if (fileMoveTargets.value.length) {
+      const first = fileMoveTargets.value[0]
+      fileMoveTargetDirPath.value = first.path != null ? String(first.path) : ''
+    } else {
+      fileMoveTargetDirPath.value = ''
+    }
+  } catch (e) {
+    err.value = e?.message || '无法加载目标文件夹'
+    fileMoveTargets.value = []
+    fileMoveTargetDirPath.value = ''
+  } finally {
+    fileMoveTargetsLoading.value = false
+  }
+}
+
+async function openMoveFile(f) {
+  const srcLib = f?.library_id ?? currentLib.value?.id
+  if (!srcLib || !f?.id) return
+  fileMoveEntry.value = f
+  err.value = ''
+  fileMoveLibraries.value = []
+  fileMoveTargetLibraryId.value = null
+  fileMoveTargetDirPath.value = ''
+  fileMoveTargets.value = []
+  fileMoveTargetPickerOpen.value = false
+  fileMoveLibraryPickerOpen.value = false
+  fileMoveLibrariesLoading.value = true
+  showMoveFile.value = true
+  try {
+    const libs = await api.listFileMoveTargetLibraries(srcLib)
+    fileMoveLibraries.value = Array.isArray(libs) ? libs : []
+    const same = fileMoveLibraries.value.find(x => Number(x.library_id) === Number(srcLib))
+    const pick = same?.library_id ?? fileMoveLibraries.value[0]?.library_id
+    fileMoveTargetLibraryId.value = pick != null ? Number(pick) : null
+    if (fileMoveTargetLibraryId.value != null) {
+      await loadFileMoveDirTargets()
+    } else {
+      fileMoveTargets.value = []
+    }
+  } catch (e) {
+    err.value = e?.message || '无法加载目标资料库'
+    fileMoveTargets.value = []
+  } finally {
+    fileMoveLibrariesLoading.value = false
+  }
+}
+
+function closeMoveFileModal() {
+  showMoveFile.value = false
+  fileMoveEntry.value = null
+  fileMoveTargets.value = []
+  fileMoveTargetDirPath.value = ''
+  fileMoveTargetPickerOpen.value = false
+  fileMoveLibraries.value = []
+  fileMoveTargetLibraryId.value = null
+  fileMoveLibraryPickerOpen.value = false
+  err.value = ''
+}
+
+async function confirmMoveFile() {
+  const f = fileMoveEntry.value
+  if (!f?.id || fileMoveSubmitting.value) return
+  const tgtLib = fileMoveTargetLibraryId.value
+  if (tgtLib == null) {
+    err.value = '请选择目标资料库'
+    return
+  }
+  const target = fileMoveTargetDirPath.value != null ? String(fileMoveTargetDirPath.value) : ''
+  err.value = ''
+  fileMoveSubmitting.value = true
+  try {
+    await api.moveFileToLibrary(f.id, {
+      target_library_id: tgtLib,
+      target_dir_path: target,
+    })
+    await loadFiles()
+    if (searchResults.value.length) await doSearch()
+    closeMoveFileModal()
+    showSuccess('已移动')
+  } catch (e) {
+    err.value = e.message || '移动失败'
+  } finally {
+    fileMoveSubmitting.value = false
+  }
 }
 
 function onFileSelect() { uploadErr.value = '' }

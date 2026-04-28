@@ -15,3 +15,13 @@ storage/
 app.db
 backups/
 *.log
+
+# 本地大文件 / 导出镜像（勿打进 backend 镜像，否则 context 可达 1GB+）
+postgres.tar
+*.tar
+*.tar.gz
+*.tgz
+knowledge_platform.tar
+knowledge_platform.tar.gz
+.cursor/
+**/.DS_Store

@@ -18,9 +18,7 @@ services:
       retries: 20
 
   app:
-    build:
-      context: .
-      dockerfile: docker/backend.Dockerfile
+    image: knowledge_platform-app:latest
     container_name: kp_app
     restart: always
     depends_on:
@@ -36,17 +34,22 @@ services:
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://192.168.150.99}
       BOOTSTRAP_DEFAULT_ADMIN: "true"
       RESET_DEFAULT_ADMIN_PASSWORD_ON_STARTUP: "false"
-      DB_AUTO_CREATE_TABLES_ON_STARTUP: "true"
-      DB_COMPAT_PATCH_ON_STARTUP: "true"
+      DB_AUTO_CREATE_TABLES_ON_STARTUP: "false"
+      DB_COMPAT_PATCH_ON_STARTUP: "false"
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
     volumes:
       - /data/storage:/app/storage
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     expose:
       - "8000"
 
   nginx:
-    build:
-      context: .
-      dockerfile: docker/nginx.Dockerfile
+    image: knowledge_platform-nginx:latest
     container_name: kp_nginx
     restart: always
     depends_on:

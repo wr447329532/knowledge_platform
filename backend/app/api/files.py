@@ -1,16 +1,22 @@
+import hashlib
+import logging
 import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, Query, Request, status, Path as FPath
+import aiofiles
+
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, UploadFile, Query, Request, status, Path as FPath
 from fastapi.responses import Response
 from fastapi.responses import FileResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, Integer, String, cast, literal, or_, select, union_all
+from sqlalchemy import Boolean, Integer, String, cast, literal, not_, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_user
@@ -22,6 +28,8 @@ from backend.app.core.library_access import (
     can_access_file,
     get_accessible_library_ids,
     has_library_access,
+    libraries_accessible_base_query,
+    resolve_root_library,
 )
 from backend.app.api.notifications import create_notification
 from backend.app.db.session import get_db
@@ -32,6 +40,7 @@ from backend.app.models.library import Library
 from backend.app.models.user import User
 
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -47,6 +56,28 @@ class FileRead(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class FileDirMoveTarget(BaseModel):
+    """本资料库内可选的目标文件夹（path 为空表示根目录）。"""
+
+    path: str = Field("", description="目标目录 path，空为根")
+    label: str = Field("", description="展示用")
+
+
+class FileMoveTargetLibrary(BaseModel):
+    """跨资料库移动时，可选的目标资料库（一级/二级/三级，需当前用户可写）。"""
+
+    library_id: int
+    label: str
+
+
+class FileMoveToLibraryBody(BaseModel):
+    target_library_id: int = Field(..., description="目标资料库 ID")
+    target_dir_path: str = Field(
+        "",
+        description="目标资料库内的父目录路径，空字符串表示根目录",
+    )
 
 
 class GlobalSearchFileRead(FileRead):
@@ -289,8 +320,7 @@ def add_file_share(
                 message=msg,
             )
     except Exception:
-        # 通知失败不影响主流程
-        pass
+        logger.warning("通知发送失败，不影响主流程", exc_info=True)
 
     db.commit()
 
@@ -510,21 +540,20 @@ async def upload_file(
     MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024
 
     size = 0
-    with open(dest_path, "wb") as f:
+    async with aiofiles.open(dest_path, "wb") as f:
         while chunk := await file.read(1024 * 1024):
             size += len(chunk)
             if size > MAX_FILE_SIZE_BYTES:
-                # 删除已写入的临时文件并中止上传
-                f.close()
                 try:
                     dest_path.unlink()
+                    dest_dir.rmdir()
                 except OSError:
                     pass
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="单个文件大小不能超过 500MB",
                 )
-            f.write(chunk)
+            await f.write(chunk)
 
     # 记录版本信息
     version = FileVersion(
@@ -589,11 +618,13 @@ async def upload_file(
             message=msg_for_self,
         )
     except Exception:
-        # 通知失败不影响主流程
-        pass
+        logger.warning("通知发送失败，不影响主流程", exc_info=True)
 
     db.commit()
     db.refresh(entry)
+
+    if dest_path.suffix.lower() in _OFFICE_EXTS:
+        _lo_executor.submit(_preconvert_office, dest_path)
 
     return entry
 
@@ -673,6 +704,405 @@ def list_files(
     return result
 
 
+def _file_move_target_new_path(target_dir: str, source_entry: FileEntry) -> str:
+    raw = (source_entry.path or "").strip("/").replace("\\", "/")
+    parts = [p for p in raw.split("/") if p]
+    if not parts:
+        return ""
+    name = parts[-1]
+    t = (target_dir or "").strip("/").replace("\\", "/")
+    if not t:
+        return name
+    return f"{t}/{name}"
+
+
+def _library_move_folder_paths(db: Session, library_id: int) -> set[str]:
+    """本库内可作为移动目标的文件夹路径集合。
+
+    除显式 mkdir 的目录行外，还从任意条目的 path 解析父级前缀（例如上传 ``a/b/c.pdf``
+    时往往没有 ``a``、``a/b`` 的 is_dir 行，列表仍按路径分层展示，移动目标也应包含这些路径）。
+    """
+    out: set[str] = set()
+    rows = (
+        db.query(FileEntry.path, FileEntry.is_dir)
+        .filter(
+            FileEntry.library_id == library_id,
+            FileEntry.deleted_at.is_(None),
+        )
+        .limit(50000)
+        .all()
+    )
+    for path_str, is_dir in rows:
+        p = (path_str or "").strip("/").replace("\\", "/")
+        if not p:
+            continue
+        parts = [x for x in p.split("/") if x]
+        if not parts:
+            continue
+        if is_dir:
+            for i in range(1, len(parts) + 1):
+                out.add("/".join(parts[:i]))
+        else:
+            for i in range(1, len(parts)):
+                out.add("/".join(parts[:i]))
+    return out
+
+
+@router.get("/dir-move-targets", response_model=List[FileDirMoveTarget])
+def list_file_dir_move_targets(
+    library_id: int = Query(..., description="资料库 ID"),
+    exclude_entry_id: Optional[int] = Query(None, description="要移动的条目 id，用于排除自身、子树及无效目标"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出本库内可选目标文件夹（含根），与 PATCH /files/{id}/rename 组合实现「移动」。"""
+    _get_library_and_check(db, library_id, current_user, require_write=True)
+
+    ex: FileEntry | None = None
+    exclude_prefix: str | None = None
+    if exclude_entry_id is not None:
+        ex = (
+            db.query(FileEntry)
+            .filter(
+                FileEntry.id == exclude_entry_id,
+                FileEntry.library_id == library_id,
+                FileEntry.deleted_at.is_(None),
+            )
+            .first()
+        )
+        if not ex:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="条目不存在")
+        sp = (ex.path or "").strip("/").replace("\\", "/")
+        if ex.is_dir and sp:
+            exclude_prefix = sp + "/"
+
+    folder_paths = _library_move_folder_paths(db, library_id)
+
+    candidates: list[FileDirMoveTarget] = []
+    cur_norm = ((ex.path or "").strip("/").replace("\\", "/")) if ex else ""
+
+    root_new = _file_move_target_new_path("", ex) if ex else ""
+    if not ex or root_new != cur_norm:
+        candidates.append(FileDirMoveTarget(path="", label="根目录"))
+
+    for p in sorted(folder_paths):
+        if not p:
+            continue
+        if ex and ex.is_dir and cur_norm and p == cur_norm:
+            continue
+        if exclude_prefix and (p == exclude_prefix.rstrip("/") or p.startswith(exclude_prefix)):
+            continue
+        if ex:
+            np = _file_move_target_new_path(p, ex)
+            if np == cur_norm:
+                continue
+        candidates.append(FileDirMoveTarget(path=p, label=p + "/"))
+
+    return candidates
+
+
+def _normalize_rel_file_path(p: str | None) -> str:
+    return (p or "").strip("/").replace("\\", "/")
+
+
+def _breadcrumb_label_for_file_move(db: Session, lib: Library, max_parts: int = 4) -> str:
+    """与资料库「移动」弹窗类似的层级展示（一级 / 二级 / 三级）。"""
+    parts: list[str] = []
+    cur: Library | None = lib
+    hops = 0
+    while cur is not None and hops < max_parts + 16:
+        hops += 1
+        parts.append((cur.name or "").strip() or f"#{cur.id}")
+        if cur.parent_id is None:
+            break
+        cur = db.query(Library).filter(Library.id == cur.parent_id).first()
+    chain = list(reversed(parts))
+    if len(chain) > max_parts:
+        chain = chain[-max_parts:]
+        return "… / " + " / ".join(chain)
+    return " / ".join(chain)
+
+
+def _file_move_lib_scope_kind(lib: Library) -> str:
+    """与移动资料库一致：部门库 / 个人库 / 公开库，跨库移动不得跨类。"""
+    if getattr(lib, "department_id", None) is not None:
+        return "department"
+    vis = str(getattr(lib, "visibility", "private") or "private").lower()
+    if vis == "public":
+        return "public"
+    return "personal"
+
+
+def _same_department_for_file_move(mov_root: Library, cand_root: Library) -> bool:
+    if _file_move_lib_scope_kind(mov_root) != "department":
+        return True
+    a = getattr(mov_root, "department_id", None)
+    b = getattr(cand_root, "department_id", None)
+    if a is None or b is None:
+        return False
+    return int(a) == int(b)
+
+
+def _rename_file_entry_core(
+    db: Session,
+    entry: FileEntry,
+    new_path_norm: str,
+    current_user: User,
+    request: Request | None,
+) -> None:
+    """同库内修改 path（含目录子树）。new_path_norm 已规范化；与当前路径相同则直接返回。不 commit。"""
+    np = _normalize_rel_file_path(new_path_norm)
+    if not np:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="路径不能为空")
+    if np == _normalize_rel_file_path(entry.path):
+        return
+    existing = (
+        db.query(FileEntry)
+        .filter(
+            FileEntry.library_id == entry.library_id,
+            FileEntry.path == np,
+            FileEntry.deleted_at.is_(None),
+            FileEntry.id != entry.id,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该路径已存在")
+    old_path = entry.path
+    if entry.is_dir:
+        prefix = old_path.rstrip("/") + "/"
+        new_prefix = np.rstrip("/") + "/"
+        children = (
+            db.query(FileEntry)
+            .filter(
+                FileEntry.library_id == entry.library_id,
+                FileEntry.path.startswith(prefix),
+                FileEntry.deleted_at.is_(None),
+            )
+            .all()
+        )
+        entry.path = np
+        for c in children:
+            c.path = new_prefix + c.path[len(prefix) :]
+    else:
+        entry.path = np
+    log_audit(
+        db,
+        current_user.id,
+        current_user.username,
+        "rename",
+        "file",
+        entry.id,
+        f"{old_path} -> {np}",
+        ip_address=get_client_ip(request),
+    )
+
+
+@router.get("/move-target-libraries", response_model=List[FileMoveTargetLibrary])
+def list_file_move_target_libraries(
+    source_library_id: int = Query(..., description="当前条目所在资料库 ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出可将文件/目录移动到的目标资料库（需可写，且与源库同类：个人/部门/公开；部门库限同部门）。"""
+    src_row = db.query(Library).filter(Library.id == source_library_id).first()
+    if not src_row or getattr(src_row, "deleted_at", None) is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料库不存在")
+    _get_library_and_check(db, source_library_id, current_user, require_write=True)
+    src_root = resolve_root_library(db, src_row)
+    src_kind = _file_move_lib_scope_kind(src_root)
+
+    targets: list[FileMoveTargetLibrary] = []
+    base_q = libraries_accessible_base_query(db, current_user)
+    for cand in base_q.order_by(Library.id.asc()).all():
+        cand_root = resolve_root_library(db, cand)
+        if _file_move_lib_scope_kind(cand_root) != src_kind:
+            continue
+        if not _same_department_for_file_move(src_root, cand_root):
+            continue
+        try:
+            _, iw = has_library_access(db, cand.id, current_user, require_write=True)
+        except HTTPException:
+            continue
+        if not iw:
+            continue
+        targets.append(
+            FileMoveTargetLibrary(
+                library_id=int(cand.id),
+                label=_breadcrumb_label_for_file_move(db, cand),
+            )
+        )
+    targets.sort(key=lambda t: (t.label or "").lower())
+    return targets
+
+
+@router.post("/{entry_id}/move-to-library", response_model=FileRead)
+def move_file_to_library(
+    entry_id: int,
+    body: FileMoveToLibraryBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """将文件或目录（含子树）移动到其他资料库内的指定文件夹；同库时退化为路径重命名。"""
+    entry: FileEntry | None = (
+        db.query(FileEntry).filter(FileEntry.id == entry_id, FileEntry.deleted_at.is_(None)).first()
+    )
+    if not entry:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件或目录不存在")
+
+    old_lib_id = int(entry.library_id)
+    tgt_lib_id = int(body.target_library_id)
+
+    _get_library_and_check(db, old_lib_id, current_user, require_write=True)
+    tgt_lib_row = db.query(Library).filter(Library.id == tgt_lib_id).first()
+    if not tgt_lib_row or getattr(tgt_lib_row, "deleted_at", None) is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="目标资料库不存在")
+    _get_library_and_check(db, tgt_lib_id, current_user, require_write=True)
+
+    src_lib_row = db.query(Library).filter(Library.id == old_lib_id).first()
+    if not src_lib_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="资料库不存在")
+    src_root = resolve_root_library(db, src_lib_row)
+    tgt_root = resolve_root_library(db, tgt_lib_row)
+    if _file_move_lib_scope_kind(src_root) != _file_move_lib_scope_kind(tgt_root):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="只能在同类资料库之间移动：部门库↔部门库，个人库↔个人库，公开库↔公开库",
+        )
+    if not _same_department_for_file_move(src_root, tgt_root):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="部门资料库仅可在本部门内的资料库之间移动",
+        )
+
+    td = _normalize_rel_file_path(body.target_dir_path)
+    entry_path_norm = _normalize_rel_file_path(entry.path)
+    parts = [x for x in entry_path_norm.split("/") if x]
+    if not parts:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无效路径")
+    name = parts[-1]
+    new_root_path = f"{td}/{name}" if td else name
+
+    if tgt_lib_id == old_lib_id:
+        _rename_file_entry_core(db, entry, new_root_path, current_user, request)
+        db.commit()
+        db.refresh(entry)
+        return entry
+
+    orig_root_path = entry.path
+    old_prefix: str | None = None
+    if entry.is_dir and (orig_root_path or "").strip():
+        old_prefix = orig_root_path.rstrip("/") + "/"
+    subtree: list[FileEntry] = [entry]
+    if entry.is_dir and old_prefix:
+        subtree.extend(
+            db.query(FileEntry)
+            .filter(
+                FileEntry.library_id == old_lib_id,
+                FileEntry.deleted_at.is_(None),
+                FileEntry.path.startswith(old_prefix),
+            )
+            .all()
+        )
+    moved_ids = [e.id for e in subtree]
+
+    moves: list[tuple[FileEntry, str]] = []
+    for e in subtree:
+        if e.id == entry.id:
+            np = new_root_path
+        else:
+            if not old_prefix:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="内部错误：目录前缀",
+                )
+            np = new_root_path.rstrip("/") + "/" + e.path[len(old_prefix) :]
+        moves.append((e, np))
+
+    for _e, np in moves:
+        hit = (
+            db.query(FileEntry)
+            .filter(
+                FileEntry.library_id == tgt_lib_id,
+                FileEntry.path == np,
+                FileEntry.deleted_at.is_(None),
+                not_(FileEntry.id.in_(moved_ids)),
+            )
+            .first()
+        )
+        if hit:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"目标资料库中已存在路径：{np}",
+            )
+
+    storage_root = _ensure_storage_root()
+    disk_moves: list[tuple[Path, Path]] = []
+    try:
+        for e, _np in moves:
+            if e.is_dir:
+                continue
+            old_base = storage_root / str(old_lib_id) / str(e.id)
+            new_base = storage_root / str(tgt_lib_id) / str(e.id)
+            if old_base.exists():
+                if new_base.exists():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="目标资料库存储目录冲突，无法完成移动",
+                    )
+                new_base.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(old_base), str(new_base))
+                disk_moves.append((old_base, new_base))
+                op = str(old_base)
+                npr = str(new_base)
+                for v in db.query(FileVersion).filter(FileVersion.file_entry_id == e.id).all():
+                    sp = v.storage_path or ""
+                    if sp.startswith(op):
+                        v.storage_path = npr + sp[len(op) :]
+                    else:
+                        v.storage_path = str(new_base / str(v.version_no) / Path(sp).name)
+
+        for e, np in moves:
+            e.library_id = tgt_lib_id
+            e.path = np
+
+        log_audit(
+            db,
+            current_user.id,
+            current_user.username,
+            "file_move_library",
+            "file",
+            entry.id,
+            f"library {old_lib_id}->{tgt_lib_id} root_path={new_root_path}",
+            ip_address=get_client_ip(request),
+        )
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        for old_b, new_b in reversed(disk_moves):
+            try:
+                if new_b.exists() and not old_b.exists():
+                    old_b.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(new_b), str(old_b))
+            except OSError:
+                logger.warning("回滚跨库文件存储移动失败", exc_info=True)
+        raise
+    except Exception:
+        db.rollback()
+        for old_b, new_b in reversed(disk_moves):
+            try:
+                if new_b.exists() and not old_b.exists():
+                    old_b.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(new_b), str(old_b))
+            except OSError:
+                logger.warning("回滚跨库文件存储移动失败", exc_info=True)
+        raise
+
+    db.refresh(entry)
+    return entry
+
+
 @router.post("/mkdir", response_model=FileRead)
 def create_directory(
     library_id: int,
@@ -733,57 +1163,14 @@ def rename_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件或目录不存在")
     _get_library_and_check(db, entry.library_id, current_user, require_write=True)
 
-    new_path = new_path.strip("/").replace("\\", "/")
-    if not new_path:
+    np = _normalize_rel_file_path(new_path)
+    if not np:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="路径不能为空")
-    if new_path == entry.path:
+    if np == _normalize_rel_file_path(entry.path):
         db.refresh(entry)
         return entry
 
-    # 检查新路径是否已存在
-    existing = (
-        db.query(FileEntry)
-        .filter(
-            FileEntry.library_id == entry.library_id,
-            FileEntry.path == new_path,
-            FileEntry.deleted_at.is_(None),
-            FileEntry.id != entry_id,
-        )
-        .first()
-    )
-    if existing:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该路径已存在")
-
-    old_path = entry.path
-    if entry.is_dir:
-        # 目录：需同时更新所有子项路径
-        prefix = old_path.rstrip("/") + "/"
-        new_prefix = new_path.rstrip("/") + "/"
-        children = (
-            db.query(FileEntry)
-            .filter(
-                FileEntry.library_id == entry.library_id,
-                FileEntry.path.startswith(prefix),
-                FileEntry.deleted_at.is_(None),
-            )
-            .all()
-        )
-        entry.path = new_path
-        for c in children:
-            c.path = new_prefix + c.path[len(prefix) :]
-    else:
-        entry.path = new_path
-
-    log_audit(
-        db,
-        current_user.id,
-        current_user.username,
-        "rename",
-        "file",
-        entry.id,
-        f"{old_path} -> {new_path}",
-        ip_address=get_client_ip(request),
-    )
+    _rename_file_entry_core(db, entry, np, current_user, request)
     db.commit()
     db.refresh(entry)
     return entry
@@ -2337,6 +2724,7 @@ def permanent_delete_file_version(
 @router.get("/download")
 def download_file(
     entry_id: int,
+    background_tasks: BackgroundTasks,
     version_no: Optional[int] = Query(None, description="指定版本号，不填则下载最新版本"),
     request: Request = None,
     db: Session = Depends(get_db),
@@ -2361,17 +2749,23 @@ def download_file(
     if not storage_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件物理数据缺失")
 
-    log_audit(
-        db,
-        current_user.id,
-        current_user.username,
-        "下载文件",
-        "file",
-        entry.id,
-        f"path={entry.path} version={version.version_no}",
-        ip_address=get_client_ip(request),
-    )
-    db.commit()
+    # 审计日志在响应发出后异步写入，不阻塞文件处理
+    _entry_path = entry.path
+    _version_no = version.version_no
+    _user_id = current_user.id
+    _username = current_user.username
+    _ip = get_client_ip(request)
+    _entry_id = entry.id
+
+    def _write_audit() -> None:
+        try:
+            log_audit(db, _user_id, _username, "下载文件", "file", _entry_id,
+                      f"path={_entry_path} version={_version_no}", ip_address=_ip)
+            db.commit()
+        except Exception:
+            pass
+
+    background_tasks.add_task(_write_audit)
 
     # 下载文件名优先使用业务路径中的文件名，确保与前端显示名称一致
     filename = Path(entry.path).name or storage_path.name
@@ -2381,14 +2775,14 @@ def download_file(
     ptype = _download_media_kind(filename, storage_path)
     if ptype == "pdf":
         try:
-            out_pdf = _apply_watermark_to_full_pdf(storage_path, wm)
+            out_pdf = _apply_vector_watermark_to_pdf(storage_path, wm)
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"无法为该 PDF 生成带水印副本：{exc}",
             ) from exc
         h = {**_content_disposition_attachment(filename), **_no_cache_download_headers()}
-        h["X-KP-Download-Processed"] = "watermarked-pdf"
+        h["X-KP-Download-Processed"] = "watermarked-pdf-vector"
         return Response(content=out_pdf, media_type="application/pdf", headers=h)
     if ptype == "image":
         raw = storage_path.read_bytes()
@@ -2616,15 +3010,103 @@ def _get_version_storage_path(db: Session, entry_id: int, version_no: Optional[i
     return entry, version, storage_path
 
 
+_OFFICE_EXTS: frozenset[str] = frozenset({".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx"})
+_lo_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lo_convert")
+
+
+def _preconvert_office(path: Path) -> None:
+    try:
+        _office_to_pdf(path)
+    except Exception:
+        logger.warning("后台预转换失败 path=%s", path, exc_info=True)
+
+
 def _preview_type_by_filename(filename: str) -> str:
     ext = Path(filename).suffix.lower()
-    if ext == ".pdf":
+    if ext == ".pdf" or ext in _OFFICE_EXTS:
         return "pdf"
     if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
         return "image"
     if ext in {".txt", ".md", ".json", ".xml", ".html", ".htm", ".css", ".js", ".yaml", ".yml"}:
         return "text"
     return "unsupported"
+
+
+@lru_cache(maxsize=1)
+def _find_libreoffice_bin() -> str:
+    """Return path to LibreOffice binary, trying common locations."""
+    import shutil
+    candidates = [
+        "libreoffice",
+        "soffice",
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        "/usr/bin/libreoffice",
+        "/usr/bin/soffice",
+        "C:\\Program Files\\LibreOffice\\program\\soffice.exe",
+    ]
+    for c in candidates:
+        if shutil.which(c) or Path(c).is_file():
+            return c
+    raise RuntimeError(
+        "未找到 LibreOffice，无法预览 Office 文件。"
+        "请安装 LibreOffice：macOS 执行 brew install --cask libreoffice"
+    )
+
+
+def _office_to_pdf(src: Path) -> Path:
+    """Convert Office file to PDF via LibreOffice, caching by mtime."""
+    import subprocess
+
+    lo_bin = _find_libreoffice_bin()
+    cache_dir = src.parent / ".lo_cache"
+    cache_dir.mkdir(exist_ok=True)
+    mtime = int(src.stat().st_mtime * 1000)
+    pdf_path = cache_dir / f"{src.stem}_{mtime}.pdf"
+    if pdf_path.is_file():
+        return pdf_path
+    # Remove stale cache entries for this stem
+    for old in cache_dir.glob(f"{src.stem}_*.pdf"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    import shutil as _shutil
+    xvfb = _shutil.which("xvfb-run")
+    cmd = []
+    if xvfb:
+        cmd += [xvfb, "--auto-servernum", "--server-args=-screen 0 1024x768x24"]
+    cmd += [
+        lo_bin,
+        "--headless",
+        "--norestore",
+        "--nofirststartwizard",
+        "--convert-to", "pdf",
+        "--outdir", str(cache_dir),
+        str(src),
+    ]
+    lo_home = Path("/tmp/lo_home")
+    lo_home.mkdir(exist_ok=True)
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        timeout=120,
+        env={**os.environ, "HOME": str(lo_home)},
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"LibreOffice 转换失败: {result.stderr.decode(errors='replace')[:200]}")
+    converted = cache_dir / f"{src.stem}.pdf"
+    if converted.is_file():
+        converted.rename(pdf_path)
+    if not pdf_path.is_file():
+        raise RuntimeError("LibreOffice 未生成输出文件")
+    return pdf_path
+
+
+def _resolve_preview_path(storage_path: Path) -> Path:
+    """Return PDF path for Office files (converting if needed), or original path."""
+    if storage_path.suffix.lower() in _OFFICE_EXTS:
+        return _office_to_pdf(storage_path)
+    return storage_path
 
 
 # 水印字体候选（PIL / PyMuPDF 共用）
@@ -2641,6 +3123,97 @@ _WATERMARK_FONT_PATHS: tuple[str, ...] = (
     "DejaVuSans.ttf",
     "Arial.ttf",
 )
+
+
+@lru_cache(maxsize=1)
+def _find_cjk_font_path() -> str | None:
+    """找到第一个可用的 CJK 字体文件路径，结果缓存避免重复遍历。"""
+    for fp in _WATERMARK_FONT_PATHS:
+        try:
+            if Path(fp).is_file():
+                return fp
+        except Exception:
+            pass
+    return None
+
+
+def _build_watermark_xobject_doc(wm: str, w: float, h: float) -> "fitz.Document":
+    """
+    将水印内容（平铺文字）渲染到一个临时单页 PDF。
+    供 show_pdf_page 作为 Form XObject 嵌入，水印数据在最终 PDF 中只存储一次。
+    """
+    import fitz
+
+    font_path = _find_cjk_font_path()
+    wm_doc = fitz.open()
+    wm_p = wm_doc.new_page(width=w, height=h)
+    step_x = max(160, len(wm) * 9 + 60)
+    step_y = 100
+    for row, y in enumerate(range(0, int(h) + step_y, step_y)):
+        x_offset = (step_x // 2) if row % 2 else 0
+        for x in range(-step_x + x_offset, int(w) + step_x, step_x):
+            kw: dict = {"fontsize": 12, "color": (0.68, 0.68, 0.68), "rotate": 30, "overlay": True}
+            if font_path:
+                kw["fontfile"] = font_path
+                kw["fontname"] = "wm"
+            try:
+                wm_p.insert_text(fitz.Point(x, y), wm, **kw)
+            except Exception:
+                pass
+    return wm_doc
+
+
+def _apply_vector_watermark_to_pdf(pdf_path: Path, wm: str) -> bytes:
+    """
+    用 Form XObject 把水印嵌入 PDF：水印内容只生成一次，每页仅存一个引用。
+    相比逐页 insert_text，100 页 PDF 的处理时间从 O(N) 降到接近 O(1)。
+    结果缓存到磁盘，同一用户重复下载直接读缓存。
+    """
+    import fitz
+
+    cache_path = _dl_cache_path(pdf_path, wm, variant="vec")
+    if cache_path.is_file():
+        return cache_path.read_bytes()
+
+    font_path = _find_cjk_font_path()
+    doc = fitz.open(str(pdf_path))
+    # 按页面尺寸分组，同尺寸页共用同一份水印 XObject
+    wm_docs: dict[tuple[int, int], "fitz.Document"] = {}
+    try:
+        for page in doc:
+            w, h = page.rect.width, page.rect.height
+            key = (round(w), round(h))
+            if key not in wm_docs:
+                wm_docs[key] = _build_watermark_xobject_doc(wm, w, h)
+
+            # show_pdf_page 将水印页作为 Form XObject 引用，不复制内容
+            page.show_pdf_page(page.rect, wm_docs[key], 0, overlay=True)
+
+            # 底部标识条（每页独立，内容轻量）
+            bar_h = max(20.0, h * 0.032)
+            page.draw_rect(fitz.Rect(0, h - bar_h, w, h), color=None, fill=(0.96, 0.96, 0.97), width=0)
+            bar_kw: dict = {"fontsize": min(10.0, bar_h * 0.55), "color": (0.35, 0.35, 0.38), "overlay": True}
+            if font_path:
+                bar_kw["fontfile"] = font_path
+                bar_kw["fontname"] = "wm"
+            try:
+                page.insert_text(fitz.Point(10, h - bar_h * 0.28), f"下载水印 {wm}", **bar_kw)
+            except Exception:
+                pass
+
+        # garbage=2 已足够清理新增引用，比 garbage=4 快很多
+        result = doc.tobytes(deflate=True, garbage=2)
+    finally:
+        doc.close()
+        for d in wm_docs.values():
+            d.close()
+
+    try:
+        cache_path.write_bytes(result)
+    except OSError:
+        pass
+
+    return result
 
 
 def _content_disposition_attachment(filename: str) -> dict[str, str]:
@@ -2690,8 +3263,9 @@ def _watermark_text(user: User) -> str:
     return f"user-{user.id}"
 
 
+@lru_cache(maxsize=16)
 def _load_watermark_font(size: int):
-    """返回与字号匹配的 ImageFont，保证中文可用。"""
+    """返回与字号匹配的 ImageFont，保证中文可用。结果按字号缓存，避免重复遍历字体路径。"""
     from PIL import ImageFont
 
     for fp in _WATERMARK_FONT_PATHS:
@@ -2815,27 +3389,46 @@ def _apply_watermark_to_image(
     return buf.getvalue(), "image/jpeg"
 
 
+@lru_cache(maxsize=512)
+def _get_pdf_page_count(pdf_path_str: str) -> int:
+    """获取 PDF 总页数，结果按路径缓存（同版本文件路径不变，页数不变）。"""
+    import fitz
+
+    doc = fitz.open(pdf_path_str)
+    try:
+        return doc.page_count
+    finally:
+        doc.close()
+
+
+@lru_cache(maxsize=256)
+def _render_pdf_page_raw(pdf_path_str: str, page: int) -> bytes:
+    """栅格化 PDF 单页为 PNG，结果与用户无关，缓存后多用户查看同页只渲染一次。"""
+    import fitz
+
+    doc = fitz.open(pdf_path_str)
+    try:
+        p = doc.load_page(page - 1)
+        mat = fitz.Matrix(2.0, 2.0)
+        pix = p.get_pixmap(matrix=mat, alpha=False)
+        return pix.tobytes("png")
+    finally:
+        doc.close()
+
+
 def _render_pdf_page_with_watermark(pdf_path: Path, page: int, wm: str) -> tuple[bytes, str, int]:
     """
     将 PDF 指定页渲染为图片（JPEG），并叠加水印。
     返回 (out_bytes, content_type, page_count)。
+    栅格化结果缓存复用，每次只重新叠加用户水印。
     """
-    import fitz  # PyMuPDF
-
-    doc = fitz.open(str(pdf_path))
-    try:
-        page_count = doc.page_count
-        if page < 1 or page > page_count:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="页码超出范围")
-        p = doc.load_page(page - 1)
-        # 适度清晰度（约 144dpi），MVP 不做缓存先控制 CPU
-        mat = fitz.Matrix(2.0, 2.0)
-        pix = p.get_pixmap(matrix=mat, alpha=False)
-        img_bytes = pix.tobytes("png")
-        out_bytes, ct = _apply_watermark_to_image(img_bytes, wm, max_side=1600, quality=75)
-        return out_bytes, ct, page_count
-    finally:
-        doc.close()
+    pdf_path_str = str(pdf_path)
+    page_count = _get_pdf_page_count(pdf_path_str)
+    if page < 1 or page > page_count:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="页码超出范围")
+    img_bytes = _render_pdf_page_raw(pdf_path_str, page)
+    out_bytes, ct = _apply_watermark_to_image(img_bytes, wm, max_side=1600, quality=75)
+    return out_bytes, ct, page_count
 
 
 def _download_media_kind(filename: str, storage_path: Path) -> str:
@@ -2905,44 +3498,54 @@ def _stamp_vector_download_footer_on_pdf(doc, wm: str) -> None:
                 pass
 
 
+def _dl_cache_path(storage_path: Path, wm: str, variant: str = "vec") -> Path:
+    """下载水印 PDF 的磁盘缓存路径，按文件路径 + 修改时间 + 水印文字 + 水印变体索引。
+    文件被新版本替换后 mtime 变化，缓存自动失效。"""
+    try:
+        mtime = int(storage_path.stat().st_mtime)
+    except OSError:
+        mtime = 0
+    h = hashlib.sha1(f"{storage_path}:{wm}:{mtime}:{variant}".encode()).hexdigest()[:20]
+    cache_dir = _ensure_storage_root() / ".dl_cache"
+    cache_dir.mkdir(exist_ok=True)
+    return cache_dir / f"{h}.pdf"
+
+
 def _pdf_page_watermarked_single_pdf_bytes(pdf_path_str: str, page_index: int, wm: str) -> bytes:
-    """单页打开文档并栅格化加水印；供线程池调用（主文档不可跨线程共享）。"""
+    """单页加水印并转为单页 PDF。复用 _render_pdf_page_raw 已缓存的栅格，避免重复 fitz.open + 渲染。"""
     import fitz
 
-    doc = fitz.open(pdf_path_str)
+    # page_index 是 0-based，_render_pdf_page_raw 接受 1-based page
+    png = _render_pdf_page_raw(pdf_path_str, page_index + 1)
+    out_jpg, _ = _apply_watermark_to_image(
+        png, wm, max_side=2000, quality=85, for_download=True
+    )
+    jdoc = fitz.open(stream=out_jpg, filetype="jpeg")
     try:
-        page = doc.load_page(page_index)
-        mat = fitz.Matrix(1.35, 1.35)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        png = pix.tobytes("png")
-        out_jpg, _ = _apply_watermark_to_image(
-            png, wm, max_side=2000, quality=85, for_download=True
-        )
-        jdoc = fitz.open(stream=out_jpg, filetype="jpeg")
-        try:
-            return jdoc.convert_to_pdf()
-        finally:
-            jdoc.close()
+        return jdoc.convert_to_pdf()
     finally:
-        doc.close()
+        jdoc.close()
 
 
 def _apply_watermark_to_full_pdf(pdf_path: Path, wm: str) -> bytes:
     """
     逐页栅格化后走 PIL 斜纹水印 + 底栏，再拼回 PDF。
-    嵌入页使用 convert_to_pdf + insert_pdf（比单页 insert_image(stream=) 在部分阅读器/版本上更稳定）。
-    多页时按页并行打开 PDF，降低矩阵倍率与 JPEG 尺寸以缩短下载耗时。
+    结果缓存到磁盘：同一用户对同版本文件的重复下载直接读缓存，无需重新处理。
     """
     import fitz
 
+    cache_path = _dl_cache_path(pdf_path, wm)
+    if cache_path.is_file():
+        return cache_path.read_bytes()
+
     path_str = str(pdf_path)
-    src = fitz.open(path_str)
-    try:
-        n = src.page_count
-        if n < 1:
+    n = _get_pdf_page_count(path_str)
+    if n < 1:
+        src = fitz.open(path_str)
+        try:
             return src.tobytes(deflate=True, garbage=4)
-    finally:
-        src.close()
+        finally:
+            src.close()
 
     if n == 1:
         page_pdfs = [_pdf_page_watermarked_single_pdf_bytes(path_str, 0, wm)]
@@ -2963,9 +3566,16 @@ def _apply_watermark_to_full_pdf(pdf_path: Path, wm: str) -> bytes:
             finally:
                 jone.close()
         _stamp_vector_download_footer_on_pdf(dst, wm)
-        return dst.tobytes(deflate=True, garbage=4)
+        result = dst.tobytes(deflate=True, garbage=4)
     finally:
         dst.close()
+
+    try:
+        cache_path.write_bytes(result)
+    except OSError:
+        pass
+
+    return result
 
 
 @router.get("/rendered-preview/meta", response_model=RenderedPreviewMeta)
@@ -2989,12 +3599,10 @@ def get_rendered_preview_meta(
     page_count = 1
     if ptype == "pdf":
         try:
-            import fitz  # PyMuPDF
-
-            doc = fitz.open(str(storage_path))
-            page_count = doc.page_count
-            doc.close()
+            pdf_path = _resolve_preview_path(storage_path)
+            page_count = _get_pdf_page_count(str(pdf_path))
         except Exception:
+            logger.warning("Office->PDF 转换失败 path=%s", storage_path, exc_info=True)
             ptype = "unsupported"
             page_count = 1
 
@@ -3029,8 +3637,33 @@ def get_rendered_preview(
 
     wm = _watermark_text(current_user)
     ptype = _preview_type_by_filename(storage_path.name)
+    # 水印结果含用户信息，不可共享缓存；60 秒内浏览器可复用自己的缓存（翻回同一页无需重新请求）
+    _cache_headers = {"Cache-Control": "private, max-age=60, no-transform"}
 
-    # 记录审计：受控预览
+    if ptype == "pdf":
+        try:
+            pdf_path = _resolve_preview_path(storage_path)
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"文件转换失败：{e}")
+        out_bytes, ct, _page_count = _render_pdf_page_with_watermark(pdf_path, page, wm)
+        response = Response(content=out_bytes, media_type=ct, headers=_cache_headers)
+    elif ptype == "image":
+        raw = storage_path.read_bytes()
+        out_bytes, ct = _apply_watermark_to_image(raw, wm, max_side=1600, quality=75)
+        response = Response(content=out_bytes, media_type=ct, headers=_cache_headers)
+    elif ptype == "text":
+        MAX_CHARS = 200_000
+        try:
+            txt = storage_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            txt = storage_path.read_text(encoding="latin-1", errors="replace")
+        if len(txt) > MAX_CHARS:
+            txt = txt[:MAX_CHARS] + "\n\n...(内容过长，已截断)...\n"
+        response = Response(content=txt, media_type="text/plain; charset=utf-8", headers=_cache_headers)
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该文件类型暂不支持受控预览")
+
+    # 审计日志在渲染完成后写入，不阻塞渲染耗时
     try:
         detail = f"path={entry.path} version={version.version_no} type={ptype}"
         if ptype == "pdf":
@@ -3049,28 +3682,7 @@ def get_rendered_preview(
     except Exception:
         pass
 
-    if ptype == "pdf":
-        out_bytes, ct, _page_count = _render_pdf_page_with_watermark(storage_path, page, wm)
-        return Response(content=out_bytes, media_type=ct)
-
-    if ptype == "image":
-        raw = storage_path.read_bytes()
-        out_bytes, ct = _apply_watermark_to_image(raw, wm, max_side=1600, quality=75)
-        return Response(content=out_bytes, media_type=ct)
-
-    if ptype == "text":
-        # 只读预览不返回原文件：截断（不在内容中注入水印，水印由前端叠加层实现）
-        MAX_CHARS = 200_000
-        try:
-            txt = storage_path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            # 二进制或其他编码：回退为 latin-1 近似
-            txt = storage_path.read_text(encoding="latin-1", errors="replace")
-        if len(txt) > MAX_CHARS:
-            txt = txt[:MAX_CHARS] + "\n\n...(内容过长，已截断)...\n"
-        return Response(content=txt, media_type="text/plain; charset=utf-8")
-
-    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该文件类型暂不支持受控预览")
+    return response
 
 
 

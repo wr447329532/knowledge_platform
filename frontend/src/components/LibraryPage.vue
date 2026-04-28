@@ -475,6 +475,11 @@
                       class="btn-small"
                       @click="openRename(r); closeActionMenu()"
                     >重命名</button>
+                    <button
+                      v-if="currentLib?.is_writeable"
+                      class="btn-small"
+                      @click="openMoveFile(r); closeActionMenu()"
+                    >移动</button>
                   </div>
                 </span>
               </div>
@@ -521,6 +526,11 @@
                   class="btn-small"
                   @click="openRename(r); closeActionMenu()"
                 >重命名</button>
+                <button
+                  v-if="currentLib?.is_writeable"
+                  class="btn-small"
+                  @click="openMoveFile(r); closeActionMenu()"
+                >移动</button>
               </div>
             </div>
             <p v-if="!sortedSearchResults.length" class="empty-hint">未找到匹配结果</p>
@@ -608,6 +618,11 @@
                   >重命名</button>
                   <button
                     v-if="currentLib?.is_writeable"
+                    class="btn-small"
+                    @click="openMoveFile(f); closeActionMenu()"
+                  >移动</button>
+                  <button
+                    v-if="currentLib?.is_writeable"
                     class="btn-small danger"
                     @click="delFile(f); closeActionMenu()"
                   >删除</button>
@@ -670,6 +685,11 @@
                 class="btn-small"
                 @click="openRename(f); closeActionMenu()"
               >重命名</button>
+              <button
+                v-if="currentLib?.is_writeable"
+                class="btn-small"
+                @click="openMoveFile(f); closeActionMenu()"
+              >移动</button>
               <button
                 v-if="currentLib?.is_writeable"
                 class="btn-small danger"
@@ -760,6 +780,7 @@ const props = defineProps({
   download: { type: Function, required: true },
   openShare: { type: Function, required: true },
   openRename: { type: Function, required: true },
+  openMoveFile: { type: Function, required: true },
   goUp: { type: Function, required: true },
   openVersions: { type: Function, required: true },
   delFile: { type: Function, required: true },

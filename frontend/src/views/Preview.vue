@@ -5,7 +5,7 @@
       <div class="preview-title">
         <div class="preview-filename" :title="meta?.filename || ''">{{ meta?.filename || '预览' }}</div>
         <div class="preview-sub">
-          <span v-if="meta?.preview_type === 'pdf'">PDF · {{ page }}/{{ meta.page_count }}</span>
+          <span v-if="meta?.preview_type === 'pdf'">{{ fileTypeLabel(meta.filename) }} · {{ page }}/{{ meta.page_count }}</span>
           <span v-else-if="meta?.preview_type === 'image'">图片</span>
           <span v-else-if="meta?.preview_type === 'text'">文本</span>
           <span v-else>不支持预览</span>
@@ -170,6 +170,13 @@ async function download() {
   } catch (e) {
     err.value = e.message || '下载失败'
   }
+}
+
+function fileTypeLabel(filename) {
+  if (!filename) return 'PDF'
+  const ext = filename.split('.').pop()?.toLowerCase()
+  const map = { pptx: 'PPT', ppt: 'PPT', docx: 'Word', doc: 'Word', xlsx: 'Excel', xls: 'Excel' }
+  return map[ext] || 'PDF'
 }
 
 function goBack() {

@@ -369,6 +369,31 @@ export async function renameFile(entryId, newPath) {
   })
 }
 
+/** 本资料库内可移动到的目标文件夹（含根目录），与 rename 组合为「移动」 */
+export async function listFileDirMoveTargets(libraryId, excludeEntryId) {
+  const q = new URLSearchParams({ library_id: String(libraryId) })
+  if (excludeEntryId != null) q.set('exclude_entry_id', String(excludeEntryId))
+  return api(`/files/dir-move-targets?${q.toString()}`)
+}
+
+/** 跨资料库移动：当前用户可写的目标资料库（个人/部门/公开与源库同类；部门限同部门） */
+export async function listFileMoveTargetLibraries(sourceLibraryId) {
+  const q = new URLSearchParams({ source_library_id: String(sourceLibraryId) })
+  return api(`/files/move-target-libraries?${q.toString()}`)
+}
+
+/** 将条目移动到目标资料库的指定文件夹内（同库则等价于 rename） */
+export async function moveFileToLibrary(entryId, { target_library_id, target_dir_path = '' }) {
+  return api(`/files/${entryId}/move-to-library`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      target_library_id,
+      target_dir_path: target_dir_path != null ? String(target_dir_path) : '',
+    }),
+  })
+}
+
 /** 搜索文件（按路径关键词） */
 export async function searchFiles(libraryId, keyword) {
   if (!keyword || !keyword.trim()) return []
@@ -708,7 +733,7 @@ export async function previewFileAsText(entryId) {
   return res.text()
 }
 
-const PREVIEW_EXT = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.txt', '.md', '.json', '.xml', '.html', '.htm', '.css', '.js', '.yaml', '.yml']
+const PREVIEW_EXT = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.txt', '.md', '.json', '.xml', '.html', '.htm', '.css', '.js', '.yaml', '.yml', '.ppt', '.pptx', '.doc', '.docx', '.xls', '.xlsx']
 export function canPreview(path) {
   const ext = '.' + (path || '').split('.').pop().toLowerCase()
   return PREVIEW_EXT.includes(ext)

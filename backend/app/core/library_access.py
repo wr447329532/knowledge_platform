@@ -122,7 +122,7 @@ _dept_snap_ts: float = 0.0
 _dept_parent_map: dict[int, int | None] = {}
 _dept_all_ids: frozenset[int] = frozenset()
 # 部门树快照 TTL：减少每条权限判断都全表扫描 Department；部门变更后最多延迟该秒数生效
-DEPT_SNAPSHOT_TTL_SEC = 25.0
+DEPT_SNAPSHOT_TTL_SEC = 10.0
 
 
 def invalidate_department_access_cache() -> None:
@@ -185,6 +185,8 @@ def write_access_for_listed_library(
     lib: Library,
     user: User,
     acc_dept_ids: Set[int],
+    *,
+    preloaded_root: Library | None = None,
 ) -> bool:
     """
     在「资料库已在用户可访问列表中」的前提下，推断是否可写。
@@ -192,7 +194,7 @@ def write_access_for_listed_library(
     """
     if user.is_superuser or lib.owner_id == user.id:
         return True
-    acl = resolve_root_library(db, lib)
+    acl = preloaded_root if preloaded_root is not None else resolve_root_library(db, lib)
     if acl.owner_id == user.id:
         return True
     member = _get_library_member(db, acl.id, user.id)

@@ -28,6 +28,9 @@ from backend.app.models.library_member import LibraryMember
 from backend.app.models.user import User
 
 
+MAX_LIBRARY_DEPTH = 3
+
+
 class LibraryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="资料库名称")
     description: str | None = None
@@ -151,39 +154,52 @@ def _library_name_taken(
     return False
 
 
-def _collect_descendant_library_ids(db: Session, root_node_id: int) -> Set[int]:
-    """包含 root_node_id 及其所有下级资料库 id（未删除）。"""
+def _collect_descendant_library_ids(
+    db: Session, root_node_id: int
+) -> tuple[Set[int], dict[int, int | None]]:
+    """包含 root_node_id 及其所有下级资料库 id（未删除）。
+    同时返回全局 parent_by_id 供调用方复用，避免重复全表扫描。"""
     rows = (
         db.query(Library.id, Library.parent_id)
         .filter(Library.deleted_at.is_(None))
         .all()
     )
+    parent_by_id: dict[int, int | None] = {
+        int(r[0]): (int(r[1]) if r[1] is not None else None) for r in rows
+    }
     children_by_parent: dict[int, list[int]] = {}
-    for lid, pid in rows:
-        if pid is None:
-            continue
-        children_by_parent.setdefault(int(pid), []).append(int(lid))
+    for lid, pid in parent_by_id.items():
+        if pid is not None:
+            children_by_parent.setdefault(pid, []).append(lid)
     out: Set[int] = {int(root_node_id)}
     stack = [int(root_node_id)]
     while stack:
-        pid = int(stack.pop())
-        for cid in children_by_parent.get(pid, []):
+        nid = int(stack.pop())
+        for cid in children_by_parent.get(nid, []):
             if cid not in out:
                 out.add(cid)
                 stack.append(cid)
-    return out
+    return out, parent_by_id
 
 
-def _subtree_depth_span(db: Session, mov: Library) -> int:
-    """mov 子树内相对 mov 的最大层数差（含自身为 0）。"""
-    ids = _collect_descendant_library_ids(db, mov.id)
-    base = library_depth_from_root(db, mov)
-    span = 0
-    for lid in ids:
-        lib = db.query(Library).filter(Library.id == lid).first()
-        if lib:
-            span = max(span, library_depth_from_root(db, lib) - base)
-    return span
+def _subtree_depth_span(
+    mov_id: int, descendants: Set[int], parent_by_id: dict[int, int | None]
+) -> int:
+    """mov 子树内相对 mov 的最大层数差（含自身为 0）。纯内存计算，无 DB 查询。"""
+    def _depth(lid: int) -> int:
+        d = 1
+        cur = lid
+        seen: set[int] = set()
+        while parent_by_id.get(cur) is not None:
+            if cur in seen:
+                break
+            seen.add(cur)
+            cur = parent_by_id[cur]  # type: ignore[assignment]
+            d += 1
+        return d
+
+    base = _depth(mov_id)
+    return max((_depth(lid) - base for lid in descendants), default=0)
 
 
 def _merge_library_members(
@@ -221,16 +237,14 @@ def _merge_library_members(
 def _sync_subtree_fields_from_acl_root(db: Session, mov: Library) -> None:
     """将 mov 整棵子树的部门/可见性/下载策略与解析后的根库一致。"""
     acl = resolve_root_library(db, mov)
-    ids = _collect_descendant_library_ids(db, mov.id)
+    ids, _ = _collect_descendant_library_ids(db, mov.id)
     dept_id = getattr(acl, "department_id", None)
     vis = str(getattr(acl, "visibility", "private") or "private")
     ad = bool(getattr(acl, "allow_download", False))
-    for lid in ids:
-        row = db.query(Library).filter(Library.id == lid).first()
-        if row:
-            row.department_id = dept_id
-            row.visibility = vis
-            row.allow_download = ad
+    for row in db.query(Library).filter(Library.id.in_(ids)).all():
+        row.department_id = dept_id
+        row.visibility = vis
+        row.allow_download = ad
 
 
 def _lib_to_read(
@@ -313,7 +327,7 @@ def create_library(
         if not _can_write_parent:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权在上级资料库下创建子库")
         pd = library_depth_from_root(db, parent_lib)
-        if pd >= 3:
+        if pd >= MAX_LIBRARY_DEPTH:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="最多支持三级资料库，无法在第三级下再创建子库")
         if lib_in.member_user_ids:
             raise HTTPException(
@@ -527,7 +541,8 @@ def list_libraries(
         for d in db.query(Department).filter(Department.id.in_(dept_ids)).all():
             dept_name_by_id[d.id] = d.name
 
-    root_ids_needed = list({resolve_root_library(db, l).id for l in libs})
+    root_by_lib_id: dict[int, Library] = {l.id: resolve_root_library(db, l) for l in libs}
+    root_ids_needed = list({r.id for r in root_by_lib_id.values()})
     cnt_rows = (
         db.query(LibraryMember.library_id, func.count(LibraryMember.id))
         .filter(LibraryMember.library_id.in_(root_ids_needed))
@@ -543,10 +558,11 @@ def list_libraries(
 
     result: list[LibraryRead] = []
     for l in libs:
-        is_write = write_access_for_listed_library(db, l, current_user, acc_dept_ids)
+        preloaded_root = root_by_lib_id[l.id]
+        is_write = write_access_for_listed_library(db, l, current_user, acc_dept_ids, preloaded_root=preloaded_root)
         dept_name = dept_name_by_id.get(l.department_id) if l.department_id else None
         owner_username = owner_username_by_id.get(l.owner_id) if l.owner_id else None
-        rid = resolve_root_library(db, l).id
+        rid = preloaded_root.id
         mc = member_count_by_root.get(rid, 0)
         result.append(
             _lib_to_read(
@@ -817,8 +833,8 @@ def list_library_move_targets(
     """列出可将当前资料库移动到的父级（含「一级根目录」选项）。用于前端选择。"""
     mov, _ = has_library_access(db, library_id, current_user)
     check_can_manage_library(mov, current_user, db)
-    desc = _collect_descendant_library_ids(db, mov.id)
-    span = _subtree_depth_span(db, mov)
+    desc, parent_by_id = _collect_descendant_library_ids(db, mov.id)
+    span = _subtree_depth_span(mov.id, desc, parent_by_id)
     mov_root = resolve_root_library(db, mov)
     mov_kind = _library_move_scope_kind(mov_root)
 
@@ -860,9 +876,9 @@ def list_library_move_targets(
         if not iw:
             continue
         dp = library_depth_from_root(db, cand)
-        if dp >= 3:
+        if dp >= MAX_LIBRARY_DEPTH:
             continue
-        if dp + 1 + span > 3:
+        if dp + 1 + span > MAX_LIBRARY_DEPTH:
             continue
         taken = _library_name_taken(
             db,
@@ -897,8 +913,8 @@ def move_library(
     check_can_manage_library(mov, current_user, db)
 
     old_root = resolve_root_library(db, mov)
-    desc = _collect_descendant_library_ids(db, mov.id)
-    span = _subtree_depth_span(db, mov)
+    desc, parent_by_id = _collect_descendant_library_ids(db, mov.id)
+    span = _subtree_depth_span(mov.id, desc, parent_by_id)
 
     new_parent_id = body.parent_id
     if new_parent_id is not None:
