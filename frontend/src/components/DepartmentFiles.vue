@@ -79,10 +79,7 @@
                     {{ r.description || '-' }}
                   </div>
                   <div class="lib-col-type">
-                    <span
-                      class="shared-library-type"
-                      :class="libraryTypeClass(r.raw)"
-                    >{{ libraryTypeText(r.raw) }}</span>
+                    <LibraryTypeTags :lib="r.raw" />
                   </div>
                   <div class="lib-col-source">
                     <template v-if="r.raw?.is_owner">-</template>
@@ -185,11 +182,7 @@
                 </div>
                 <div class="lib-card-meta">
                   <span v-if="!r.raw?.is_owner" class="lib-badge-shared">共享给我</span>
-                  <span
-                    v-else
-                    class="shared-library-type"
-                    :class="libraryTypeClass(r.raw)"
-                  >{{ libraryTypeText(r.raw) }}</span>
+                  <LibraryTypeTags :lib="r.raw" />
                   <div v-if="!r.raw?.is_owner" class="lib-card-share-meta">
                     <span>分享者：{{ r.raw?.owner_username || r.owner || '-' }}</span>
                     <span v-if="r.raw?.department_name">来源：{{ r.raw.department_name }}</span>
@@ -239,7 +232,7 @@
 import { computed, ref, watch } from 'vue'
 import Icons from './Icons.vue'
 import * as api from '../api/client'
-import { libraryTypeClass, libraryTypeText } from '../utils/libraryDisplay.js'
+import LibraryTypeTags from './LibraryTypeTags.vue'
 
 const props = defineProps({
   me: { type: Object, default: null },
@@ -509,7 +502,8 @@ function nextPage() {
 
 .lib-list-head {
   display: grid;
-  grid-template-columns: minmax(0, 2.8fr) minmax(0, 2.6fr) minmax(0, 1.2fr) minmax(0, 2fr) 120px;
+  grid-template-columns: minmax(0, 2.5fr) minmax(0, 2.1fr) minmax(168px, 2fr) minmax(0, 1.7fr) 120px;
+  column-gap: 24px;
   padding: 10px 16px;
   background: #f9fafb;
   border-bottom: 1px solid #e5e7eb;
@@ -521,7 +515,8 @@ function nextPage() {
 
 .lib-list-row {
   display: grid;
-  grid-template-columns: minmax(0, 2.8fr) minmax(0, 2.6fr) minmax(0, 1.2fr) minmax(0, 2fr) 120px;
+  grid-template-columns: minmax(0, 2.5fr) minmax(0, 2.1fr) minmax(168px, 2fr) minmax(0, 1.7fr) 120px;
+  column-gap: 24px;
   padding: 10px 16px;
   font-size: 14px;
   align-items: center;
@@ -579,6 +574,9 @@ function nextPage() {
 
 .lib-col-type {
   color: #4b5563;
+  justify-self: start;
+  padding-right: 8px;
+  overflow: visible;
 }
 
 .lib-col-source {
@@ -587,6 +585,7 @@ function nextPage() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  padding-left: 4px;
 }
 
 .lib-actions {

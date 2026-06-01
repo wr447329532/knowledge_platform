@@ -1,7 +1,7 @@
 """资料库与文件访问权限（文件级共享）"""
 import threading
 import time
-from typing import Set, Tuple
+from typing import Dict, Set, Tuple
 
 from fastapi import HTTPException, status
 from sqlalchemy import false
@@ -13,6 +13,16 @@ from backend.app.models.file_share import FileShare
 from backend.app.models.library import Library
 from backend.app.models.library_member import LibraryMember
 from backend.app.models.user import User
+from backend.app.core.oversight_access import (
+    compute_accessible_department_ids_for_user,
+    is_read_only_oversight,
+)
+from backend.app.core.library_department_access import (
+    VISIBILITY_DEPARTMENTS,
+    get_library_ids_accessible_via_department_grants,
+    list_access_department_ids,
+    user_matches_granted_departments,
+)
 
 
 def resolve_root_library(db: Session, lib: Library) -> Library:
@@ -75,6 +85,33 @@ def _expand_descendants_from_roots(db: Session, root_ids: Set[int]) -> Set[int]:
     return out
 
 
+def collect_descendant_library_ids(
+    db: Session, root_node_id: int
+) -> tuple[set[int], dict[int, int | None]]:
+    """包含 root_node_id 及其所有下级资料库 id（未删除）。返回 parent 映射供面包屑/深度计算等复用。"""
+    rows = (
+        db.query(Library.id, Library.parent_id)
+        .filter(Library.deleted_at.is_(None))
+        .all()
+    )
+    parent_by_id: dict[int, int | None] = {
+        int(r[0]): (int(r[1]) if r[1] is not None else None) for r in rows
+    }
+    children_by_parent: dict[int, list[int]] = {}
+    for lid, pid in parent_by_id.items():
+        if pid is not None:
+            children_by_parent.setdefault(pid, []).append(lid)
+    out: set[int] = {int(root_node_id)}
+    stack = [int(root_node_id)]
+    while stack:
+        nid = int(stack.pop())
+        for cid in children_by_parent.get(nid, []):
+            if cid not in out:
+                out.add(cid)
+                stack.append(cid)
+    return out, parent_by_id
+
+
 def user_can_manage_library(db: Session, lib: Library, user: User) -> bool:
     """是否可管理该资料库（编辑/删除）：与一级库一致，含一级拥有者、根库拥有者、部门负责人。"""
     if user.is_superuser:
@@ -90,9 +127,7 @@ def user_can_manage_library(db: Session, lib: Library, user: User) -> bool:
     return False
 
 
-def is_executive(user: User) -> bool:
-    """高管角色：只读访问所有部门库 + 公开库 + 自己拥有的 + 自己作为成员的库（不能访问他人私人库、仅指定成员库）"""
-    return getattr(user, "role", "staff") == "executive"
+# is_executive / is_read_only_oversight 定义于 oversight_access
 
 
 def is_dept_leader(user: User, db: Session, dept_id: int) -> bool:
@@ -149,35 +184,8 @@ def _ensure_department_parent_snapshot(db: Session) -> None:
 
 
 def _get_accessible_department_ids(db: Session, user: User) -> Set[int]:
-    """用户可访问的部门 ID（本人部门及所有子部门，超级管理员/高管为全部）"""
-    _ensure_department_parent_snapshot(db)
-    with _dept_snap_lock:
-        parent_map = _dept_parent_map
-        all_ids = _dept_all_ids
-    # 超级管理员：可访问全部部门
-    if user.is_superuser:
-        return set(all_ids)
-    # 高管：可访问全部部门（用于只读查看所有部门文件库）
-    if is_executive(user):
-        return set(all_ids)
-    # 普通用户未绑定部门：不自动放宽为全部，按「无部门访问权限」处理
-    if user.department_id is None:
-        return set()
-    if user.department_id not in parent_map:
-        return set()
-    children_map: dict[int | None, list[int]] = {}
-    for did, pid in parent_map.items():
-        children_map.setdefault(pid, []).append(did)
-    accessible: Set[int] = set()
-    stack = [user.department_id]
-    while stack:
-        did = stack.pop()
-        if did in accessible:
-            continue
-        accessible.add(did)
-        for cid in children_map.get(did, []):
-            stack.append(cid)
-    return accessible
+    """用户可浏览部门文件库的部门 ID（高管=全部；分管领导=分管范围含子部门）"""
+    return compute_accessible_department_ids_for_user(db, user)
 
 
 def write_access_for_listed_library(
@@ -199,13 +207,19 @@ def write_access_for_listed_library(
         return True
     member = _get_library_member(db, acl.id, user.id)
     if member is not None:
-        return member.role == "write" and not is_executive(user)
+        return member.role == "write" and not is_read_only_oversight(user)
     visibility = getattr(acl, "visibility", "private") or "private"
     if visibility == "public":
         return False
+    if visibility == VISIBILITY_DEPARTMENTS:
+        granted = list_access_department_ids(db, acl.id)
+        if user_matches_granted_departments(db, user, granted, acc_dept_ids=acc_dept_ids):
+            if is_read_only_oversight(user):
+                return False
+            return True
     dept_id = getattr(acl, "department_id", None)
     if dept_id is not None and dept_id in acc_dept_ids:
-        if is_executive(user):
+        if is_read_only_oversight(user):
             return False
         return True
     return False
@@ -254,7 +268,7 @@ def has_library_access(db: Session, library_id: int, user: User, require_write: 
     # 库成员：绑定在根库 id 上（高管恒为只读）
     member = _get_library_member(db, acl.id, user.id)
     if member:
-        can_write = member.role == "write" and not is_executive(user)
+        can_write = member.role == "write" and not is_read_only_oversight(user)
         if require_write and not can_write:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -271,15 +285,28 @@ def has_library_access(db: Session, library_id: int, user: User, require_write: 
             )
         return lib, False
 
+    # 指定部门库：指定部门及其子部门成员可读写；监管角色只读
+    if visibility == VISIBILITY_DEPARTMENTS:
+        granted = list_access_department_ids(db, acl.id)
+        if user_matches_granted_departments(db, user, granted):
+            if is_read_only_oversight(user):
+                if require_write:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="监管角色仅有只读权限",
+                    )
+                return lib, False
+            return lib, True
+
     # 部门库：用户所在部门或其子部门的成员可读写；高管可访问全部部门库（只读）
     if getattr(acl, "department_id", None) is not None:
         acc_dept_ids = _get_accessible_department_ids(db, user)
         if acl.department_id in acc_dept_ids:
-            if is_executive(user):
+            if is_read_only_oversight(user):
                 if require_write:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail="高管角色仅有只读权限",
+                        detail="监管角色仅有只读权限",
                     )
                 return lib, False
             return lib, True
@@ -361,11 +388,14 @@ def get_accessible_library_ids(db: Session, user: User) -> list[int]:
 
     inherited_from_member = _expand_descendants_from_roots(db, member_root_ids)
 
+    grant_lib_ids = get_library_ids_accessible_via_department_grants(db, user)
+
     return list(
         set(owned)
         | set(dept_lib_ids)
         | set(member_lib_ids)
         | set(public_lib_ids)
+        | set(grant_lib_ids)
         | inherited_from_member
     )
 
@@ -402,6 +432,12 @@ def can_access_file(db: Session, entry: FileEntry, user: User) -> bool:
     # public 库：所有登录用户可访问
     if visibility == "public":
         return True
+
+    # 指定部门库
+    if visibility == VISIBILITY_DEPARTMENTS:
+        granted = list_access_department_ids(db, acl.id)
+        if user_matches_granted_departments(db, user, granted):
+            return True
 
     # 部门库成员（含高管：_get_accessible_department_ids 对高管返回全部部门）
     if getattr(acl, "department_id", None) is not None:
@@ -446,8 +482,8 @@ def can_download_file(db: Session, entry: FileEntry, user: User) -> bool:
     if acl.owner_id == user.id:
         return True
 
-    # 高管：默认可下载（以可访问为前提），不受 allow_download 限制
-    if is_executive(user):
+    # 高管 / 分管领导：默认可下载（以可访问为前提），不受 allow_download 限制
+    if is_read_only_oversight(user):
         return can_access_file(db, entry, user)
 
     # 库级禁下载：仅 Owner/管理员可下载原文件（看根库）
@@ -473,7 +509,7 @@ def can_download_in_library_list_context(db: Session, lib: Library, user: User) 
         return True
     if acl.owner_id == user.id:
         return True
-    if is_executive(user):
+    if is_read_only_oversight(user):
         return True
     if getattr(acl, "allow_download", True) is False:
         return False

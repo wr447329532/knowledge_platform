@@ -2,38 +2,44 @@
 =================================
 
 本项目是在 `vscode` 目录下从 0 开发的**文件共享和知识管理平台**，采用 **Python + FastAPI** 后端与 **Vue 3 + Vite** 前端。  
-**最后更新：2026 年 4 月 27 日**
+**最后更新：2026 年 5 月 29 日**（文件评论 @ 提及与 10 种资料库权限对齐；站内通知、指定部门库、系统日志等见开发日志）
 
 **当前已实现：**
 
 - 用户系统：**邮箱登录**、管理员创建用户（邮箱必填，用户名仅用于显示）、强密码策略（8 位以上，含大小写、数字、特殊字符）
 - 文件库：创建 / 编辑 / 删除 / 软删除（回收站），按文件库管理文件；支持**部门库**（所属部门成员可访问）；**新建资料库默认关闭非拥有者下载**（`allow_download` 默认 `false`），库主可在编辑中开启；支持**资料库移动**（在允许的父级范围内调整挂载位置）；支持**多级子资料库**：在一级文件库下可创建**二级、三级**子资料库（父子关系由 `parent_id` 维护），进入一级库后在根路径可查看与管理子资料库列表
-- 文件上传 / 下载 / 版本历史 / 重命名 / **移动**（库内选目标文件夹；亦可移到其他**一级 / 二级 / 三级**可写资料库，规则与资料库移动一致：个人 / 公开 / 部门同类互移，部门库限同部门；跨库时同步迁移物理存储目录）/ **回收站**（已删除的文件库与文件统一列表展示，恢复、彻底删除，仅手动彻底删除才会永久移除）
+- 文件上传 / 下载 / 版本历史 / 重命名 / **移动**（库内选目标文件夹；亦可移到其他**一级 / 二级 / 三级**可写资料库，规则与资料库移动一致：个人 / 公开 / 部门同类互移，部门库限同部门；跨库时同步迁移物理存储目录）
+- **回收站**（已删除的文件库与文件统一列表，恢复与彻底删除，仅手动彻删永久移除）：`GET /files/my-trash` 等与全局一致的流式分页（`has_more`、`limit`、`offset`）；接口返回资料库多级 `library_breadcrumb`；前端「所在库」列合并展示「库链 / 库内路径」；分页控件与「我的文件库」列表对齐
 - 文件版本历史已支持显示上传者（版本号、大小、上传者、上传时间）
 - 文件版本历史支持删除单个版本：删除后进入回收站（`历史版本`），可恢复或彻底删除
-- **版本匹配上传**：上传前自动提取关键词并搜索库内可能相关文件；有结果时在上传弹窗内进行版本确认（作为新版本或新文件），无结果直接上传；支持多文件队列逐一确认。已增强“文件名后缀数字/字母”场景（如 `报告1`、`报告A`、`报告(1)`）的版本识别能力；可执行/脚本类文件（如 `.exe`、`.bat`）会被拒绝上传
-- 在线预览：站内受控预览页（`/#/preview`），支持图片、PDF、文本（txt/md/json 等）
+- **版本匹配上传**：上传前自动提取关键词并搜索库内可能相关文件，并**叠加当前目录同路径精确匹配**（避免批量添加时「先传新文件、后传同名文件」漏检）；有结果时在上传弹窗内进行版本确认（作为新版本或新文件），无结果进入列表等待用户点击「开始上传」；选择「跳过 / 作为新文件」时若目标路径已存在则自动改名为 `文件名 (1).ext`、`(2).ext` …，避免误并入已有条目的版本链；支持多文件队列逐一确认。已增强“文件名后缀数字/字母”场景（如 `报告1`、`报告A`、`报告(1)`）的版本识别能力；可执行/脚本类文件（如 `.exe`、`.bat`）会被拒绝上传
+- **单文件上传大小**：默认上限 **2GB**（原 500MB）；可通过环境变量 `MAX_UPLOAD_FILE_BYTES` 调整；Docker / 部署用 Nginx 的 `client_max_body_size` 与代理超时已同步为 2GB / 1 小时量级
+- **上传格式策略（黑名单）**：除可执行/脚本类后缀（`.exe`、`.bat`、`.cmd`、`.com`、`.msi`、`.dll`、`.scr`、`.ps1`、`.vbs`、`.js`、`.jar`、`.sh`）外，**其余格式均可上传**（如 zip、mp4、csv 等）；**在线预览**另有限制，见下条
+- 在线预览：站内受控预览页（`/#/preview`），支持 **PDF**；**Office**（`.doc/.docx/.xls/.xlsx/.ppt/.pptx`，经 LibreOffice 转 PDF 后按页渲染）；**图片**（jpg/png/gif/webp/bmp 等）；**文本**（txt/md/json/xml/html/css/yaml 等）。未列入上述类型的文件可上传下载，但打开预览会提示「暂不支持受控预览」。PDF/Office 数百页文档采用**虚拟列表**下拉连续阅读；离开预览时中止未完成请求并限制同域并发，避免占满连接导致首页列表卡顿
 - **部门管理**：部门树、部门库、新建子部门、负责人展示、部门搜索
-- **共享文件库**：基于库级 ACL 的「我分享的文件库 / 分享给我的文件库」视图，统一展示库名称、共享范围（公开/部门/指定成员）与文件库类型（个人库/部门库/公开库）
+- **界面**：首页侧栏底部展示当前前端版本号（**v1.2.0**）
+- **共享文件库**：基于库级 ACL 的「我分享的文件库 / 分享给我的文件库」视图，统一展示库名称、共享范围与**双标签**（库类型：个人库/部门库 + 访问权限：仅自己/指定成员/指定部门/所属部门/公开等）
 - **共享文件（单文件）**：后端接口保留；前端“单文件分享”按钮已先行隐藏（后续成熟后再评估重新开放）
 - **我的文件库**：列表与网格视图、排序（最近修改/文件名/大小/创建时间）、三点操作菜单（含**移动资料库**、文件与文件夹**移动**：先选目标资料库再选目标文件夹）、长文件名省略；顶栏支持**新建子资料库**（当前在一级库内时挂到该库下）；**顶栏全局搜索（文件库）**按名称/描述匹配时包含当前用户可访问的二级、三级子资料库；在部门视图下搜「文件库」亦包含该部门下的子资料库；首页列表与部门文件库列表仍为一级根库分页（后端 `roots_only` 默认 `true`）；从**部门文件库**经顶栏搜索进入某个资料库后，点击面包屑中的资料库名称退出当前库时会**同步清空顶栏搜索**，回到该部门的资料库列表（不再误留在「我的文件库」全局搜索视图）
 - **统一权限模型（库级 ACL）**：
   - 访问优先级：超级管理员 › 库拥有者 › 库成员 › 部门库成员 › 公开库
-  - `Library.visibility = private / members / department / public` 控制库可见范围
-  - `LibraryMember` 维护库成员及角色（只读 / 读写）；`allow_download` 控制非拥有者是否可下载
-  - 后端 `has_library_access / can_access_file / can_download_file / get_accessible_library_ids` 统一判定访问与下载权限
-  - 高管（`executive`）默认可预览、可下载（前提是对文件具备访问权限）
-  - 修复了「无部门用户误看到全部部门库」的权限漏洞（无部门或无效部门的普通用户不再拥有全局访问）
+  - 新建/编辑资料库支持 **10 种访问模式**（个人库 6 种 + 部门库 4 种），底层映射为 `Library.visibility`（`private` / `department` / `departments` / `public`）+ `LibraryMember` 指定成员 + `library_access_departments` 指定部门
+  - 个人库：仅自己 / 仅自己+指定成员 / 仅指定成员 / 指定部门 / 指定部门+指定成员 / 公开
+  - 部门库：所属部门 / 所属部门+指定成员 / 指定部门 / 指定部门+指定成员
+  - `allow_download` 控制非拥有者是否可下载；高管（`executive`）、分管领导（`division_leader`）对部门库具备只读监管访问
+  - 后端 `has_library_access / can_access_file / can_download_file / get_accessible_library_ids` 统一判定；列表/共享页以**双标签**展示库类型与访问权限（`LibraryTypeTags`）
+  - 已修复「无部门用户误看到全部部门库」等权限边界问题
 - **账户管理（普通用户）**：
   - 右上角用户头像下拉菜单进入账户设置、系统管理（仅管理员）、部门管理（仅部门负责人）、退出登录；侧边栏不再保留账户/系统管理入口
   - 个人信息：显示并支持修改姓名，邮箱和所属部门只读（由管理员维护），保存后即时生效并有成功提示
   - 安全设置：支持修改密码（校验原密码 + 强密码规则），并可查看动态安全信息（账户状态、上次登录时间/IP、上次修改密码时间）
-- 审计日志：记录上传、删除、恢复、分享、预览、下载等操作，支持按用户与操作类型模糊筛选（仅管理员可查）；支持**导出日志**为 Excel 下载到本地
+- **文件评论（MVP）**：可写资料库中的文件支持右侧评论抽屉（发表、回复、软删除）；**@提及** 候选人按资料库 ACL 与 `can_access_file` 对齐（公开库全员、部门/指定部门含监管角色、私有/指定成员仅库主链+成员等；子资料库创建者纳入库主链）；输入 `@` 后默认列表优先展示库主/成员/参与者，**继续输入姓名可搜索**更多有权查看者；评论/@/回复触发**站内通知**（`GET /notifications/unread-count` 轻量轮询），点击通知可打开对应文件评论；时间统一北京时间
+- 审计日志：记录上传、删除、恢复、分享、预览、下载、**评论**等操作。**受控预览**在 `GET /files/rendered-preview/meta` 加载时记一条 `preview_rendered`（含 PDF `page_count` 等），不会因按页请求 `GET /files/rendered-preview` 重复落库。管理员可通过 `GET /audit/logs` 分页查询（支持 `start_date`、`end_date`、**`search`** 等），`GET /audit/logs/stats` 在**相同筛选条件**下返回总条数、去重用户数与 `file` / `library` 资源计数；管理端「系统日志」操作标签与详情文案已与后端 `log_audit` action 对齐（含 `file_comment_*`、`mkdir`、中文「下载/预览」等）。**部门负责人**可访问 `GET /audit/dept-logs` 与 `GET /audit/dept-logs/stats`（范围限定本部门用户）。支持**导出日志**为 Excel（关键词随请求传递；「操作类型」「状态」在导出时仍为前端过滤）。
 - 系统管理：
-  - **用户管理**：启用/停用、重置密码、分配部门、管理员标记
+  - **用户管理**：启用/停用、重置密码、分配部门、管理员标记；统计卡片显示真实注册用户总数（`GET /auth/users/stats`）
   - **部门管理**：树形表格、存储统计占位、部门负责人
   - **存储管理（新）**：按部门 / 用户 / 文件类型聚合存储使用，支持配额调整；部门维度“增长趋势”已改为动态计算（最近 7 天新增文件数 vs 前 7 天），并在存储页自动刷新。当前默认策略为 `2TB` 总配额 + `20%` 预留池 + 部门基础配额（`120GB`）+ 人数占比分配浮动配额；用户未设置配额时显示“未设置”
-  - **通知管理（新）**：通知模板、发送历史、通知开关、管理员一键群发通知
+  - **通知管理**：**仅站内铃铛**（无邮件渠道）；通知模板、发送历史、按分类的开关（上传/分享/评论/@提及/管理员公告）；管理员一键群发站内公告；铃铛轮询 `GET /notifications/unread-count` 轻量拉未读数，打开面板再拉全量列表
 
 **后续规划：** 新建资料库更细粒度权限设置（角色 / 继承策略）、全文搜索、本地 LLM 知识问答等。
 
@@ -52,6 +58,57 @@
 功能与更新记录
 --------------
 
+### 2026-05-29 开发日志
+
+| 时间 | 功能说明 |
+|------|----------|
+| 2026-05-29 | **README**：补充 10 种资料库访问模式说明；文件评论 @ 提及与 ACL 对齐文档；最后更新 2026-05-29。 |
+| 2026-05-29 | **评论 @ 提及 — 权限对齐**：`file_comment_service` 按个人库 6 种 + 部门库 4 种模式构建候选人池，与 `can_access_file` 一致；公开库默认全员；部门/指定部门含子部门成员与高管/分管领导；私有/指定成员仅库主链+成员+分享/评论参与者；子资料库 owner 纳入库主链；默认列表优先核心参与者，支持 `@姓名` 搜索。 |
+
+### 2026-05-28 开发日志
+
+| 时间 | 功能说明 |
+|------|----------|
+| 2026-05-28 | **README**：同步文件评论、站内通知、指定部门资料库、系统日志与上传/预览格式说明；最后更新日期调整为 2026-05-28。 |
+| 2026-05-28 | **站内通知优化**：移除邮件渠道 UI 与逻辑，统一为站内铃铛；新增 `GET /notifications/unread-count`；上传/分享/评论接入通知开关；上传仅通知库主（不再给上传者本人发重复提醒）；通知面板相对时间与角标 `99+`。 |
+| 2026-05-28 | **系统日志对齐**：管理端操作标签/详情与后端 `log_audit` action 一致；评论操作写入审计（`file_comment_create/reply/delete`）；表格列宽与目标列换行优化。 |
+| 2026-05-20 | **文件评论 MVP**：`file_comments` / `file_comment_mentions` 表与 API；`FileCommentDrawer` 抽屉 UI；支持回复、@提及、软删除；相关人收到站内通知并可点击跳转评论。 |
+| 2026-05-19 | **指定部门资料库**：新增 `visibility=departments` 与 `library_access_departments` 关联表（迁移 `20260519_0002`）；新建/编辑库可选多个指定部门；列表/共享页**双标签**展示库类型与访问权限（`LibraryTypeTags` + `libraryDisplay.js`）。 |
+| 2026-05-19 | **登录页**：左右分栏布局，左侧品牌区 + 背景图，右侧邮箱登录表单。 |
+| 2026-05-19 | **分管部门**：`division_leader` 角色支持 `user_supervised_departments` 多部门分管（迁移 `20260519_0001`）。 |
+| 2026-05-19 | **通知资源字段**：`notifications` 表补充 `resource_type/resource_id/extra_json`，支持评论类通知点击跳转文件。 |
+
+### 2026-05-19 开发日志
+
+| 时间 | 功能说明 |
+|------|----------|
+| 2026-05-19 | **上传弹窗 — 作为新文件不再误并版本**：选择「跳过，作为新文件上传」或「作为新文件上传」后仅回到列表等待「开始上传」；若当前目录已有同路径文件，上传前自动解析为 `文件名 (1).ext` 等唯一路径（列表展示「将保存为：…」），后端按新路径创建独立 `FileEntry`，不再追加到已有文件的版本历史。 |
+| 2026-05-19 | **上传弹窗 — 交互修正**：修复「跳过 / 作为新文件」后未点「开始上传」即自动上传的问题；「开始上传」改为顺序执行，避免多文件同时抢同一自动序号后缀。 |
+| 2026-05-19 | **上传弹窗 — 批量漏检修复**：同一弹窗内先添加库内没有的文件、再添加与库内同名或相似文件时，除关键词搜索外增加 `listFiles` 当前目录快照做路径精确匹配，确保进入版本确认流程。 |
+| 2026-05-19 | **单文件上传上限 2GB**：`Settings.MAX_UPLOAD_FILE_BYTES` 默认 `2147483648`（2GB）；超限返回 HTTP 413；`docker-compose` / `deploy/.env.example.docker` 支持环境变量覆盖；前端提示文案同步。 |
+| 2026-05-19 | **Nginx 大文件上传**：`docker/nginx.conf`、`deploy/nginx/knowledge-platform.conf` 的 `client_max_body_size` 调整为 `2g`；`/api/` 代理 `send/read_timeout` 调整为 `3600s`，适配慢速大文件上传。 |
+| 2026-05-19 | **README**：同步上述能力与最后更新日期。 |
+
+### 2026-05-07 开发日志
+
+| 时间 | 功能说明 |
+|------|----------|
+| 2026-05-07 | **预览与首页健壮性**：长文档预览时，`fetchRenderedPreviewBlob` 支持 `AbortSignal`；预览页路由离开 / 返回 / 卸载时中止未完成任务并取消 `rAF`；限制同一时刻预览页图并发数（与首批预取对齐），减轻 HTTP/1 同域连接被占满、返回首页后 `listFiles` / 部门树等不刷新的现象。 |
+| 2026-05-07 | **从预览回原库**：`restorePreviewReturnContext` 在拉库与列表前及早置 `filesLoading`，失败早退时复位，加载反馈更明确。 |
+| 2026-05-07 | **侧栏版本号**：`AppSidebar` 展示 `v1.2.0`。 |
+| 2026-05-07 | **受控预览长文档**：`/preview` 对按页预览的 PDF/Office（渲染为图片链路）支持下拉连续滚动；虚拟列表 + 前缀累加高度占位，上百页仅渲染视口附近 DOM；滚动预取、远离视图的 `blob:` URL 回收；首图实测高度校准占位，减小滚动条跳动。 |
+| 2026-05-07 | **回收站**：`/files/my-trash` 等与全局一致的流式分页；条目返回 `library_breadcrumb`；`TrashPage`「所在库」单列合并路径；分页 UI 对齐文件库列表。 |
+| 2026-05-07 | **用户统计**：管理员用户管理展示接口返回的真实总人数。 |
+| 2026-05-07 | **README**：同步上述能力与日期。 |
+
+### 2026-05-06 开发日志
+
+| 时间 | 功能说明 |
+|------|----------|
+| 2026-05-06 | **受控预览审计降噪**：将 `preview_rendered` 写入自 `GET /files/rendered-preview/meta`（每次打开预览一条）；`GET /files/rendered-preview` 分页拉取渲染结果时不再写审计，避免长文档翻页刷屏。 |
+| 2026-05-06 | **审计查询与统计**：`GET /audit/logs`、`GET /audit/dept-logs` 新增 `search`（用户名、操作名、详情等模糊匹配）；新增 `GET /audit/logs/stats`、`GET /audit/dept-logs/stats`，与列表共用筛选逻辑时返回 `total`、`distinct_user_count`、`file_resource_count`、`library_resource_count`。 |
+| 2026-05-06 | **系统管理 — 系统日志**：顶部统计卡片改为读取统计接口；关键词与日期在「查询」或翻页时走服务端筛选；界面说明「操作类型」「状态」仅过滤下方表格。 |
+
 ### 2026-04-27 开发日志
 
 | 时间 | 功能说明 |
@@ -60,6 +117,8 @@
 | 2026-04-27 | **文件 / 文件夹移动（跨资料库）**：`GET /files/move-target-libraries` 列出与源根库同类型（个人 / 部门 / 公开）、部门库同部门且当前用户**可写**的目标资料库（含一级根库与二、三级子库）；`POST /files/{id}/move-to-library` 将条目（含目录子树）迁入目标库指定父路径，跨库时迁移 `STORAGE_ROOT/<library_id>/<entry_id>/` 下物理目录并更新 `FileVersion.storage_path`；与源库相同时退化为同库路径重命名。 |
 | 2026-04-27 | **前端**：`Home.vue` 移动弹窗增加「目标资料库」与「目标文件夹」两级选择；`api/client.js` 增加 `listFileMoveTargetLibraries`、`moveFileToLibrary`。 |
 | 2026-04-27 | **README**：同步「当前已实现」与开发日志，最后更新日期调整为 2026-04-27。 |
+| 2026-04-28 | **GHCR 部署**：`docker-compose.yml` 支持 `DOCKER_IMAGE_APP` / `DOCKER_IMAGE_NGINX`；新增 `deploy/.env.example.ghcr`；GitHub Actions 在推送 `main`（限定路径）时构建 amd64 并推 GHCR；README 增补「Actions 构建 → 服务器仅 pull」流程与 `alembic upgrade head` 顺序。 |
+| 2026-04-28 | **Docker 双阶段镜像**：新增 `docker/base.Dockerfile`（apt / LibreOffice / 字体）为 `knowledge_platform-base`；`docker/backend.Dockerfile` 通过 `ARG BASE_IMAGE` 基于该层仅打包依赖与代码；CI 先推 base 再推 app，减少每次全量 apt。 |
 
 ### 2026-04-23 开发日志
 
@@ -385,7 +444,7 @@
     - 容量上限：5–10GB（超限删除最旧）
 
 - **大文件与上传可靠性**
-  - 目前：单文件 500MB 限制、上传进度条
+  - 目前：单文件 2GB 限制（可通过环境变量 `MAX_UPLOAD_FILE_BYTES` 调整）、上传进度条
   - 建议补齐：
     - 分片上传 + 断点续传 + 失败重试
     - Hash 校验（避免传输损坏），可选“秒传/去重”
@@ -444,7 +503,7 @@
 | 2026-03 | **在线预览（历史）**：早期方案为预览 token 直链（Seafile 式）；当前已切换为站内受控渲染预览（`/#/preview` + `GET /files/rendered-preview`）。 |
 | 2026-03 | **预览与界面**：预览窗口支持至少半屏；操作列改为「⋮」三点菜单，点击后下拉展示下载/版本/分享/重命名/删除。 |
 | 2026-03 | **下载权限**：仅资料库拥有者可下载；被分享用户仅可预览，不可下载；分享时仅「只读」选项。 |
-| 2026-03 | **审计日志**：记录「谁分享给谁」、「谁预览了文件」、「谁下载了文件」（含通过预览窗口打开/另存为）；操作类型支持模糊筛选（如输入「下载」可匹配「下载文件」）。 |
+| 2026-03 | **审计日志**：记录「谁分享给谁」、「谁预览了文件」、「谁下载了文件」（含通过预览窗口打开/另存为）；操作类型支持模糊筛选（如输入「下载」可匹配「下载文件」）。**后续（2026-05-06）**：受控预览改为按「打开预览」记一条，且列表/统计支持 `search` 与 dedicated stats 接口（见上文「当前已实现」）。 |
 | 2026-03 | **用户管理**：登录改为邮箱；创建用户时邮箱必填（用于登录）、用户名仅用于显示；强制强密码（8 位以上，含大小写、数字、特殊字符）。 |
 | 2026-03 | **删除体验**：删除资料库/文件后显示成功提示框并自动刷新；资料库支持级联删除（含库内文件及回收站）；204 响应解析修复。 |
 
@@ -547,16 +606,17 @@ npm run dev
 - [ ] 默认管理员账号已改为强密码，并禁用弱密码账号
 - [ ] 服务端仅开放必要端口（建议仅开放 80/443，对内开放后端端口）
 - [ ] 反向代理（Nginx/Caddy）开启 HTTPS，证书自动续期可用
-- [ ] 文件上传大小限制、请求频率限制（登录/上传）已配置
+- [ ] 文件上传大小限制已配置（后端 `MAX_UPLOAD_FILE_BYTES` 默认 2GB；Nginx `client_max_body_size` 不小于该值，如 `2g`）及请求频率限制（登录/上传）
 
 ### 2) 配置与环境
 
-- [ ] 生产环境变量已确认（数据库路径、存储根目录、系统总配额等）
+- [ ] 生产环境变量已确认（数据库路径、存储根目录、系统总配额、单文件上传上限等）
 - [ ] CORS 白名单已配置（`CORS_ALLOW_ORIGINS`，禁止生产使用 `*`）
 - [ ] 默认管理员启动策略已确认（`RESET_DEFAULT_ADMIN_PASSWORD_ON_STARTUP=false`）
 - [ ] 数据库迁移已通过 Alembic 执行（`alembic upgrade head`），并确认后端启动通过 revision/head 一致性校验
 - [ ] 生产环境已关闭启动时自动建表/兼容补丁（`DB_AUTO_CREATE_TABLES_ON_STARTUP=false`、`DB_COMPAT_PATCH_ON_STARTUP=false`）
 - [ ] `STORAGE_SYSTEM_TOTAL_BYTES` 按实际磁盘容量与预留空间配置
+- [ ] `MAX_UPLOAD_FILE_BYTES` 与 Nginx `client_max_body_size`、代理超时与实际上传场景一致（大文件、弱网）
 - [ ] 时区策略统一（后端 UTC 存储，前端按 `Asia/Shanghai` 展示）
 - [ ] 关闭开发模式配置（如 `--reload`），改为进程守护启动
 
@@ -578,7 +638,7 @@ npm run dev
 ### 5) 性能与稳定性
 
 - [ ] 大文件上传与版本上传在目标网络环境下稳定
-- [ ] PDF 受控预览性能可接受（重点验证多页文档翻页体验）
+- [ ] PDF 受控预览可接受（多页文档：**下拉滚动**；上百页时注意虚拟列表与网络预取是否流畅）
 - [ ] 并发场景（多用户同时上传/预览/下载）无明显阻塞
 - [ ] 服务异常可自动拉起（systemd/supervisor/docker restart policy）
 
@@ -596,7 +656,7 @@ npm run dev
 - [ ] 保留可回滚版本与数据快照，支持快速回退
 - [ ] 上线后 1~2 天安排重点巡检（登录、上传、预览、下载、回收站）
 
-### 上线前待办当前状态快照（截至 2026-03-31，后续发布请同步刷新日期）
+### 上线前待办当前状态快照（截至 2026-05-29，后续发布请同步刷新日期）
 
 > 说明：本状态用于快速盘点，不替代上方原始 Checklist；上线前仍需逐项复核。
 
@@ -616,6 +676,11 @@ npm run dev
 - ✅ 预览返回上下文：预览返回可回到原文件库/原目录（含部门上下文）
 - ✅ 通知模板渠道字段扩容：`notification_templates.channels`（含发送日志）已迁移到 `VARCHAR(100)`
 - ✅ 存储策略升级：默认 `2TB` 总配额，部门默认配额按“20% 预留 + 120GB 基础 + 人数浮动”计算
+- ✅ 指定部门资料库：`visibility=departments` + `library_access_departments` 已迁移
+- ✅ 文件评论：评论表、API、抽屉 UI 与 @提及通知已落地
+- ✅ 站内通知：仅铃铛渠道；未读数轻量接口；开关与业务事件已打通
+- ✅ 系统日志：操作中文标签与 `log_audit` 对齐；评论操作可审计
+- ✅ 评论 @ 提及：候选人池与 10 种资料库访问模式 / `can_access_file` 对齐
 
 #### 待确认（服务器/运维侧）
 
@@ -718,7 +783,7 @@ npm run dev
 
 对应资料：
 
-- `docker/backend.Dockerfile`
+- `docker/base.Dockerfile`、`docker/backend.Dockerfile`
 - `docker/nginx.Dockerfile`
 - `docker/entrypoint.sh`
 - `docker/nginx.conf`
@@ -727,10 +792,9 @@ npm run dev
 
 核心流程（简版）：
 
-1. 复制 Docker 环境变量模板：`cp deploy/.env.example.docker .env`  
-2. 构建并启动：`docker compose up -d --build`  
-3. 容器启动时自动执行 `alembic upgrade head`  
-4. 通过 `http://服务器IP` 验证访问与核心功能
+1. **推荐**：GitHub Actions 构建并推送 GHCR → 服务器使用 `deploy/.env.example.ghcr` 配置镜像地址 → `docker compose pull && up`（详见下文「镜像部署」一节）；空库需先 `docker compose run --rm app alembic upgrade head`。  
+2. **备选**：先 `docker build -f docker/base.Dockerfile -t knowledge_platform-base:latest .`，再 `cp deploy/.env.example.docker .env` 与 `docker compose up -d --build`；生产库同样需 `alembic upgrade head` 与 revision/head 校验一致。  
+3. 通过 `http://服务器IP` 验证访问与核心功能
 
 ### 选型建议（当前项目）
 
@@ -742,19 +806,83 @@ npm run dev
 
 已提供容器化部署文件：
 
-- `docker/backend.Dockerfile`（后端镜像）
+- `docker/base.Dockerfile`（基础镜像：apt / LibreOffice / 字体等；单独构建并缓存，避免每次重做）
+- `docker/backend.Dockerfile`（应用镜像：`FROM` 基础镜像 + pip + 业务代码）
 - `docker/nginx.Dockerfile`（前端静态构建 + Nginx）
-- `docker/entrypoint.sh`（启动前自动 `alembic upgrade head`）
+- `docker/entrypoint.sh`（Gunicorn 启动后端）
 - `docker/nginx.conf`（Nginx 反代 `/api` 到后端）
-- `docker-compose.yml`（`db + app + nginx`）
-- `deploy/.env.example.docker`（Docker 环境变量模板）
+- `docker-compose.yml`（`db + app + nginx`；`app`/`nginx` 镜像名可通过环境变量指向 GHCR）
+- `deploy/.env.example.docker`（本机构建镜像时的环境变量模板）
+- `deploy/.env.example.ghcr`（**服务器只 pull、不构建**时的模板）
+- `.github/workflows/docker-amd64.yml`（推送到 `main` 或手动触发时构建 **linux/amd64** 并推 **GHCR**）
 
-快速启动（无域名可直接用 IP）：
+### 推荐：GitHub Actions 打镜像 → 服务器只 pull（GHCR）
+
+1. **确认镜像已构建**：合并到 `main` 会自动跑 workflow（或到 Actions → *Docker linux/amd64 → GHCR* → Run workflow）。会先推送基础镜像再打包应用层；成功后 GHCR 上主要有：
+   - `ghcr.io/<小写 GitHub 用户名>/knowledge_platform-base:latest`（系统依赖层；不改则缓存命中快）
+   - `ghcr.io/<小写 GitHub 用户名>/knowledge_platform-app:latest`
+   - `ghcr.io/<小写 GitHub 用户名>/knowledge_platform-nginx:latest`
+
+2. **服务器准备数据目录**（与 `docker-compose.yml` 一致）：
 
 ```bash
+sudo mkdir -p /data/postgres /data/storage
+sudo chown 1000 /data/storage
+```
+
+3. **克隆仓库并配置 `.env`**（把 `YOUR_GHCR_OWNER` 换成你的 GitHub 用户名，**必须小写**，与 GHCR 路径一致）：
+
+```bash
+git clone https://github.com/<你的仓库路径>.git && cd knowledge_platform
+cp deploy/.env.example.ghcr .env
+# 编辑 .env：POSTGRES_PASSWORD、JWT_SECRET_KEY、DOCKER_IMAGE_*、CORS_ALLOW_ORIGINS 等
+```
+
+4. **登录 GHCR**（仓库为 **Private** 时必填；**Public** 包有时可匿名拉取，仍建议登录）：
+
+```bash
+echo <GITHUB_PAT> | docker login ghcr.io -u <GitHub用户名> --password-stdin
+```
+
+使用具备 **`read:packages`** 的 Personal Access Token（Classic）或 Fine-grained token。
+
+5. **拉镜像 → 起数据库 → 迁移 → 起全套服务**：
+
+```bash
+docker compose pull
+docker compose up -d db
+# 待 db healthy（约数十秒）后，空库必须执行：
+docker compose run --rm app alembic upgrade head
+docker compose up -d
+```
+
+6. **验证**：浏览器访问 `http://服务器IP`；`curl -s http://127.0.0.1/health`（经 Nginx，若需直接测后端可在容器内访问 `:8000/health`）。
+
+**后续升级版本**：在 GitHub 上打出新镜像后，在服务器项目目录执行：
+
+```bash
+git pull
+docker compose pull
+docker compose up -d
+# 若有新 Alembic 迁移：
+docker compose run --rm app alembic upgrade head
+docker compose up -d
+```
+
+### 备选：在服务器本机构建镜像（不推荐在 Mac 上打 amd64）
+
+须先构建基础镜像（与 `backend.Dockerfile` 中默认 `FROM knowledge_platform-base:latest` 对应），再Compose 构建应用层：
+
+```bash
+docker build -f docker/base.Dockerfile -t knowledge_platform-base:latest .
 cp deploy/.env.example.docker .env
+# 填写 POSTGRES_PASSWORD、JWT_SECRET_KEY、CORS_ALLOW_ORIGINS 等
 docker compose up -d --build
 ```
+
+若本机已登录 GHCR，也可从仓库拉取基础层再构建应用：  
+`docker pull ghcr.io/<小写owner>/knowledge_platform-base:latest` 后  
+`docker tag ghcr.io/<小写owner>/knowledge_platform-base:latest knowledge_platform-base:latest`。
 
 访问方式：
 

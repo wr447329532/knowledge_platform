@@ -58,7 +58,7 @@
 import Icons from './Icons.vue'
 import DepartmentTree from './DepartmentTree.vue'
 
-const appVersion = '1.0.0'
+const appVersion = '1.2.0'
 const copyright = '© 2026 中铁建发展集团乌兰察布压缩空气储能有限公司'
 
 defineProps({

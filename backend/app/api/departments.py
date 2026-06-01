@@ -12,7 +12,8 @@ from backend.app.api.deps import (
 )
 from backend.app.api.libraries import LibraryRead, _lib_to_read
 from backend.app.core.audit import get_client_ip, log_audit
-from backend.app.core.library_access import invalidate_department_access_cache, is_executive
+from backend.app.core.oversight_access import compute_accessible_department_ids_for_user
+from backend.app.core.library_access import invalidate_department_access_cache
 from backend.app.db.session import get_db
 from backend.app.models.department import Department
 from backend.app.models.library import Library
@@ -158,46 +159,14 @@ def _compute_user_counts(departments: List[Department]) -> Dict[int, int]:
 def _compute_accessible_department_ids(
     departments: List[Department],
     current_user: User,
+    db: Session,
 ) -> Set[int]:
     """
-    计算当前用户可访问的部门 ID 列表。
-
-    规则：
-    - 超级管理员：可访问所有部门
-    - 高管：可访问所有部门（只读查看所有部门文件库）
-    - 其他用户：仅可访问自己的部门及其所有子部门
+    计算当前用户可访问的部门 ID（用于部门树 has_access 标记）。
+    部门树仍展示全部节点；无权限节点 has_access=false。
     """
-    all_ids: Set[int] = {d.id for d in departments}
-    # 超级管理员：可访问所有部门
-    if current_user.is_superuser:
-        return all_ids
-    # 高管：可访问所有部门（用于部门视图与部门文件库列表）
-    if is_executive(current_user):
-        return all_ids
-    # 普通用户未绑定部门：不再回退为全部部门，视为无部门权限
-    if current_user.department_id is None:
-        return set()
-
-    # 构建 parent -> children 映射
-    children_map: Dict[Optional[int], List[int]] = {}
-    for d in departments:
-        children_map.setdefault(d.parent_id, []).append(d.id)
-
-    start_id = current_user.department_id
-    if start_id not in all_ids:
-        # 用户没有绑定有效部门：视为无部门权限
-        return set()
-
-    accessible: Set[int] = set()
-    stack = [start_id]
-    while stack:
-        did = stack.pop()
-        if did in accessible:
-            continue
-        accessible.add(did)
-        for child_id in children_map.get(did, []):
-            stack.append(child_id)
-    return accessible
+    del departments  # 范围计算统一走 oversight_access（含分管子部门扩展）
+    return compute_accessible_department_ids_for_user(db, current_user)
 
 
 def _compute_shared_department_ids_by_library_access(
@@ -207,9 +176,11 @@ def _compute_shared_department_ids_by_library_access(
     """
     基于“资料库可访问权限”补充部门访问范围：
     - 当用户被跨部门共享了某个部门库（指定成员）时，该部门应在部门树中可进入
+    - 指定部门权限的资料库：将对应部门加入可进入范围
     - 同时兼容 owner/public/executive 等通过库访问获得的部门可见性
     """
     from backend.app.core.library_access import get_accessible_library_ids
+    from backend.app.core.library_department_access import get_granted_department_ids_for_accessible_libraries
 
     lib_ids = get_accessible_library_ids(db, current_user)
     if not lib_ids:
@@ -224,7 +195,9 @@ def _compute_shared_department_ids_by_library_access(
         .distinct()
         .all()
     )
-    return {int(r[0]) for r in rows if r and r[0] is not None}
+    out = {int(r[0]) for r in rows if r and r[0] is not None}
+    out |= get_granted_department_ids_for_accessible_libraries(db, current_user)
+    return out
 
 
 @router.get("/tree", response_model=List[DepartmentNode])
@@ -244,7 +217,7 @@ def get_department_tree(
         .all()
     )
     user_counts = _compute_user_counts(all_depts)
-    accessible_ids = _compute_accessible_department_ids(all_depts, current_user)
+    accessible_ids = _compute_accessible_department_ids(all_depts, current_user, db)
     shared_dept_ids = _compute_shared_department_ids_by_library_access(db, current_user)
     accessible_ids = set(accessible_ids) | set(shared_dept_ids)
     return _build_tree(all_depts, parent_id=None, user_counts=user_counts, accessible_ids=accessible_ids)
@@ -334,7 +307,7 @@ def update_department(
         .all()
     )
     user_counts = _compute_user_counts(all_depts)
-    accessible_ids = _compute_accessible_department_ids(all_depts, current_user)
+    accessible_ids = _compute_accessible_department_ids(all_depts, current_user, db)
     children = _build_tree(all_depts, dept.id, user_counts, accessible_ids)
     return DepartmentNode(
         id=dept.id,
@@ -396,7 +369,7 @@ def get_department_info(
 
     # 复用与树接口一致的访问控制规则
     all_depts: List[Department] = db.query(Department).all()
-    accessible_ids = _compute_accessible_department_ids(all_depts, current_user)
+    accessible_ids = _compute_accessible_department_ids(all_depts, current_user, db)
     shared_dept_ids = _compute_shared_department_ids_by_library_access(db, current_user)
     effective_access_ids = set(accessible_ids) | set(shared_dept_ids)
 
@@ -591,7 +564,7 @@ def list_department_libraries(
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
     all_depts = db.query(Department).all()
-    accessible_ids = _compute_accessible_department_ids(all_depts, current_user)
+    accessible_ids = _compute_accessible_department_ids(all_depts, current_user, db)
     shared_dept_ids = _compute_shared_department_ids_by_library_access(db, current_user)
     effective_access_ids = set(accessible_ids) | set(shared_dept_ids)
     if department_id not in effective_access_ids:
@@ -642,7 +615,7 @@ def list_department_files(
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
     all_depts = db.query(Department).all()
-    accessible_ids = _compute_accessible_department_ids(all_depts, current_user)
+    accessible_ids = _compute_accessible_department_ids(all_depts, current_user, db)
     if department_id not in accessible_ids:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该部门文件")
     return []

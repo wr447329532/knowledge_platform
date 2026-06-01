@@ -60,6 +60,7 @@
 
 <script setup>
 import Icons from './Icons.vue'
+import { formatRelativeTimeZh } from '../utils/dateTime'
 
 const props = defineProps({
   isOpen: { type: Boolean, default: false },
@@ -74,6 +75,8 @@ function iconName(type) {
   if (type === 'file_share_to_me') return 'share-2'
   if (type === 'file_upload') return 'file-plus'
   if (type === 'file_new_version') return 'history'
+  if (type === 'file_comment_mention' || type === 'file_comment_reply' || type === 'file_comment') return 'file-text'
+  if (type === 'maintenance') return 'settings'
 
   // 兼容通用级别
   if (type === 'success') return 'check-circle'
@@ -86,6 +89,9 @@ function iconClass(type) {
   if (type === 'file_share_to_me') return 'notify-icon-share'
   if (type === 'file_upload') return 'notify-icon-upload'
   if (type === 'file_new_version') return 'notify-icon-version'
+  if (type === 'file_comment_mention') return 'notify-icon-mention'
+  if (type === 'file_comment_reply' || type === 'file_comment') return 'notify-icon-info'
+  if (type === 'maintenance') return 'notify-icon-warning'
 
   if (type === 'success') return 'notify-icon-success'
   if (type === 'error') return 'notify-icon-error'
@@ -94,13 +100,7 @@ function iconClass(type) {
 }
 
 function formatTime(s) {
-  if (!s) return ''
-  try {
-    const d = new Date(s)
-    return d.toLocaleString('zh-CN')
-  } catch {
-    return String(s)
-  }
+  return formatRelativeTimeZh(s)
 }
 </script>
 
@@ -222,7 +222,8 @@ function formatTime(s) {
 .notify-icon-info { color: #3b82f6; }
 .notify-icon-share { color: #8b5cf6; }   /* 文件被分享给你 */
 .notify-icon-upload { color: #0ea5e9; }  /* 新文件上传 */
-.notify-icon-version { color: #10b981; } /* 新版本上传 */
+.notify-icon-version { color: #10b981; }
+.notify-icon-mention { color: #6366f1; }
 
 .notify-content {
   flex: 1;
@@ -261,6 +262,11 @@ function formatTime(s) {
   margin: 2px 0 4px 0;
   font-size: 13px;
   color: #4b5563;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
 }
 
 .notify-time-row {

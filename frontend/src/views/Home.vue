@@ -19,13 +19,11 @@
       <AppTopbar
         v-if="tab !== 'sys'"
         :active-tab="tab"
-        :active-dept-id="activeDeptId"
-        :active-dept-name="activeDeptInfo?.name || ''"
         :current-lib="currentLib"
         v-model:searchKeyword="searchKeyword"
         v-model:fileSortOrder="fileSortOrder"
         v-model:fileViewMode="fileViewMode"
-        :breadcrumb-segments="breadcrumbSegments"
+        :breadcrumb-trail="fileBreadcrumbTrail"
         :notify-count="unreadNotifyCount"
         :me="me"
         @search="doSearchNow"
@@ -33,7 +31,9 @@
         @new-sub-lib="openNewLibSub"
         @upload="openUploadModal"
         @clear-lib="onTopbarClearLib"
-        @set-path="p => pathPrefix = p"
+        @set-path="onBreadcrumbSetPath"
+        @open-library="onBreadcrumbOpenLibrary"
+        :breadcrumb-title="fileBreadcrumbTitle"
         @toggle-notify="toggleNotifyPanel"
         @go-account="goAccount"
         @go-admin="goAdmin"
@@ -85,6 +85,7 @@
           :sorted-files="sortedFiles"
           :search-keyword="searchKeyword"
           :search-applied="searchApplied"
+          :library-search-matches="libraryTreeSearchMatches"
           :root-search-libraries="rootSearchLibraries"
           :root-search-files="rootSearchFiles"
           :path-prefix="pathPrefix"
@@ -109,6 +110,7 @@
           :open-move-file="openMoveFile"
           :go-up="goUp"
           :open-versions="openVersions"
+          :open-file-comments="openFileComments"
           :del-file="delFile"
           :enter-dir="enterDir"
           :clear-search="clearSearch"
@@ -135,8 +137,18 @@
           :my-shares-loading="mySharesLoading"
           :received-shares-list="filteredReceivedSharesList"
           :received-shares-loading="receivedSharesLoading"
+          :libraries-limit="librariesLimit"
+          :my-shares-offset="mySharesOffset"
+          :my-shares-has-more="mySharesHasMore"
+          :received-shares-offset="receivedSharesOffset"
+          :received-shares-has-more="receivedSharesHasMore"
+          :list-search-active="sharedListSearchActive"
           @tab="onSharedTab"
           @open-shared-lib="openSharedLib"
+          @mine-prev="goPrevMySharesPage"
+          @mine-next="goNextMySharesPage"
+          @tome-prev="goPrevReceivedSharesPage"
+          @tome-next="goNextReceivedSharesPage"
         />
 
 
@@ -148,12 +160,18 @@
           :trash-loading="trashLoading"
           :dept-trash-list="filteredDeptTrashList"
           :dept-trash-loading="deptTrashLoading"
+          :personal-trash-pagination="!personalTrashSearchActive && trashMode === 'personal'"
+          :trash-pagination-has-next="trashHasNext"
+          :trash-pagination-offset="trashOffset"
+          :trash-pagination-limit="trashLimit"
           :libraries="libraries"
           :format-date="formatDate"
           @restore-item="restoreTrashItem"
           @perm-delete-item="permDeleteTrashItem"
           @restore-dept="restoreDeptFile"
           @perm-delete-dept="permDeleteDeptFile"
+          @trash-prev-page="gotoTrashPrevPage"
+          @trash-next-page="gotoTrashNextPage"
         />
 
         <NotificationPanel
@@ -280,9 +298,9 @@
                   </button>
                 </div>
               </div>
-              <p class="form-hint">个人库支持「仅自己 / 指定成员 / 公开」；选择所属部门后，将作为部门库对部门成员开放。</p>
+              <p class="form-hint">个人库支持「仅自己 / 指定成员 / 指定部门 / 公开」；选择所属部门后，可作为部门库对全员或指定部门开放。</p>
             </div>
-            <div class="form-group" v-if="['self_plus', 'dept_plus', 'members_only'].includes(newLibMode)">
+            <div class="form-group" v-if="libModesWithMembers.includes(newLibMode)">
               <label>指定成员</label>
               <div class="member-selector">
                 <p v-if="newLibMembersLoading" class="empty-hint">成员列表加载中...</p>
@@ -310,6 +328,29 @@
                   <p v-if="newLibMembers.length" class="form-hint">已选择 {{ newLibMembers.length }} 位成员。</p>
                 </template>
               </div>
+            </div>
+            <div class="form-group" v-if="libModesWithAccessDepts.includes(newLibMode)">
+              <label>指定部门</label>
+              <div class="member-multi-dropdown">
+                <div class="member-select-trigger" @click="showNewLibAccessDeptPanel = !showNewLibAccessDeptPanel">
+                  <span v-if="!newLibAccessDepts.length">请选择部门（可多选）</span>
+                  <span v-else>已选择 {{ newLibAccessDepts.length }} 个部门</span>
+                </div>
+                <div v-if="showNewLibAccessDeptPanel" class="member-panel">
+                  <input v-model="newLibAccessDeptKeyword" placeholder="搜索部门..." class="member-search" />
+                  <div class="member-list">
+                    <div v-for="opt in filteredNewLibAccessDeptOptions" :key="'nad-' + opt.id" class="member-option">
+                      <input type="checkbox" :value="opt.id" v-model="newLibAccessDepts" />
+                      <span class="member-name">{{ '\u3000'.repeat(opt.level) + opt.name }}</span>
+                    </div>
+                  </div>
+                  <div class="member-panel-actions">
+                    <button type="button" class="btn-small" @click="newLibAccessDepts = []">清空</button>
+                    <button type="button" class="btn-small primary" @click="showNewLibAccessDeptPanel = false">确定</button>
+                  </div>
+                </div>
+              </div>
+              <p class="form-hint">所选部门及其下级部门成员均可访问该文件库。</p>
             </div>
             <div class="form-group">
               <label>导出权限</label>
@@ -564,7 +605,7 @@
               <Icons name="cloud-up" class="upload-dropzone-icon" />
               <h3 class="upload-dropzone-title">拖拽文件到此处上传</h3>
               <p class="upload-dropzone-hint">或点击此处选择文件</p>
-              <p class="upload-dropzone-limit">支持上传任意文件类型，单个文件不超过 500MB</p>
+              <p class="upload-dropzone-limit">支持上传任意文件类型，单个文件不超过 2GB</p>
             </div>
           </template>
           <template v-else>
@@ -605,7 +646,8 @@
                   </div>
                   <div class="upload-file-item-meta">
                     <span class="upload-file-item-size">{{ formatUploadSize(uf.file.size) }}</span>
-                    <span v-if="uf.status === 'pending'" class="upload-file-item-status">等待上传</span>
+                    <span v-if="uploadItemSaveHint(uf)" class="upload-file-item-status">{{ uploadItemSaveHint(uf) }}</span>
+                    <span v-else-if="uf.status === 'pending'" class="upload-file-item-status">等待上传</span>
                     <span v-else-if="uf.status === 'uploading'" class="upload-file-item-progress">{{ uf.progress }}%</span>
                     <span v-else-if="uf.status === 'success'" class="upload-file-item-status success">上传成功</span>
                     <span v-else-if="uf.status === 'error'" class="upload-file-item-status error">{{ uf.error || '上传失败' }}</span>
@@ -965,12 +1007,39 @@
             <option v-if="!editLibDepartmentId" value="self_plus">仅自己 + 指定成员</option>
             <option v-if="!editLibDepartmentId" value="members_only">仅指定成员</option>
             <option v-if="!editLibDepartmentId" value="public">公开（所有用户）</option>
+            <option v-if="!editLibDepartmentId" value="departments">指定部门</option>
+            <option v-if="!editLibDepartmentId" value="departments_plus">指定部门 + 指定成员</option>
             <option v-if="editLibDepartmentId" value="dept">所属部门</option>
             <option v-if="editLibDepartmentId" value="dept_plus">所属部门 + 指定成员</option>
+            <option v-if="editLibDepartmentId" value="dept_departments">指定部门</option>
+            <option v-if="editLibDepartmentId" value="dept_departments_plus">指定部门 + 指定成员</option>
           </select>
-          <p class="form-hint">个人库可控制是否公开或仅指定成员；部门库始终对所在部门成员开放，可额外指定跨部门成员。</p>
+          <p class="form-hint">个人库可控制是否公开、指定部门或仅指定成员；部门库可对所属部门全员开放，或限定为指定部门。</p>
         </div>
-        <div class="form-group" v-if="editLibDepth <= 1 && ['self_plus', 'dept_plus', 'members_only'].includes(editLibMode)">
+        <div class="form-group" v-if="editLibDepth <= 1 && libModesWithAccessDepts.includes(editLibMode)">
+          <label>指定部门</label>
+          <div class="member-multi-dropdown">
+            <div class="member-select-trigger" @click="showEditLibAccessDeptPanel = !showEditLibAccessDeptPanel">
+              <span v-if="!editLibAccessDepts.length">请选择部门（可多选）</span>
+              <span v-else>已选择 {{ editLibAccessDepts.length }} 个部门</span>
+            </div>
+            <div v-if="showEditLibAccessDeptPanel" class="member-panel">
+              <input v-model="editLibAccessDeptKeyword" placeholder="搜索部门..." class="member-search" />
+              <div class="member-list">
+                <div v-for="opt in filteredEditLibAccessDeptOptions" :key="'ead-' + opt.id" class="member-option">
+                  <input type="checkbox" :value="opt.id" v-model="editLibAccessDepts" />
+                  <span class="member-name">{{ '\u3000'.repeat(opt.level) + opt.name }}</span>
+                </div>
+              </div>
+              <div class="member-panel-actions">
+                <button type="button" class="btn-small" @click="editLibAccessDepts = []">清空</button>
+                <button type="button" class="btn-small primary" @click="showEditLibAccessDeptPanel = false">确定</button>
+              </div>
+            </div>
+          </div>
+          <p class="form-hint">所选部门及其下级部门成员均可访问该文件库。</p>
+        </div>
+        <div class="form-group" v-if="editLibDepth <= 1 && libModesWithMembers.includes(editLibMode)">
           <label>指定成员</label>
           <div class="member-selector">
             <p v-if="editLibMembersLoading" class="empty-hint">成员列表加载中...</p>
@@ -1018,6 +1087,12 @@
       </div>
     </div>
 
+    <FileCommentDrawer
+      :open="showFileCommentDrawer"
+      :entry-id="fileCommentEntryId"
+      @close="closeFileComments"
+    />
+
   </div>
 </template>
 
@@ -1035,6 +1110,7 @@ import AppTopbar from '../components/AppTopbar.vue'
 import SharedPage from '../components/SharedPage.vue'
 import TrashPage from '../components/TrashPage.vue'
 import NotificationPanel from '../components/NotificationPanel.vue'
+import FileCommentDrawer from '../components/FileCommentDrawer.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -1054,11 +1130,17 @@ const filesOffset = ref(0)
 const filesHasMore = ref(false)
 /** 防止多次 loadLibraries 乱序返回把列表覆盖成空或过期的页 */
 let librariesLoadSeq = 0
+/** 共享列表顶栏搜索时多取一些再客户端过滤，避免只搜当前页 */
+const SHARED_SEARCH_FETCH_LIMIT = 100
+let mySharesLoadSeq = 0
+let receivedSharesLoadSeq = 0
 const currentLib = ref(null)
 /** 创建子库时的父库 id；一级新建时为 null */
 const newLibParentId = ref(null)
 /** 当前打开库的直接子库（用于库内列表上方展示） */
 const libChildrenLibraries = ref([])
+/** 从一级根库到当前库的资料库链（子库 parent_id），来自 getLibraryBreadcrumb */
+const libAncestorChain = ref([])
 const pathPrefix = ref('')
 const fileSortOrder = ref('modified')
 const fileViewMode = ref('list')
@@ -1078,6 +1160,9 @@ const newLibMembers = ref([])
 const newLibMembersLoading = ref(false)
 const showNewLibMemberPanel = ref(false)
 const newLibMemberKeyword = ref('')
+const newLibAccessDepts = ref([])
+const showNewLibAccessDeptPanel = ref(false)
+const newLibAccessDeptKeyword = ref('')
 const newLibCreating = ref(false)
 const showUpload = ref(false)
 const uploadPath = ref('')
@@ -1101,14 +1186,21 @@ const mkdirPath = ref('')
 const err = ref('')
 const trashItems = ref([])
 const trashLoading = ref(false)
+const trashLimit = ref(50)
+const trashOffset = ref(0)
+const trashHasMore = ref(false)
 const trashMode = ref('personal')
 const deptTrashList = ref([])
 const deptTrashLoading = ref(false)
 const mySharesList = ref([])
 const mySharesLoading = ref(false)
+const mySharesOffset = ref(0)
+const mySharesHasMore = ref(false)
 const sharedSubTab = ref('mine')
 const receivedSharesList = ref([])
 const receivedSharesLoading = ref(false)
+const receivedSharesOffset = ref(0)
+const receivedSharesHasMore = ref(false)
 const auditList = ref([])
 const showVersions = ref(false)
 const versions = ref([])
@@ -1144,12 +1236,17 @@ const editLibMembersLoading = ref(false)
 const editLibInitialMembers = ref([])
 const showEditLibMemberPanel = ref(false)
 const editLibMemberKeyword = ref('')
+const editLibAccessDepts = ref([])
+const editLibInitialAccessDepts = ref([])
+const showEditLibAccessDeptPanel = ref(false)
+const editLibAccessDeptKeyword = ref('')
 const auditUsername = ref('')
 const auditAction = ref('')
 const auditStartDate = ref('')
 const auditEndDate = ref('')
 const searchKeyword = ref('')
 const searchResults = ref([])
+const libraryTreeSearchMatches = ref([])
 const searchApplied = ref(false)
 const rootSearchLibraries = ref([])
 const rootSearchFiles = ref([])
@@ -1171,6 +1268,8 @@ const isDragging = ref(false)
 const showShare = ref(false)
 const shareFile = ref(null)
 const showPreview = ref(false)
+const showFileCommentDrawer = ref(false)
+const fileCommentEntryId = ref(null)
 const openActionMenuId = ref(null)
 const previewUrl = ref('')
 const previewFileName = ref('')
@@ -1215,6 +1314,7 @@ const vmKeyword = ref('')
 const notifications = ref([])
 const showNotifyPanel = ref(false)
 const unreadNotifyCount = ref(0)
+let notifyPollTimer = null
 
 const uploadCompletedCount = computed(() => uploadFiles.value.filter(f => f.status === 'success').length)
 /** 未排进版本确认队列的待上传文件（需用户点「开始上传」） */
@@ -1273,6 +1373,9 @@ function _flattenDepts(nodes, level = 0) {
 
 const deptOptionsForUser = computed(() => _flattenDepts(deptTreeForTable.value))
 
+const libModesWithMembers = ['self_plus', 'dept_plus', 'members_only', 'departments_plus', 'dept_departments_plus']
+const libModesWithAccessDepts = ['departments', 'departments_plus', 'dept_departments', 'dept_departments_plus']
+
 /** 新建文件库：访问权限下拉选项（随是否选择部门切换） */
 function _newLibModeRows(isDept) {
   if (!isDept) {
@@ -1280,12 +1383,16 @@ function _newLibModeRows(isDept) {
       { value: 'self', label: '仅自己' },
       { value: 'self_plus', label: '仅自己 + 指定成员' },
       { value: 'members_only', label: '仅指定成员' },
+      { value: 'departments', label: '指定部门' },
+      { value: 'departments_plus', label: '指定部门 + 指定成员' },
       { value: 'public', label: '公开（所有用户）' },
     ]
   }
   return [
     { value: 'dept', label: '所属部门' },
     { value: 'dept_plus', label: '所属部门 + 指定成员' },
+    { value: 'dept_departments', label: '指定部门' },
+    { value: 'dept_departments_plus', label: '指定部门 + 指定成员' },
   ]
 }
 
@@ -1313,6 +1420,20 @@ const selectedNewLibModeLabel = computed(() => {
   const rows = newLibModeOptions.value
   const hit = rows.find(r => r.value === newLibMode.value)
   return hit?.label ?? '请选择'
+})
+
+const filteredNewLibAccessDeptOptions = computed(() => {
+  const kw = (newLibAccessDeptKeyword.value || '').trim().toLowerCase()
+  const rows = deptOptionsForUser.value || []
+  if (!kw) return rows
+  return rows.filter(o => String(o.name || '').toLowerCase().includes(kw))
+})
+
+const filteredEditLibAccessDeptOptions = computed(() => {
+  const kw = (editLibAccessDeptKeyword.value || '').trim().toLowerCase()
+  const rows = deptOptionsForUser.value || []
+  if (!kw) return rows
+  return rows.filter(o => String(o.name || '').toLowerCase().includes(kw))
 })
 
 const sortedLibraries = computed(() => {
@@ -1384,6 +1505,14 @@ const filteredReceivedSharesList = computed(() => {
   )
 })
 
+/** 共享页：有关键词时在客户端过滤，分页条隐藏 */
+const sharedListSearchActive = computed(() => Boolean(normalizedSearchKeyword.value))
+
+/** 个人回收站有关键词时在客户端过滤当前拉取结果；拉大 limit 且不展示分页条（与共享列表一致） */
+const personalTrashSearchActive = computed(
+  () => tab.value === 'trash' && trashMode.value === 'personal' && Boolean(normalizedSearchKeyword.value),
+)
+
 const filteredTrashItems = computed(() => {
   const kw = normalizedSearchKeyword.value
   const list = trashItems.value || []
@@ -1410,16 +1539,136 @@ const filteredDeptTrashList = computed(() => {
   )
 })
 
-const breadcrumbSegments = computed(() => {
-  const p = (pathPrefix.value || '').replace(/\/$/, '')
-  if (!p) return [{ label: '全部文件' }]
-  const parts = p.split('/').filter(Boolean)
-  return parts.map((name, i) => {
+function _withBreadcrumbHints(items) {
+  const acc = []
+  return items.map((item) => {
+    acc.push(item.label)
+    return { ...item, hint: acc.join(' / ') }
+  })
+}
+
+/** 顶栏面包屑：完整路径链；除当前层外均可点击跳转 */
+const fileBreadcrumbTrail = computed(() => {
+  const trail = []
+  if (activeDeptId.value != null) {
+    trail.push({
+      id: 'bc-dept-home',
+      mode: 'dept-home',
+      label: activeDeptInfo.value?.name || '部门',
+    })
+  } else {
+    trail.push({
+      id: 'bc-lib-home',
+      mode: 'lib-home',
+      label: '文件库',
+    })
+  }
+
+  const lib = currentLib.value
+  if (!lib) {
+    trail.push({
+      id: 'bc-list-end',
+      mode: 'current',
+      label: activeDeptId.value != null ? '部门文件库' : '全部文件',
+    })
+    return _withBreadcrumbHints(trail)
+  }
+
+  const ancestors = libAncestorChain.value || []
+  for (let i = 0; i < ancestors.length - 1; i++) {
+    const a = ancestors[i]
+    const aid = Number(a.id)
+    if (!Number.isFinite(aid)) continue
+    trail.push({
+      id: `bc-libanc-${aid}`,
+      mode: 'lib-ancestor',
+      label:
+        a.name != null && String(a.name).trim() !== ''
+          ? String(a.name)
+          : `资料库 #${aid}`,
+      libraryId: aid,
+    })
+  }
+
+  const libLabel =
+    lib.name != null && String(lib.name).trim() !== ''
+      ? String(lib.name)
+      : `资料库 #${lib.id}`
+
+  trail.push({
+    id: `bc-lib-${lib.id}`,
+    mode: 'lib-root',
+    label: libLabel,
+    path: '',
+  })
+
+  const rel = (pathPrefix.value || '').replace(/\/$/, '')
+  if (!rel) {
+    trail.push({ id: 'bc-all-files', mode: 'current', label: '全部文件' })
+    return _withBreadcrumbHints(trail)
+  }
+
+  const parts = rel.split('/').filter(Boolean)
+  for (let i = 0; i < parts.length; i++) {
     const path = parts.slice(0, i + 1).join('/') + '/'
     const isLast = i === parts.length - 1
-    return { label: name, path: isLast ? undefined : path }
-  })
+    trail.push({
+      id: `bc-dir-${lib.id}-${i}`,
+      mode: isLast ? 'current' : 'dir',
+      label: parts[i],
+      ...(isLast ? {} : { path }),
+    })
+  }
+  return _withBreadcrumbHints(trail)
 })
+
+const fileBreadcrumbTitle = computed(() => {
+  const t = fileBreadcrumbTrail.value
+  if (!t.length) return ''
+  return t.map((x) => x.label).join(' / ')
+})
+
+/** 与 listFiles / enterDir 一致：非空则始终带尾部的 / */
+function normalizePathPrefix(raw) {
+  if (raw == null || raw === '') return ''
+  const t = String(raw).trim().replace(/^\/+/, '').replace(/\/+/g, '/').replace(/\/$/, '')
+  if (!t) return ''
+  return `${t}/`
+}
+
+async function onBreadcrumbSetPath(p) {
+  if (typeof p !== 'string') return
+  const next = p === '' ? '' : normalizePathPrefix(p)
+  const prev = pathPrefix.value
+  pathPrefix.value = next
+  filesOffset.value = 0
+  searchResults.value = []
+  searchKeyword.value = ''
+  searchApplied.value = false
+  if (prev === next && currentLib.value) {
+    await loadFiles()
+    if (next === '') await loadChildLibrariesForCurrent()
+  }
+}
+
+async function loadLibraryAncestorChain(libraryId) {
+  if (!libraryId) {
+    libAncestorChain.value = []
+    return
+  }
+  try {
+    const rows = await api.getLibraryBreadcrumb(libraryId)
+    libAncestorChain.value = Array.isArray(rows) ? rows : []
+  } catch {
+    libAncestorChain.value = []
+  }
+}
+
+async function onBreadcrumbOpenLibrary(libraryId) {
+  const id = Number(libraryId)
+  if (!Number.isFinite(id) || id <= 0) return
+  await selectLib({ id })
+}
 
 function _sortFileList(list) {
   if (!list?.length) return list
@@ -1454,10 +1703,17 @@ async function onSidebarNav(tabName) {
     err.value = ''
     await loadLibraries()
   }
-  if (tabName === 'shared') { sharedSubTab.value = 'mine'; err.value = ''; loadMyShares() }
+  if (tabName === 'shared') {
+    sharedSubTab.value = 'mine'
+    err.value = ''
+    mySharesOffset.value = 0
+    receivedSharesOffset.value = 0
+    loadMyShares()
+  }
   if (tabName === 'trash') {
     trashMode.value = 'personal'
     err.value = ''
+    trashOffset.value = 0
     if (me.value?.is_department_leader) {
       await loadDeptTrash()
     }
@@ -1467,8 +1723,13 @@ async function onSidebarNav(tabName) {
 
 function onSharedTab(subtab) {
   sharedSubTab.value = subtab
-  if (subtab === 'mine') loadMyShares()
-  else if (subtab === 'tome') loadReceivedShares()
+  if (subtab === 'mine') {
+    mySharesOffset.value = 0
+    loadMyShares()
+  } else if (subtab === 'tome') {
+    receivedSharesOffset.value = 0
+    loadReceivedShares()
+  }
 }
 
 // ---- 工具函数 ----
@@ -1530,17 +1791,23 @@ async function restorePreviewReturnContext() {
 
   let lib = libraries.value.find(l => l.id === libId)
   if (!lib) {
+    filesLoading.value = true
     try {
       lib = await api.getLibrary(libId)
     } catch {
+      filesLoading.value = false
       return
     }
   }
-  if (!lib) return
+  if (!lib) {
+    filesLoading.value = false
+    return
+  }
 
   tab.value = 'lib'
   currentLib.value = lib
   pathPrefix.value = typeof q.return_path === 'string' ? q.return_path : ''
+  filesLoading.value = true
   filesOffset.value = 0
   searchResults.value = []
   rootSearchLibraries.value = []
@@ -1563,9 +1830,16 @@ onMounted(async () => {
   await restorePreviewReturnContext()
   // 通知不阻塞首屏；失败时静默忽略
   loadNotifications(true).catch(() => {})
+  notifyPollTimer = setInterval(() => {
+    refreshUnreadNotifyCount().catch(() => {})
+  }, 30000)
 })
 
 onUnmounted(() => {
+  if (notifyPollTimer) {
+    clearInterval(notifyPollTimer)
+    notifyPollTimer = null
+  }
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
     searchDebounceTimer = null
@@ -1605,13 +1879,35 @@ async function refreshLibrariesKeepPage() {
   await loadLibraries()
 }
 
+watch(
+  () => currentLib.value?.id,
+  (id) => { loadLibraryAncestorChain(id) },
+  { immediate: true },
+)
+
 watch(subTab, val => { if (val === 'departments') loadDepartments() })
 watch(searchKeyword, () => {
-  if (tab.value !== 'lib') return
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
     searchDebounceTimer = null
   }
+  if (tab.value === 'shared') {
+    searchDebounceTimer = setTimeout(() => {
+      mySharesOffset.value = 0
+      receivedSharesOffset.value = 0
+      if (sharedSubTab.value === 'mine') loadMyShares()
+      else if (sharedSubTab.value === 'tome') loadReceivedShares()
+    }, 300)
+    return
+  }
+  if (tab.value === 'trash' && trashMode.value === 'personal') {
+    searchDebounceTimer = setTimeout(() => {
+      trashOffset.value = 0
+      loadTrash()
+    }, 300)
+    return
+  }
+  if (tab.value !== 'lib') return
   const kw = searchKeyword.value?.trim()
   if (!kw) {
     clearSearch()
@@ -1624,6 +1920,7 @@ watch(searchKeyword, () => {
 watch([currentLib, pathPrefix], () => {
   if (currentLib.value) loadFiles()
   searchResults.value = []
+  libraryTreeSearchMatches.value = []
   rootSearchLibraries.value = []
   rootSearchFiles.value = []
   searchApplied.value = false
@@ -1679,8 +1976,13 @@ watch(openActionMenuId, id => {
   setTimeout(() => document.addEventListener('click', onDocClick), 0)
 })
 watch(newLibDepartmentId, val => {
-  if (val) { if (!['dept', 'dept_plus'].includes(newLibMode.value)) newLibMode.value = 'dept' }
-  else { if (!['self', 'self_plus', 'members_only', 'public'].includes(newLibMode.value)) newLibMode.value = 'self' }
+  const personalModes = ['self', 'self_plus', 'members_only', 'public', 'departments', 'departments_plus']
+  const deptModes = ['dept', 'dept_plus', 'dept_departments', 'dept_departments_plus']
+  if (val) {
+    if (!deptModes.includes(newLibMode.value)) newLibMode.value = 'dept'
+  } else {
+    if (!personalModes.includes(newLibMode.value)) newLibMode.value = 'self'
+  }
 })
 watch(currentLib, lib => {
   if (!lib) libChildrenLibraries.value = []
@@ -1693,6 +1995,7 @@ watch(pathPrefix, async p => {
 
 function clearSearch() {
   searchResults.value = []
+  libraryTreeSearchMatches.value = []
   rootSearchLibraries.value = []
   rootSearchFiles.value = []
   searchKeyword.value = ''
@@ -1718,7 +2021,9 @@ async function doSearch() {
   const kw = searchKeyword.value.trim()
   if (currentLib.value) {
     try {
-      searchResults.value = await api.searchFiles(currentLib.value.id, kw)
+      const { files, libraries } = await api.searchFiles(currentLib.value.id, kw)
+      searchResults.value = files || []
+      libraryTreeSearchMatches.value = libraries || []
       rootSearchLibraries.value = []
       rootSearchFiles.value = []
       searchApplied.value = true
@@ -1726,6 +2031,7 @@ async function doSearch() {
     catch (e) {
       err.value = e.message
       searchResults.value = []
+      libraryTreeSearchMatches.value = []
       rootSearchLibraries.value = []
       rootSearchFiles.value = []
       searchApplied.value = true
@@ -1808,6 +2114,7 @@ async function openGlobalSearchFileResult(file) {
   pathPrefix.value = idx >= 0 ? fullPath.slice(0, idx + 1) : ''
   filesOffset.value = 0
   searchResults.value = []
+  libraryTreeSearchMatches.value = []
   rootSearchLibraries.value = []
   rootSearchFiles.value = []
   searchApplied.value = false
@@ -1818,12 +2125,13 @@ async function openGlobalSearchFilePreview(file) {
   if (!file || file.is_dir) return
   await openPreview(file)
 }
+/** 从搜索结果进入目录：path 为该目录在库内的相对路径（与列表里 entry.path 一致） */
 function goToPath(path) {
-  const dir = path.endsWith('/') ? path.slice(0, -1) : path
-  const i = dir.lastIndexOf('/')
-  pathPrefix.value = i >= 0 ? dir.slice(0, i + 1) : ''
+  const norm = String(path || '').replace(/^\/+/, '').replace(/\/+$/, '')
+  pathPrefix.value = norm ? `${norm}/` : ''
   filesOffset.value = 0
   searchResults.value = []
+  libraryTreeSearchMatches.value = []
   searchKeyword.value = ''
   searchApplied.value = false
 }
@@ -1873,6 +2181,10 @@ async function selectLib(lib) {
   pathPrefix.value = ''
   filesOffset.value = 0
   err.value = ''
+  searchResults.value = []
+  libraryTreeSearchMatches.value = []
+  searchKeyword.value = ''
+  searchApplied.value = false
   try {
     currentLib.value = await api.getLibrary(lib.id)
   } catch (e) {
@@ -1883,16 +2195,22 @@ async function selectLib(lib) {
   loadFiles()
 }
 function goUp() {
-  const p = pathPrefix.value.replace(/\/$/, '')
+  const p = (pathPrefix.value || '').replace(/\/$/, '')
   const i = p.lastIndexOf('/')
-  pathPrefix.value = i >= 0 ? p.slice(0, i) : ''
+  pathPrefix.value = i >= 0 ? `${p.slice(0, i)}/` : ''
   filesOffset.value = 0
+  searchResults.value = []
+  libraryTreeSearchMatches.value = []
+  searchKeyword.value = ''
+  searchApplied.value = false
 }
 function enterDir(entry) {
   if (!entry?.is_dir) return
-  pathPrefix.value = entry.path + '/'
+  const base = String(entry.path || '').replace(/^\/+/, '').replace(/\/+$/, '')
+  pathPrefix.value = base ? `${base}/` : ''
   filesOffset.value = 0
   searchResults.value = []
+  libraryTreeSearchMatches.value = []
   searchKeyword.value = ''
   searchApplied.value = false
 }
@@ -1921,6 +2239,30 @@ function goNextFilesPage() {
   if (!filesHasMore.value) return
   filesOffset.value = filesOffset.value + filesLimit.value
   loadFiles()
+}
+
+function goPrevMySharesPage() {
+  if (mySharesOffset.value <= 0 || sharedListSearchActive.value) return
+  mySharesOffset.value = Math.max(0, mySharesOffset.value - librariesLimit.value)
+  loadMyShares()
+}
+
+function goNextMySharesPage() {
+  if (!mySharesHasMore.value || sharedListSearchActive.value) return
+  mySharesOffset.value += librariesLimit.value
+  loadMyShares()
+}
+
+function goPrevReceivedSharesPage() {
+  if (receivedSharesOffset.value <= 0 || sharedListSearchActive.value) return
+  receivedSharesOffset.value = Math.max(0, receivedSharesOffset.value - librariesLimit.value)
+  loadReceivedShares()
+}
+
+function goNextReceivedSharesPage() {
+  if (!receivedSharesHasMore.value || sharedListSearchActive.value) return
+  receivedSharesOffset.value += librariesLimit.value
+  loadReceivedShares()
 }
 
 async function delFile(f) {
@@ -2202,11 +2544,14 @@ async function abandonUploadModal() {
   resetUploadModal()
   await loadFiles()
 }
-function startPendingDirectUploads() {
+async function startPendingDirectUploads() {
   const queued = new Set((vmQueue.value || []).map(q => q.ufId))
-  uploadFiles.value
-    .filter(f => f.status === 'pending' && !queued.has(f.id))
-    .forEach(f => { startUploadOne(f.id) })
+  const pending = uploadFiles.value.filter(
+    f => f.status === 'pending' && !queued.has(f.id),
+  )
+  for (const f of pending) {
+    await startUploadOne(f.id)
+  }
 }
 function vmExtractKeyword(filename) {
   if (!filename || typeof filename !== 'string') return ''
@@ -2294,6 +2639,82 @@ function vmBuildCandidateKeywords(filename) {
   return out
 }
 
+/** 与同资料库上传 API 一致的相对路径（pathPrefix 通常已带尾随 /） */
+function vmUploadRelativePathForFile(fileName) {
+  const name = String(fileName ?? '')
+  return pathPrefix.value ? pathPrefix.value + name : name
+}
+
+function vmNormalizeRelPath(p) {
+  return String(p ?? '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '')
+}
+
+function vmSplitRelPath(relPath) {
+  const norm = vmNormalizeRelPath(relPath)
+  const parts = norm.split('/').filter(Boolean)
+  if (!parts.length) return { dir: '', stem: '', ext: '' }
+  const base = parts[parts.length - 1]
+  const dir = parts.length > 1 ? `${parts.slice(0, -1).join('/')}/` : ''
+  const dot = base.lastIndexOf('.')
+  if (dot > 0) {
+    return { dir, stem: base.slice(0, dot), ext: base.slice(dot) }
+  }
+  return { dir, stem: base, ext: '' }
+}
+
+/** 路径已被占用时生成「名称 (n).ext」，避免后端按同路径追加版本 */
+function vmResolveUniqueRelativePath(fileName, occupiedPaths) {
+  const preferred = vmNormalizeRelPath(vmUploadRelativePathForFile(fileName))
+  const occupied = new Set((occupiedPaths || []).map(vmNormalizeRelPath))
+  if (!occupied.has(preferred)) return preferred
+  const { dir, stem, ext } = vmSplitRelPath(preferred)
+  for (let n = 1; n < 10000; n++) {
+    const candidate = vmNormalizeRelPath(`${dir}${stem} (${n})${ext}`)
+    if (!occupied.has(candidate)) return candidate
+  }
+  return vmNormalizeRelPath(`${dir}${stem} (${Date.now()})${ext}`)
+}
+
+async function vmCollectOccupiedPathsInUploadDir() {
+  if (!currentLib.value?.id) return []
+  try {
+    const snap = await api.listFiles(
+      currentLib.value.id,
+      pathPrefix.value || '',
+      false,
+      { limit: 500 },
+    )
+    return (Array.isArray(snap) ? snap : [])
+      .filter(e => !e?.is_dir && e?.path)
+      .map(e => vmNormalizeRelPath(e.path))
+  } catch {
+    return []
+  }
+}
+
+function vmCollectReservedUploadPaths(excludeId = null) {
+  return uploadFiles.value
+    .filter(f => f.id !== excludeId && f.uploadRelativePath)
+    .map(f => vmNormalizeRelPath(f.uploadRelativePath))
+}
+
+/** 用户选择「作为新文件」：预占不与库内条目冲突的路径 */
+async function vmMarkUploadAsNewFile(ufId) {
+  const uf = uploadFiles.value.find(f => f.id === ufId)
+  if (!uf) return
+  const occupied = [
+    ...await vmCollectOccupiedPathsInUploadDir(),
+    ...vmCollectReservedUploadPaths(ufId),
+  ]
+  const preferred = vmNormalizeRelPath(vmUploadRelativePathForFile(uf.file?.name))
+  const relPath = occupied.includes(preferred)
+    ? vmResolveUniqueRelativePath(uf.file?.name, occupied)
+    : preferred
+  uploadFiles.value = uploadFiles.value.map(f =>
+    f.id === ufId ? { ...f, uploadAsNewFile: true, uploadRelativePath: relPath } : f,
+  )
+}
+
 const UPLOAD_BLOCKED_EXT = new Set([
   'exe', 'bat', 'cmd', 'com', 'msi', 'dll', 'scr',
   'ps1', 'vbs', 'js', 'jar', 'sh',
@@ -2361,8 +2782,37 @@ async function addUploadFiles(files) {
     return { file, ufId: list[i].id, results: [], matchedKeyword: candidates[0] || '' }
   })
 
-  const searched = await Promise.all(searchPromises)
-  const toQueue = searched.filter(s => s.results.length > 0)
+  const snapTask = api.listFiles(
+    currentLib.value.id,
+    pathPrefix.value || '',
+    false,
+    { limit: 500 },
+  ).catch(() => [])
+  const [snap, searched] = await Promise.all([snapTask, Promise.all(searchPromises)])
+  const dirSnap = Array.isArray(snap) ? snap : []
+  const merged = searched.map((s) => {
+    const relPath = vmUploadRelativePathForFile(s.file?.name)
+    const hit = dirSnap.find(
+      e => !e?.is_dir && e?.path === relPath,
+    )
+    if (!hit) return s
+    const prev = Array.isArray(s.results) ? s.results : []
+    const ids = new Set(prev.map(r => Number(r.id)))
+    if (ids.has(Number(hit.id))) {
+      return s.matchedKeyword
+        ? s
+        : { ...s, matchedKeyword: s.file?.name || relPath.split('/').pop() || '' }
+    }
+    return {
+      ...s,
+      results: [hit, ...prev],
+      matchedKeyword:
+        s.matchedKeyword ||
+        s.file?.name ||
+        (relPath.split('/').pop() || ''),
+    }
+  })
+  const toQueue = merged.filter(s => s.results.length > 0)
 
   if (toQueue.length > 0) {
     vmQueue.value = toQueue.map(s => ({
@@ -2391,7 +2841,8 @@ function vmOpenFromQueue() {
 async function vmDoSearch() {
   if (!vmKeyword.value?.trim() || !currentLib.value?.id) return
   try {
-    vmSearchResults.value = await api.searchFiles(currentLib.value.id, vmKeyword.value.trim())
+    const { files } = await api.searchFiles(currentLib.value.id, vmKeyword.value.trim())
+    vmSearchResults.value = files || []
   } catch {
     vmSearchResults.value = []
   }
@@ -2410,9 +2861,7 @@ async function vmDoUpload() {
 
   vmQueue.value = vmQueue.value.slice(1)
 
-  if (vmMode.value === 'new' || !vmSelectedEntry.value) {
-    await startUploadOne(ufId)
-  } else {
+  if (vmMode.value !== 'new' && vmSelectedEntry.value) {
     uploadFiles.value = uploadFiles.value.map(f =>
       f.id === ufId ? { ...f, status: 'uploading' } : f
     )
@@ -2441,6 +2890,8 @@ async function vmDoUpload() {
         f.id === ufId ? { ...f, status: 'error', error: errMsg } : f
       )
     }
+  } else if (ufId) {
+    await vmMarkUploadAsNewFile(ufId)
   }
 
   if (vmQueue.value.length > 0) {
@@ -2452,8 +2903,8 @@ async function vmDoUpload() {
 
 async function vmSkip() {
   const ufId = vmUfId.value
+  if (ufId) await vmMarkUploadAsNewFile(ufId)
   vmQueue.value = vmQueue.value.slice(1)
-  await startUploadOne(ufId)
   if (vmQueue.value.length > 0) {
     vmOpenFromQueue()
   } else {
@@ -2481,6 +2932,15 @@ async function removeUploadFile(id) {
   }
   uploadFiles.value = uploadFiles.value.filter(f => f.id !== id)
 }
+function uploadItemSaveHint(uf) {
+  if (!uf?.uploadRelativePath) return ''
+  const preferred = vmNormalizeRelPath(vmUploadRelativePathForFile(uf.file?.name))
+  const target = vmNormalizeRelPath(uf.uploadRelativePath)
+  if (target === preferred) return ''
+  const leaf = target.split('/').filter(Boolean).pop() || target
+  return `将保存为：${leaf}`
+}
+
 function formatUploadSize(bytes) {
   if (bytes == null || bytes === 0) return '0 B'
   const k = 1024
@@ -2497,7 +2957,22 @@ function getUploadFileIcon(fileName) {
 async function startUploadOne(id) {
   const uf = uploadFiles.value.find(f => f.id === id)
   if (!uf || uf.status !== 'pending') return
-  const fullPath = pathPrefix.value ? pathPrefix.value + uf.file.name : uf.file.name
+  let fullPath = uf.uploadRelativePath
+    ? vmNormalizeRelPath(uf.uploadRelativePath)
+    : vmNormalizeRelPath(vmUploadRelativePathForFile(uf.file.name))
+  if (uf.uploadAsNewFile && !uf.uploadRelativePath) {
+    const occupied = [
+      ...await vmCollectOccupiedPathsInUploadDir(),
+      ...vmCollectReservedUploadPaths(id),
+    ]
+    const preferred = vmNormalizeRelPath(vmUploadRelativePathForFile(uf.file.name))
+    fullPath = occupied.includes(preferred)
+      ? vmResolveUniqueRelativePath(uf.file.name, occupied)
+      : preferred
+    uploadFiles.value = uploadFiles.value.map(f =>
+      f.id === id ? { ...f, uploadRelativePath: fullPath } : f,
+    )
+  }
   uploadFiles.value = uploadFiles.value.map(f => f.id === id ? { ...f, status: 'uploading' } : f)
   try {
     const data = await api.uploadFileWithProgress(currentLib.value.id, fullPath, uf.file, (p) => {
@@ -2528,7 +3003,7 @@ async function onFileDrop(e) {
     const file = items[i]
     if (file?.name) {
       try {
-        const fullPath = pathPrefix.value ? pathPrefix.value + file.name : file.name
+        const fullPath = vmUploadRelativePathForFile(file.name)
         await api.uploadFile(currentLib.value.id, fullPath, file); ok++
       } catch (e) { uploadErr.value = e.message; fail++ }
     }
@@ -2582,17 +3057,77 @@ async function doRemoveShare(s) {
 }
 async function loadMyShares() {
   if (tab.value !== 'shared') return
+  const seq = ++mySharesLoadSeq
   mySharesLoading.value = true
-  try { mySharesList.value = await api.listMyShares() }
-  catch (e) { err.value = e.message; mySharesList.value = [] }
-  finally { mySharesLoading.value = false }
+  err.value = ''
+  try {
+    const pageSize = librariesLimit.value
+    const kw = String(searchKeyword.value || '').trim()
+    const searchMode = Boolean(kw)
+    const limit = searchMode ? SHARED_SEARCH_FETCH_LIMIT : pageSize + 1
+    let offset = searchMode ? 0 : mySharesOffset.value
+    let arr = []
+    for (;;) {
+      const list = await api.listMyShares({ limit, offset })
+      if (seq !== mySharesLoadSeq) return
+      arr = Array.isArray(list) ? list : []
+      if (arr.length > 0 || offset <= 0 || searchMode) break
+      offset = Math.max(0, offset - pageSize)
+    }
+    if (seq !== mySharesLoadSeq) return
+    mySharesOffset.value = offset
+    if (searchMode) {
+      mySharesHasMore.value = false
+      mySharesList.value = arr
+    } else {
+      mySharesHasMore.value = arr.length > pageSize
+      mySharesList.value = arr.slice(0, pageSize)
+    }
+  } catch (e) {
+    if (seq !== mySharesLoadSeq) return
+    err.value = e.message
+    mySharesList.value = []
+    mySharesHasMore.value = false
+  } finally {
+    if (seq === mySharesLoadSeq) mySharesLoading.value = false
+  }
 }
 async function loadReceivedShares() {
   if (tab.value !== 'shared' || sharedSubTab.value !== 'tome') return
+  const seq = ++receivedSharesLoadSeq
   receivedSharesLoading.value = true
-  try { receivedSharesList.value = await api.listSharesToMe() }
-  catch (e) { err.value = e.message; receivedSharesList.value = [] }
-  finally { receivedSharesLoading.value = false }
+  err.value = ''
+  try {
+    const pageSize = librariesLimit.value
+    const kw = String(searchKeyword.value || '').trim()
+    const searchMode = Boolean(kw)
+    const limit = searchMode ? SHARED_SEARCH_FETCH_LIMIT : pageSize + 1
+    let offset = searchMode ? 0 : receivedSharesOffset.value
+    let arr = []
+    for (;;) {
+      const list = await api.listSharesToMe({ limit, offset })
+      if (seq !== receivedSharesLoadSeq) return
+      arr = Array.isArray(list) ? list : []
+      if (arr.length > 0 || offset <= 0 || searchMode) break
+      offset = Math.max(0, offset - pageSize)
+    }
+    if (seq !== receivedSharesLoadSeq) return
+    receivedSharesOffset.value = offset
+    if (searchMode) {
+      receivedSharesHasMore.value = false
+      receivedSharesList.value = arr
+    } else {
+      receivedSharesHasMore.value = arr.length > pageSize
+      receivedSharesList.value = arr.slice(0, pageSize)
+    }
+  } catch (e) {
+    if (seq !== receivedSharesLoadSeq) return
+    err.value = e.message
+    receivedSharesList.value = []
+    receivedSharesHasMore.value = false
+  } finally {
+    if (seq === receivedSharesLoadSeq) receivedSharesLoading.value = false
+  }
 }
 async function openSharedLib(row) {
   let lib = libraries.value.find(l => l.id === row.id)
@@ -2614,6 +3149,20 @@ async function openSharedLib(row) {
 
 // ---- 回收站 ----
 
+const trashHasNext = computed(() => trashHasMore.value)
+
+async function gotoTrashPrevPage() {
+  if (trashOffset.value <= 0) return
+  trashOffset.value = Math.max(0, trashOffset.value - trashLimit.value)
+  await loadTrash()
+}
+
+async function gotoTrashNextPage() {
+  if (!trashHasNext.value) return
+  trashOffset.value = trashOffset.value + trashLimit.value
+  await loadTrash()
+}
+
 // 单独的 loadLibraryTrash 已不再直接使用，统一由 loadTrash 聚合库+文件
 
 async function loadTrash() {
@@ -2621,11 +3170,22 @@ async function loadTrash() {
   trashLoading.value = true
   err.value = ''
   try {
-    // 统一改为后端聚合接口：我的回收站（库 + 文件）
-    trashItems.value = await api.listMyTrash()
+    const kwTrim = String(searchKeyword.value || '').trim()
+    const searchWide = Boolean(kwTrim)
+    const limit = searchWide ? 500 : trashLimit.value
+    const offset = searchWide ? 0 : trashOffset.value
+    const res = await api.listMyTrash({ limit, offset })
+    if (Array.isArray(res)) {
+      trashItems.value = res
+      trashHasMore.value = !searchWide && res.length >= trashLimit.value
+    } else {
+      trashItems.value = Array.isArray(res?.items) ? res.items : []
+      trashHasMore.value = !searchWide && !!res?.has_more
+    }
   } catch (e) {
     err.value = e.message
     trashItems.value = []
+    trashHasMore.value = false
   } finally {
     trashLoading.value = false
   }
@@ -2730,27 +3290,37 @@ async function permDeleteTrashItem(item) {
 
 // ---- 通知 ----
 
+async function refreshUnreadNotifyCount() {
+  try {
+    const res = await api.getUnreadNotificationCount()
+    unreadNotifyCount.value = Number(res?.count) || 0
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('refreshUnreadNotifyCount error', e)
+  }
+}
+
 async function loadNotifications(unreadOnly = false) {
   try {
+    if (unreadOnly && !showNotifyPanel.value) {
+      await refreshUnreadNotifyCount()
+      return
+    }
     const list = await api.listNotifications(unreadOnly)
     notifications.value = Array.isArray(list) ? list : []
-    // unreadOnly=true 时后端已过滤未读，直接用长度避免 is_read 类型差异造成误判
     if (unreadOnly) {
       unreadNotifyCount.value = notifications.value.length
       return
     }
 
-    // 容错：兼容 is_read 可能为 0/1 或字符串等情况
     unreadNotifyCount.value = notifications.value.filter(n => {
       const v = n?.is_read ?? n?.isRead
       if (v === false || v === 0 || v === '0') return true
       if (v === true || v === 1 || v === '1') return false
-      // 兜底：null/undefined 当已读处理；其他值按 JS 真值判断
       if (v === null || v === undefined) return false
       return !Boolean(v)
     }).length
   } catch (e) {
-    // 通知失败不影响主流程，仅在控制台输出
     // eslint-disable-next-line no-console
     console.error('loadNotifications error', e)
   }
@@ -2761,15 +3331,32 @@ async function onNotificationClick(n) {
   try {
     await api.markNotificationRead(n.id)
     await loadNotifications(false)
+    if (n.resource_type === 'file_entry' && n.resource_id != null) {
+      showNotifyPanel.value = false
+      openFileComments({ id: Number(n.resource_id) })
+    }
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error('onNotificationClick error', e)
   }
 }
 
+function openFileComments(file) {
+  if (!file?.id || file.is_dir) return
+  fileCommentEntryId.value = Number(file.id)
+  showFileCommentDrawer.value = true
+  closeActionMenu()
+}
+
+function closeFileComments() {
+  showFileCommentDrawer.value = false
+  fileCommentEntryId.value = null
+}
+
 function toggleNotifyPanel() {
   showNotifyPanel.value = !showNotifyPanel.value
   if (showNotifyPanel.value) loadNotifications(false)
+  else loadNotifications(true)
 }
 
 async function markAllNotifications() {
@@ -2793,7 +3380,7 @@ async function loadNewLibUsers() {
   finally { newLibMembersLoading.value = false }
 }
 function onNewLibModeChange() {
-  if (['self_plus', 'dept_plus', 'members_only'].includes(newLibMode.value)) loadNewLibUsers()
+  if (libModesWithMembers.includes(newLibMode.value)) loadNewLibUsers()
 }
 function openNewLib() {
   newLibCreating.value = false
@@ -2803,7 +3390,10 @@ function openNewLib() {
   newLibDepartmentId.value = activeDeptId.value || null
   newLibMode.value = newLibDepartmentId.value ? 'dept' : 'self'
   newLibMembers.value = []
-  if (['self_plus', 'dept_plus', 'members_only'].includes(newLibMode.value)) loadNewLibUsers()
+  newLibAccessDepts.value = []
+  newLibAccessDeptKeyword.value = ''
+  showNewLibAccessDeptPanel.value = false
+  if (libModesWithMembers.includes(newLibMode.value)) loadNewLibUsers()
   newLibDeptPickerOpen.value = false
   newLibModePickerOpen.value = false
   showNewLib.value = true
@@ -2861,6 +3451,25 @@ function newLibDeptOptionSelected(opt) {
 function newLibModeOptionSelected(opt) {
   return opt.value === newLibMode.value
 }
+function visibilityForLibMode(mode, isDeptLib) {
+  if (libModesWithAccessDepts.includes(mode)) return 'departments'
+  if (!isDeptLib) return mode === 'public' ? 'public' : 'private'
+  return 'department'
+}
+
+function validateLibAccessMode(mode, isDeptLib, memberIds, accessDeptIds) {
+  if (!isDeptLib) {
+    if (['dept', 'dept_plus', 'dept_departments', 'dept_departments_plus'].includes(mode)) {
+      return '个人库不支持部门访问模式，请取消所属部门或调整访问权限'
+    }
+  } else if (!['dept', 'dept_plus', 'dept_departments', 'dept_departments_plus'].includes(mode)) {
+    return '部门库请选择「所属部门」或「指定部门」相关访问模式'
+  }
+  if (libModesWithMembers.includes(mode) && memberIds.length === 0) return '请选择至少一位指定成员'
+  if (libModesWithAccessDepts.includes(mode) && accessDeptIds.length === 0) return '请至少选择一个指定部门'
+  return ''
+}
+
 async function createLib() {
   if (newLibCreating.value) return
   err.value = ''
@@ -2905,19 +3514,23 @@ async function createLib() {
   const deptId = raw === '' || raw === null || raw === undefined ? null : Number(raw)
   const mode = newLibMode.value || 'self'
   const isDeptLib = !!deptId
-  let visibility = 'private'
-  if (!isDeptLib) {
-    if (['dept', 'dept_plus'].includes(mode)) { err.value = '个人库不支持部门访问模式，请取消所属部门或调整访问权限'; return }
-    visibility = mode === 'public' ? 'public' : 'private'
-  } else {
-    if (!['dept', 'dept_plus'].includes(mode)) { err.value = '部门库仅支持「所属部门」或「所属部门 + 指定成员」模式'; return }
-    visibility = 'department'
-  }
   const memberIds = (newLibMembers.value || []).map(id => Number(id)).filter(id => !Number.isNaN(id))
-  if (['self_plus', 'dept_plus', 'members_only'].includes(mode) && memberIds.length === 0) { err.value = '请选择至少一位指定成员'; return }
+  const accessDeptIds = (newLibAccessDepts.value || []).map(id => Number(id)).filter(id => !Number.isNaN(id))
+  const modeErr = validateLibAccessMode(mode, isDeptLib, memberIds, accessDeptIds)
+  if (modeErr) { err.value = modeErr; return }
+  const visibility = visibilityForLibMode(mode, isDeptLib)
   newLibCreating.value = true
   try {
-    const created = await api.createLibrary(name, (newLibDesc.value || '').trim(), deptId, visibility, memberIds, newLibAllowDownload.value)
+    const created = await api.createLibrary(
+      name,
+      (newLibDesc.value || '').trim(),
+      deptId,
+      visibility,
+      memberIds,
+      newLibAllowDownload.value,
+      null,
+      accessDeptIds,
+    )
     if (created?.id != null) {
       libraries.value = [created, ...libraries.value.filter(l => l.id !== created.id)]
     } else {
@@ -2930,6 +3543,7 @@ async function createLib() {
     newLibDepartmentId.value = null
     newLibVisibility.value = 'private'
     newLibMembers.value = []
+    newLibAccessDepts.value = []
     newLibUsers.value = []
     if (deptId != null && Number(activeDeptId.value) === Number(deptId)) {
       // 触发 DepartmentFiles 重新拉取部门文件库列表
@@ -3067,12 +3681,25 @@ async function openEditLib(lib) {
   editLibDepartmentId.value = full.department_id || null
   const vis = full.visibility || 'private'
   const hasMembers = (full.member_count || 0) > 0
+  const accessDeptIds = Array.isArray(full.access_department_ids) ? [...full.access_department_ids] : []
   const isDeptLib = !!editLibDepartmentId.value
-  if (isDeptLib) editLibMode.value = hasMembers ? 'dept_plus' : 'dept'
-  else if (vis === 'public') editLibMode.value = 'public'
-  else editLibMode.value = hasMembers ? 'self_plus' : 'self'
+  if (vis === 'departments') {
+    editLibMode.value = hasMembers
+      ? (isDeptLib ? 'dept_departments_plus' : 'departments_plus')
+      : (isDeptLib ? 'dept_departments' : 'departments')
+  } else if (isDeptLib) {
+    editLibMode.value = hasMembers ? 'dept_plus' : 'dept'
+  } else if (vis === 'public') {
+    editLibMode.value = 'public'
+  } else {
+    editLibMode.value = hasMembers ? 'self_plus' : 'self'
+  }
+  editLibAccessDepts.value = accessDeptIds.map(id => Number(id))
+  editLibInitialAccessDepts.value = [...editLibAccessDepts.value]
+  editLibAccessDeptKeyword.value = ''
+  showEditLibAccessDeptPanel.value = false
   editLibUsers.value = []; editLibMembers.value = []; editLibInitialMembers.value = []
-  if (editLibDepth.value <= 1 && ['self_plus', 'dept_plus', 'members_only'].includes(editLibMode.value)) {
+  if (editLibDepth.value <= 1 && libModesWithMembers.includes(editLibMode.value)) {
     await loadEditLibUsersAndMembers(full.id)
   }
   showEditLib.value = true; err.value = ''
@@ -3090,7 +3717,7 @@ async function loadEditLibUsersAndMembers(libraryId) {
 }
 function onEditLibModeChange() {
   if (!editLibId.value) return
-  if (['self_plus', 'dept_plus', 'members_only'].includes(editLibMode.value)) loadEditLibUsersAndMembers(editLibId.value)
+  if (libModesWithMembers.includes(editLibMode.value)) loadEditLibUsersAndMembers(editLibId.value)
 }
 async function saveEditLib() {
   err.value = ''
@@ -3114,22 +3741,19 @@ async function saveEditLib() {
     }
     const mode = editLibMode.value || 'self'
     const isDeptLib = !!editLibDepartmentId.value
-    let visibility = 'private'
-    if (!isDeptLib) {
-      if (['dept', 'dept_plus'].includes(mode)) { err.value = '个人库不支持部门访问模式'; return }
-      visibility = mode === 'public' ? 'public' : 'private'
-    } else {
-      if (!['dept', 'dept_plus'].includes(mode)) { err.value = '部门库仅支持「所属部门」或「所属部门 + 指定成员」模式'; return }
-      visibility = 'department'
-    }
     const memberIds = (editLibMembers.value || []).map(id => Number(id)).filter(id => !Number.isNaN(id))
-    if (['self_plus', 'dept_plus', 'members_only'].includes(mode) && memberIds.length === 0) { err.value = '请选择至少一位指定成员'; return }
+    const accessDeptIds = (editLibAccessDepts.value || []).map(id => Number(id)).filter(id => !Number.isNaN(id))
+    const modeErr = validateLibAccessMode(mode, isDeptLib, memberIds, accessDeptIds)
+    if (modeErr) { err.value = modeErr; return }
+    const visibility = visibilityForLibMode(mode, isDeptLib)
+    const accessDeptPayload = libModesWithAccessDepts.includes(mode) ? accessDeptIds : undefined
     const saved = await api.updateLibrary(
       editLibId.value,
       editLibName.value.trim(),
       editLibDesc.value.trim(),
       visibility,
-      editLibAllowDownload.value
+      editLibAllowDownload.value,
+      accessDeptPayload,
     )
     libraries.value = await api.listLibraries({ include_department: false })
     // 部门库不在「我的文件库」列表里，不能用 find 更新 currentLib，否则会变成 undefined，界面仍显示旧名称
@@ -3147,7 +3771,7 @@ async function saveEditLib() {
     if (editLibId.value) {
       const libId = editLibId.value
       const oldSet = new Set((editLibInitialMembers.value || []).map(id => Number(id)))
-      if (['self_plus', 'dept_plus', 'members_only'].includes(mode)) {
+      if (libModesWithMembers.includes(mode)) {
         const newSet = new Set(memberIds)
         for (const id of oldSet) { if (!newSet.has(id)) await api.removeLibraryMember(libId, id) }
         for (const id of newSet) { if (!oldSet.has(id)) await api.addLibraryMember(libId, id, 'read') }

@@ -113,24 +113,24 @@
             <div class="admin-stats">
               <div class="admin-stat-card">
                 <div class="admin-stat-label">总用户数</div>
-                <div class="admin-stat-value">46</div>
-                <div class="admin-stat-extra text-green">共 46 人</div>
+                <div class="admin-stat-value">{{ userAdminStats?.total_users ?? 0 }}</div>
+                <div class="admin-stat-extra text-green">共 {{ userAdminStats?.total_users ?? 0 }} 人</div>
               </div>
               <div class="admin-stat-card">
                 <div class="admin-stat-label">活跃用户</div>
-                <div class="admin-stat-value">{{ userList.filter(u => u.is_active).length }}</div>
+                <div class="admin-stat-value">{{ userAdminStats?.active_users ?? 0 }}</div>
                 <div class="admin-stat-extra">
-                  {{ userList.length ? Math.round(userList.filter(u => u.is_active).length / userList.length * 100) : 0 }}% 活跃率
+                  {{ userAdminStats?.total_users ? Math.round((userAdminStats.active_users / userAdminStats.total_users) * 100) : 0 }}% 活跃率
                 </div>
               </div>
               <div class="admin-stat-card">
                 <div class="admin-stat-label">管理员</div>
-                <div class="admin-stat-value">{{ userList.filter(u => u.is_superuser).length }}</div>
+                <div class="admin-stat-value">{{ userAdminStats?.superuser_users ?? 0 }}</div>
                 <div class="admin-stat-extra">系统管理员</div>
               </div>
               <div class="admin-stat-card">
                 <div class="admin-stat-label">停用</div>
-                <div class="admin-stat-value">{{ userList.filter(u => !u.is_active).length }}</div>
+                <div class="admin-stat-value">{{ userAdminStats?.inactive_users ?? 0 }}</div>
                 <div class="admin-stat-extra">已禁用账号</div>
               </div>
             </div>
@@ -178,8 +178,8 @@
                     <td class="admin-cell admin-cell-center">{{ u.department_name || '-' }}</td>
                     <td class="admin-role-status-cell admin-cell-center">
                       <div class="admin-role-status-wrap">
-                        <span :class="['admin-badge', u.is_superuser ? 'badge-admin' : (u.role === 'executive' ? 'badge-executive' : (u.is_department_leader ? 'badge-dept-leader' : 'badge-user'))]">
-                          {{ u.is_superuser ? '超级管理员' : (u.role === 'executive' ? '高管' : (u.is_department_leader ? '部长' : '部员')) }}
+                        <span :class="['admin-badge', u.is_superuser ? 'badge-admin' : (u.role === 'executive' ? 'badge-executive' : (u.role === 'division_leader' ? 'badge-division-leader' : (u.is_department_leader ? 'badge-dept-leader' : 'badge-user')))]">
+                          {{ u.is_superuser ? '超级管理员' : (u.role === 'executive' ? '高管' : (u.role === 'division_leader' ? '分管领导' : (u.is_department_leader ? '部长' : '部员'))) }}
                         </span>
                         <span :class="['admin-badge', u.is_active ? 'badge-ok' : 'badge-disabled']">
                           {{ u.is_active ? '活跃' : '停用' }}
@@ -792,25 +792,28 @@
             <div class="admin-stats">
               <div class="admin-stat-card">
                 <div class="admin-stat-label">总操作数</div>
-                <div class="admin-stat-value">{{ auditList.length }}</div>
-                <div class="admin-stat-extra text-muted">当前加载的系统操作记录数量</div>
+                <div class="admin-stat-value">{{ auditStats.total }}</div>
+                <div class="admin-stat-extra text-muted">在所选日期与关键词范围内的全部日志条数</div>
               </div>
               <div class="admin-stat-card">
                 <div class="admin-stat-label">涉及用户</div>
-                <div class="admin-stat-value">{{ auditUniqueUsersCount }}</div>
-                <div class="admin-stat-extra text-muted">参与过上述操作的不同用户数</div>
+                <div class="admin-stat-value">{{ auditStats.distinct_user_count }}</div>
+                <div class="admin-stat-extra text-muted">上述范围内出现过的不重复用户数</div>
               </div>
               <div class="admin-stat-card">
                 <div class="admin-stat-label">文件相关操作</div>
-                <div class="admin-stat-value">{{ auditFileOpsCount }}</div>
-                <div class="admin-stat-extra text-muted">例如上传、下载、删除、重命名等文件操作次数</div>
+                <div class="admin-stat-value">{{ auditStats.file_resource_count }}</div>
+                <div class="admin-stat-extra text-muted">resource 类型为文件的记录条数（含预览等）</div>
               </div>
               <div class="admin-stat-card">
                 <div class="admin-stat-label">库相关操作</div>
-                <div class="admin-stat-value">{{ auditLibraryOpsCount }}</div>
-                <div class="admin-stat-extra text-muted">例如新建、修改、删除文件库等操作次数</div>
+                <div class="admin-stat-value">{{ auditStats.library_resource_count }}</div>
+                <div class="admin-stat-extra text-muted">resource 类型为文件库的记录条数</div>
               </div>
             </div>
+            <p class="admin-page-desc audit-stats-footnote">
+              以上统计跟随日期与关键词，并会在点击「查询」或翻页加载时刷新。「操作类型」「状态」仅过滤下方表格，不改变统计。
+            </p>
 
             <!-- 过滤和操作栏 -->
             <div class="card audit-toolbar">
@@ -902,10 +905,10 @@
                           {{ formatAuditActionLabel(log) }}
                         </span>
                       </td>
-                      <td class="audit-cell">
+                      <td class="audit-cell audit-cell-target">
                         {{ formatAuditDetailLabel(log) }}
                       </td>
-                      <td class="audit-cell">
+                      <td class="audit-cell-muted">
                         {{ log.ip_address || '-' }}
                       </td>
                       <td class="audit-cell">
@@ -1039,7 +1042,7 @@
                           {{ formatAuditActionLabel(log) }}
                         </span>
                       </td>
-                      <td class="audit-cell">
+                      <td class="audit-cell audit-cell-target">
                         {{ formatAuditDetailLabel(log) }}
                       </td>
                       <td class="audit-cell-muted">
@@ -1081,7 +1084,7 @@
             <div class="admin-page-header">
               <div>
                 <h2 class="admin-page-title">通知管理</h2>
-                <p class="admin-page-desc">管理系统通知模板、发送历史和通知开关</p>
+                <p class="admin-page-desc">管理站内通知开关、模板与发送记录（仅站内铃铛，无邮件）</p>
               </div>
               <button type="button" class="admin-btn-primary" @click="showSendDialog = true">
                 <Icons name="send" class="admin-btn-icon" />
@@ -1152,7 +1155,7 @@
                       <div class="admin-notify-template-left">
                         <div class="admin-notify-template-icon">
                           <Icons
-                            :name="['file','database','lock','check-circle','settings','bell'].includes(tpl.icon) ? tpl.icon : 'bell'"
+                            :name="['file','file-text','database','lock','check-circle','settings','bell'].includes(tpl.icon) ? tpl.icon : 'bell'"
                             class="admin-notify-template-icon-svg"
                           />
                         </div>
@@ -1176,22 +1179,10 @@
                       <p class="admin-notify-template-content">{{ tpl.content }}</p>
                     </div>
                     <div class="admin-notify-template-footer">
-                      <div class="admin-notify-channels">
-                        <span
-                          v-if="tpl.channels?.includes('system')"
-                          class="admin-notify-chip chip-system"
-                        >
-                          <Icons name="bell" class="admin-notify-chip-icon" />
-                          系统通知
-                        </span>
-                        <span
-                          v-if="tpl.channels?.includes('email')"
-                          class="admin-notify-chip chip-email"
-                        >
-                          <Icons name="mail" class="admin-notify-chip-icon" />
-                          邮件
-                        </span>
-                      </div>
+                      <span class="admin-notify-chip chip-system">
+                        <Icons name="bell" class="admin-notify-chip-icon" />
+                        站内通知
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -1207,7 +1198,6 @@
                         <th>内容</th>
                         <th class="admin-th-center">接收人数</th>
                         <th class="admin-th-center">发送时间</th>
-                        <th class="admin-th-center">发送渠道</th>
                         <th class="admin-th-center">状态</th>
                       </tr>
                     </thead>
@@ -1227,24 +1217,6 @@
                         </td>
                         <td class="admin-cell-center">
                           {{ formatDate(row.sentTime) }}
-                        </td>
-                        <td class="admin-cell-center">
-                          <div class="admin-notify-chips-row">
-                            <span
-                              v-if="row.channels?.includes('system')"
-                              class="admin-notify-chip chip-system"
-                            >
-                              <Icons name="bell" class="admin-notify-chip-icon" />
-                              系统
-                            </span>
-                            <span
-                              v-if="row.channels?.includes('email')"
-                              class="admin-notify-chip chip-email"
-                            >
-                              <Icons name="mail" class="admin-notify-chip-icon" />
-                              邮件
-                            </span>
-                          </div>
                         </td>
                         <td class="admin-cell-center">
                           <span class="admin-badge badge-ok">已发送</span>
@@ -1276,7 +1248,7 @@
                       <div class="admin-notify-setting-left">
                         <div class="admin-notify-setting-name">{{ s.name }}</div>
                         <div class="admin-notify-setting-desc">
-                          {{ s.enabled ? '已启用' : '已禁用' }}
+                          {{ notifySettingDesc(s) }}
                         </div>
                       </div>
                       <label class="switch">
@@ -1297,7 +1269,7 @@
             <div v-if="showSendDialog" class="modal">
               <div class="card user-modal-card">
                 <h3>发送通知</h3>
-                <p class="admin-notify-send-desc">创建一次性系统通知，立即发送给选定用户范围。</p>
+                <p class="admin-notify-send-desc">创建一次性站内公告，立即推送到用户铃铛。</p>
                 <div class="user-modal-grid admin-notify-send-grid">
                   <div class="form-group form-group-full">
                     <label>通知标题</label>
@@ -1322,36 +1294,7 @@
                       <option value="department">指定部门（当前按全部部门处理）</option>
                       <option value="custom">指定用户（当前按全部用户处理）</option>
                     </select>
-                  </div>
-                  <div class="form-group">
-                    <label>发送渠道</label>
-                    <div class="admin-notify-channel-options">
-                      <div class="admin-notify-channel-option">
-                        <input
-                          id="notify-channel-system"
-                          type="checkbox"
-                          class="admin-notify-checkbox"
-                          :checked="sendForm.channels.includes('system')"
-                          @change="onToggleChannel('system', $event.target.checked)"
-                        />
-                        <label for="notify-channel-system" class="admin-notify-channel-label">
-                          系统通知
-                        </label>
-                      </div>
-                      <div class="admin-notify-channel-option">
-                        <input
-                          id="notify-channel-email"
-                          type="checkbox"
-                          class="admin-notify-checkbox"
-                          :checked="sendForm.channels.includes('email')"
-                          @change="onToggleChannel('email', $event.target.checked)"
-                        />
-                        <label for="notify-channel-email" class="admin-notify-channel-label">
-                          邮件
-                        </label>
-                      </div>
-                    </div>
-                    <p class="admin-notify-send-hint">建议至少选择「系统通知」，重要公告可同时勾选邮件。</p>
+                    <p class="admin-notify-send-hint">通知将出现在用户右上角铃铛中。</p>
                   </div>
                 </div>
                 <p v-if="err" class="text-danger">{{ err }}</p>
@@ -1404,7 +1347,7 @@
                       <td>{{ f.username || '-' }}</td>
                       <td>{{ f.type === 'library' ? '文件库' : (f.type === 'file_version' ? '历史版本' : '文件') }}</td>
                       <td>{{ f.type === 'library' ? (f.library_name || ('文件库 #' + f.id)) : (f.path && f.path.split('/').pop()) }}</td>
-                      <td>{{ f.type === 'library' ? '-' : (f.library_name || '-') }}</td>
+                      <td>{{ f.library_breadcrumb || f.library_name || '-' }}</td>
                       <td>{{ f.type === 'library' ? '-' : (f.path || '-') }}</td>
                       <td>{{ formatDate(f.deleted_at) }}</td>
                       <td class="admin-global-trash-actions-cell">
@@ -1616,7 +1559,51 @@
               <option value="staff">部员</option>
               <option value="dept_leader">部长</option>
               <option value="executive">高管</option>
+              <option value="division_leader">分管领导</option>
             </select>
+          </div>
+          <div v-if="newUserRoleStaff === 'division_leader' && !newUserIsSuperuser" class="form-group">
+            <label>分管部门 <span class="label-opt">可多选，含子部门</span></label>
+            <div class="admin-multi-dropdown">
+              <button
+                type="button"
+                class="admin-multi-dropdown-trigger"
+                :aria-expanded="newSupervisedDeptPanelOpen"
+                @click.stop="newSupervisedDeptPanelOpen = !newSupervisedDeptPanelOpen"
+              >
+                <span
+                  class="admin-multi-dropdown-value"
+                  :class="{ 'is-placeholder': !newUserSupervisedDeptIds.length }"
+                >{{ newSupervisedDeptTriggerLabel }}</span>
+                <span class="admin-multi-dropdown-chevron" aria-hidden="true">▾</span>
+              </button>
+              <div v-if="newSupervisedDeptPanelOpen" class="admin-multi-dropdown-panel" @click.stop>
+                <input
+                  v-model="newSupervisedDeptKeyword"
+                  type="text"
+                  class="admin-multi-dropdown-search"
+                  placeholder="搜索部门..."
+                />
+                <div class="admin-multi-dropdown-list">
+                  <label
+                    v-for="opt in filteredNewSupervisedDeptOptions"
+                    :key="'new-sd-' + opt.id"
+                    class="admin-multi-dropdown-option"
+                  >
+                    <span class="admin-multi-dropdown-check">
+                      <input type="checkbox" :value="opt.id" v-model="newUserSupervisedDeptIds" />
+                    </span>
+                    <span class="admin-multi-dropdown-label">{{ '　'.repeat(opt.level) + opt.name }}</span>
+                  </label>
+                  <p v-if="!filteredNewSupervisedDeptOptions.length" class="admin-empty">无匹配部门</p>
+                </div>
+                <div class="admin-multi-dropdown-actions">
+                  <button type="button" class="btn-small" @click="newUserSupervisedDeptIds = []">清空</button>
+                  <button type="button" class="btn-small primary" @click="newSupervisedDeptPanelOpen = false">确定</button>
+                </div>
+              </div>
+            </div>
+            <p class="admin-hint">分管领导可在分管部门（及下级部门）内只读浏览、下载文件，不可修改。</p>
           </div>
           <div class="form-group">
             <label>系统管理员</label>
@@ -1693,8 +1680,53 @@
             <option value="staff">部员</option>
             <option value="dept_leader">部长</option>
             <option value="executive">高管</option>
+            <option value="division_leader">分管领导</option>
           </select>
-          <p v-if="editPermIsSuperuser" class="admin-hint">系统管理员不再区分部员/部长/高管。</p>
+          <p v-if="editPermIsSuperuser" class="admin-hint">系统管理员不再区分部员/部长/高管/分管领导。</p>
+        </div>
+
+        <div v-if="editPermRole === 'division_leader' && !editPermIsSuperuser" class="form-group">
+          <label>分管部门 <span class="label-opt">可多选，含子部门</span></label>
+          <div class="admin-multi-dropdown">
+            <button
+              type="button"
+              class="admin-multi-dropdown-trigger"
+              :aria-expanded="editSupervisedDeptPanelOpen"
+              @click.stop="editSupervisedDeptPanelOpen = !editSupervisedDeptPanelOpen"
+            >
+              <span
+                class="admin-multi-dropdown-value"
+                :class="{ 'is-placeholder': !editPermSupervisedDeptIds.length }"
+              >{{ editSupervisedDeptTriggerLabel }}</span>
+              <span class="admin-multi-dropdown-chevron" aria-hidden="true">▾</span>
+            </button>
+            <div v-if="editSupervisedDeptPanelOpen" class="admin-multi-dropdown-panel" @click.stop>
+              <input
+                v-model="editSupervisedDeptKeyword"
+                type="text"
+                class="admin-multi-dropdown-search"
+                placeholder="搜索部门..."
+              />
+              <div class="admin-multi-dropdown-list">
+                <label
+                  v-for="opt in filteredEditSupervisedDeptOptions"
+                  :key="'edit-sd-' + opt.id"
+                  class="admin-multi-dropdown-option"
+                >
+                  <span class="admin-multi-dropdown-check">
+                    <input type="checkbox" :value="opt.id" v-model="editPermSupervisedDeptIds" />
+                  </span>
+                  <span class="admin-multi-dropdown-label">{{ '　'.repeat(opt.level) + opt.name }}</span>
+                </label>
+                <p v-if="!filteredEditSupervisedDeptOptions.length" class="admin-empty">无匹配部门</p>
+              </div>
+              <div class="admin-multi-dropdown-actions">
+                <button type="button" class="btn-small" @click="editPermSupervisedDeptIds = []">清空</button>
+                <button type="button" class="btn-small primary" @click="editSupervisedDeptPanelOpen = false">确定</button>
+              </div>
+            </div>
+          </div>
+          <p class="admin-hint">未勾选的部门在左侧部门树中仍可见，但会显示为无访问权限。</p>
         </div>
 
         <div class="form-group">
@@ -1734,6 +1766,7 @@ import * as XLSX from 'xlsx'
 import * as api from '../api/client'
 import Icons from '../components/Icons.vue'
 import DepartmentTableRow from '../components/DepartmentTableRow.vue'
+import { formatDateTimeShanghai } from '../utils/dateTime'
 
 const router = useRouter()
 const route = useRoute()
@@ -1744,12 +1777,15 @@ const sysSearchKeyword = ref('')
 const userFilterStatus = ref('')
 const userFilterRole = ref('')
 const userList = ref([])
+/** 管理员用户页顶部统计（全库计数，独立于当前列表筛选） */
+const userAdminStats = ref(null)
 const storageStats = ref(null)
 const deptStorage = ref([])
 const userStorage = ref([])
 const fileTypeStorage = ref([])
 const deptTreeForTable = ref([])
 const auditList = ref([])
+const deptAuditList = ref([])
 const auditSearch = ref('')
 const auditActionFilter = ref('all')
 const auditStatusFilter = ref('all')
@@ -1758,6 +1794,12 @@ const auditEndDate = ref('')
 const auditPage = ref(1)
 const auditPageSize = 50
 const auditHasMore = ref(false)
+const auditStats = ref({
+  total: 0,
+  distinct_user_count: 0,
+  file_resource_count: 0,
+  library_resource_count: 0,
+})
 
 // 部门日志分页
 const deptAuditPage = ref(1)
@@ -1790,8 +1832,21 @@ const sendForm = ref({
   title: '',
   content: '',
   target: 'all',
-  channels: ['system'],
 })
+
+const NOTIFY_SETTING_DESC = {
+  file_upload: '文件库内有新文件或新版本时，通知库主（不含上传者本人）',
+  file_share: '他人向您分享文件时，在铃铛中提醒',
+  comment: '关注的文件有新评论或回复时提醒',
+  mention: '评论中 @ 您时提醒',
+  maintenance: '管理员发送的系统公告',
+}
+
+function notifySettingDesc(s) {
+  const hint = NOTIFY_SETTING_DESC[s.key]
+  const status = s.enabled ? '已启用' : '已禁用'
+  return hint ? `${hint} · ${status}` : status
+}
 
 // 部门回收站
 const deptTrashList = ref([])
@@ -1823,7 +1878,8 @@ const newUserEmail = ref('')
 const newUserUsername = ref('')
 const newUserPassword = ref('')
 const newUserDeptId = ref(null)
-const newUserRoleStaff = ref('staff')  // staff | dept_leader | executive
+const newUserRoleStaff = ref('staff')  // staff | dept_leader | executive | division_leader
+const newUserSupervisedDeptIds = ref([])
 const newUserIsSuperuser = ref(false)
 
 // 重置密码相关
@@ -1836,6 +1892,11 @@ const resetPasswordError = ref('')
 const showEditUserPermission = ref(false)
 const editingUserPerm = ref(null)
 const editPermRole = ref('staff')
+const editPermSupervisedDeptIds = ref([])
+const editSupervisedDeptPanelOpen = ref(false)
+const editSupervisedDeptKeyword = ref('')
+const newSupervisedDeptPanelOpen = ref(false)
+const newSupervisedDeptKeyword = ref('')
 const editPermIsActive = ref(true)
 const editPermIsSuperuser = ref(false)
 const savingUserPerm = ref(false)
@@ -1912,6 +1973,37 @@ const filteredDeptTreeForTable = computed(() =>
 const deptOptionsForUser = computed(() => _flattenDepts(deptTreeForTable.value))
 const deptTreeCount = computed(() => _countDeptNodes(deptTreeForTable.value))
 
+function _supervisedDeptTriggerLabel(ids, deptOpts) {
+  const list = Array.isArray(ids) ? ids : []
+  if (!list.length) return '请选择分管部门'
+  const names = list
+    .map(id => (deptOpts || []).find(o => Number(o.id) === Number(id))?.name)
+    .filter(Boolean)
+  if (names.length === 1) return names[0]
+  if (names.length === 2) return names.join('、')
+  return `已选择 ${names.length} 个部门`
+}
+
+function _filterDeptOptionsByKeyword(deptOpts, keyword) {
+  const kw = String(keyword || '').trim().toLowerCase()
+  const list = Array.isArray(deptOpts) ? deptOpts : []
+  if (!kw) return list
+  return list.filter(o => String(o.name || '').toLowerCase().includes(kw))
+}
+
+const editSupervisedDeptTriggerLabel = computed(() =>
+  _supervisedDeptTriggerLabel(editPermSupervisedDeptIds.value, deptOptionsForUser.value),
+)
+const newSupervisedDeptTriggerLabel = computed(() =>
+  _supervisedDeptTriggerLabel(newUserSupervisedDeptIds.value, deptOptionsForUser.value),
+)
+const filteredEditSupervisedDeptOptions = computed(() =>
+  _filterDeptOptionsByKeyword(deptOptionsForUser.value, editSupervisedDeptKeyword.value),
+)
+const filteredNewSupervisedDeptOptions = computed(() =>
+  _filterDeptOptionsByKeyword(deptOptionsForUser.value, newSupervisedDeptKeyword.value),
+)
+
 const filteredDeptStorage = computed(() => {
   const kw = storageSearchKeyword.value?.trim().toLowerCase()
   let list = deptStorage.value || []
@@ -1952,51 +2044,67 @@ const remainingStorageDisplay = computed(() => {
   return formatBytes(remain)
 })
 
-// 系统日志统计与过滤
-const auditUniqueUsersCount = computed(() => {
-  const set = new Set()
-  for (const log of auditList.value || []) {
-    if (log.username) set.add(log.username)
-  }
-  return set.size
-})
+function formatDate(s) {
+  return formatDateTimeShanghai(s, '-')
+}
 
-const auditFileOpsCount = computed(() =>
-  (auditList.value || []).filter(l => l.resource_type === 'file').length,
-)
-
-const auditLibraryOpsCount = computed(() =>
-  (auditList.value || []).filter(l => l.resource_type === 'library').length,
-)
-
+// 系统日志：操作分类与展示（与后端 log_audit action 对齐）
 function auditInferType(log) {
   const action = (log.action || '').toLowerCase()
   const rtype = (log.resource_type || '').toLowerCase()
-  if (rtype === 'file' || /upload|download|delete|restore|permanent_delete/.test(action)) return 'file'
-  if (rtype === 'library' || /library/.test(action)) return 'file'
-  if (/user/.test(action) || /create_user|update_user|change_password/.test(action)) return 'user'
-  if (/share/.test(action)) return 'share'
-  if (/permission|role/.test(action)) return 'permission'
-  if (/login|logout/.test(action)) return 'login'
+  if (/login|logout|登录/.test(action)) return 'login'
+  if (/share|分享/.test(action) || rtype === 'file_share') return 'share'
+  if (
+    /add_library_member|remove_library_member|update_library_member|permission|role/.test(action)
+    || rtype === 'library_member'
+  ) {
+    return 'permission'
+  }
+  if (/create_user|update_user|change_password|reset_password|department_member/.test(action) || rtype === 'user') {
+    return 'user'
+  }
+  if (
+    rtype === 'file'
+    || /upload|download|delete|restore|permanent_delete|rename|mkdir|preview|file_comment|评论|下载|预览|移动文件/.test(
+      action,
+    )
+  ) {
+    return 'file'
+  }
+  if (
+    rtype === 'library'
+    || /library|文件库/.test(action)
+  ) {
+    return 'system'
+  }
   return 'system'
 }
 
 function auditActionTagClass(log) {
   const a = (log.action || '').toLowerCase()
-  if (a.includes('upload')) return 'tag-file-upload'
-  if (a.includes('download')) return 'tag-file-download'
-  if (a.includes('preview_rendered') || a.includes('preview')) return 'tag-file-preview'
+  if (/file_comment/.test(a) || a.includes('评论')) return 'tag-file-comment'
+  if (a.includes('upload') || a.includes('上传')) return 'tag-file-upload'
+  if (a.includes('download') || a.includes('下载')) return 'tag-file-download'
+  if (a.includes('preview_rendered') || a.includes('受控预览')) return 'tag-file-preview'
+  if (a.includes('preview') || a.includes('预览')) return 'tag-file-preview'
+  if (a.includes('restore_library') || (a.includes('restore') && a.includes('library'))) return 'tag-library'
+  if (a.includes('restore_version')) return 'tag-file-restore'
   if (a.includes('restore')) return 'tag-file-restore'
-  if (a.includes('permanent_delete') || (a.includes('delete') && !a.includes('restore'))) return 'tag-file-delete'
+  if (a.includes('permanent_delete_library')) return 'tag-file-delete'
+  if (a.includes('permanent_delete_version')) return 'tag-file-delete'
+  if (a.includes('delete_version')) return 'tag-file-delete'
+  if (a.includes('permanent_delete')) return 'tag-file-delete'
+  if (a.includes('delete') && !a.includes('restore')) return 'tag-file-delete'
   if (a.includes('rename')) return 'tag-file-rename'
-  if (a.includes('create_library') || a.includes('update_library') || (a.includes('delete') && a.includes('library')))
-    return 'tag-library'
-  if (a.includes('add_library_member') || a.includes('remove_library_member')) return 'tag-permission'
-  if (a.includes('share')) return 'tag-share'
-  if (a.includes('change_password')) return 'tag-security'
-  if (a.includes('create_user') || a.includes('update_user')) return 'tag-user'
+  if (/library/.test(a)) return 'tag-library'
+  if (a.includes('add_library_member') || a.includes('remove_library_member') || a.includes('update_library_member')) {
+    return 'tag-permission'
+  }
+  if (a.includes('share') || a.includes('分享')) return 'tag-share'
+  if (a.includes('change_password') || a.includes('reset_password')) return 'tag-security'
+  if (a.includes('create_user') || a.includes('update_user') || a.includes('department_member')) return 'tag-user'
   if (a.includes('login_failed')) return 'tag-login-failed'
-  if (a.includes('login')) return 'tag-login'
+  if (a.includes('login') || a.includes('登录')) return 'tag-login'
   if (a.includes('notification')) return 'tag-notify'
   if (a.includes('quota')) return 'tag-quota'
 
@@ -2006,32 +2114,51 @@ function auditActionTagClass(log) {
   if (t === 'share') return 'tag-share'
   if (t === 'permission') return 'tag-permission'
   if (t === 'login') return 'tag-login'
-  if (t === 'system') return 'tag-system'
-  return 'tag-default'
+  return 'tag-system'
 }
 
 function formatAuditActionLabel(log) {
   const a = (log.action || '').toLowerCase()
   if (!a) return '其他操作'
-  if (a.includes('upload')) return '上传文件'
-  if (a.includes('download')) return '下载文件'
-  if (a.includes('preview_rendered')) return '受控预览'
-  if (a.includes('preview')) return '预览文件'
-  if (a.includes('restore')) return '恢复文件'
+  if (a.includes('file_comment_delete')) return '删除评论'
+  if (a.includes('file_comment_reply')) return '回复评论'
+  if (a.includes('file_comment_create') || a.includes('file_comment')) return '发表评论'
+  if (a.includes('permanent_delete_library')) return '彻底删除文件库'
+  if (a.includes('permanent_delete_version')) return '彻底删除版本'
   if (a.includes('permanent_delete')) return '彻底删除'
+  if (a.includes('delete_library')) return '删除文件库'
+  if (a.includes('delete_version')) return '删除版本'
+  if (a.includes('restore_library')) return '恢复文件库'
+  if (a.includes('restore_version')) return '恢复版本'
+  if (a.includes('restore')) return '恢复文件'
+  if (a.includes('move_library')) return '移动文件库'
+  if (a.includes('file_move_library')) return '移动文件'
+  if (a.includes('mkdir')) return '新建文件夹'
   if (a.includes('rename')) return '重命名'
+  if (a.includes('upload_new_version') || (a.includes('upload') && a.includes('version'))) return '上传新版本'
+  if (a.includes('upload') || a.includes('上传')) return '上传文件'
+  if (a.includes('preview_rendered') || a.includes('受控预览')) return '受控预览'
+  if (a.includes('preview') || a.includes('预览')) return '预览文件'
+  if (a.includes('download') || a.includes('下载')) return '下载文件'
   if (a.includes('delete') && a.includes('library')) return '删除文件库'
-  if (a.includes('delete') && !a.includes('library')) return '删除文件'
+  if (a.includes('delete')) return '删除文件'
   if (a.includes('create_library')) return '新建文件库'
+  if (a.includes('update_library_member')) return '修改文件库成员'
   if (a.includes('update_library')) return '修改文件库'
   if (a.includes('add_library_member')) return '添加文件库成员'
   if (a.includes('remove_library_member')) return '移除文件库成员'
-  if (a.includes('share')) return '分享文件或文件库'
+  if (a.includes('file_share_remove')) return '取消文件分享'
+  if (a.includes('file_share_add')) return '添加文件分享'
+  if (a.includes('file_share_update')) return '更新文件分享'
+  if (a.includes('share') || a.includes('分享')) return '分享文件'
+  if (a.includes('reset_password')) return '重置密码'
   if (a.includes('change_password')) return '修改密码'
+  if (a.includes('create_department_member')) return '添加部门成员'
+  if (a.includes('remove_department_member')) return '移除部门成员'
   if (a.includes('create_user')) return '创建用户'
   if (a.includes('update_user')) return '修改用户'
   if (a.includes('login_failed')) return '登录失败'
-  if (a.includes('login')) return '登录'
+  if (a.includes('login') || a.includes('登录')) return '登录'
   if (a.includes('notification')) return '发送通知'
   if (a.includes('quota')) return '调整存储配额'
   return log.action || '其他操作'
@@ -2042,6 +2169,8 @@ function formatAuditResourceLabel(log) {
   const id = log.resource_id
   if (rt === 'file') return id ? `文件 #${id}` : '文件'
   if (rt === 'library') return id ? `文件库 #${id}` : '文件库'
+  if (rt === 'file_share') return id ? `文件 #${id}` : '文件分享'
+  if (rt === 'library_member') return id ? `文件库 #${id}` : '文件库成员'
   if (rt === 'user') return id ? `用户 #${id}` : '用户'
   if (rt === 'notification') return '通知'
   if (rt) return rt
@@ -2087,20 +2216,53 @@ function formatAuditDetailLabel(log) {
   const target = formatAuditTargetLabel(log)
   const dept = log.department_name || ''
 
+  if (a.includes('file_comment_delete')) {
+    return `${user} 删除了 ${target} 下的评论`
+  }
+  if (a.includes('file_comment_reply')) {
+    return `${user} 回复了 ${target} 下的评论`
+  }
+  if (a.includes('file_comment')) {
+    return `${user} 评论了 ${target}`
+  }
+  if (a.includes('permanent_delete_library')) {
+    return `${user} 彻底删除了文件库 ${target}`
+  }
+  if (a.includes('permanent_delete_version')) {
+    return `${user} 彻底删除了 ${target} 的历史版本`
+  }
+  if (a.includes('delete_library')) {
+    return `${user} 删除了文件库 ${target}`
+  }
+  if (a.includes('delete_version')) {
+    return `${user} 删除了 ${target} 的历史版本`
+  }
+  if (a.includes('restore_library')) {
+    return `${user} 从回收站恢复了文件库 ${target}`
+  }
+  if (a.includes('restore_version')) {
+    return `${user} 恢复了 ${target} 的历史版本`
+  }
   if (a.includes('upload')) {
     return `${user} 在${dept ? '「' + dept + '」中' : ''}上传了 ${target}`
   }
-  if (a.includes('download')) {
+  if (a.includes('download') || a.includes('下载')) {
     return `${user} 下载了 ${target}`
+  }
+  if (a.includes('preview_rendered')) {
+    const d = log.detail || ''
+    const pc = (d.match(/page_count=(\d+)/i) || [])[1]
+    if (pc) return `${user} 受控预览了 ${target}（共 ${pc} 页）`
+    return `${user} 受控预览了 ${target}`
+  }
+  if (a.includes('preview') || a.includes('预览')) {
+    return `${user} 预览了 ${target}`
   }
   if (a.includes('restore')) {
     return `${user} 从回收站恢复了 ${target}`
   }
   if (a.includes('permanent_delete')) {
     return `${user} 彻底删除了 ${target}`
-  }
-  if (a.includes('delete') && a.includes('library')) {
-    return `${user} 删除了文件库 ${target}`
   }
   if (a.includes('delete') && !a.includes('library')) {
     return `${user} 删除了 ${target}`
@@ -2117,17 +2279,47 @@ function formatAuditDetailLabel(log) {
   if (a.includes('remove_library_member')) {
     return `${user} 从文件库 ${target} 移除了成员`
   }
+  if (a.includes('update_library_member')) {
+    return `${user} 修改了文件库 ${target} 的成员权限`
+  }
+  if (a.includes('file_share_remove')) {
+    return `${user} 取消了 ${target} 的分享`
+  }
+  if (a.includes('file_share_add') || a.includes('file_share_update')) {
+    return `${user} 分享了 ${target}`
+  }
   if (a.includes('share')) {
     return `${user} 分享了 ${target}`
   }
+  if (a.includes('mkdir')) {
+    return `${user} 新建了文件夹 ${target}`
+  }
+  if (a.includes('file_move_library')) {
+    return `${user} 移动了 ${target}`
+  }
+  if (a.includes('move_library')) {
+    return `${user} 移动了文件库 ${target}`
+  }
+  if (a.includes('rename')) {
+    return `${user} 重命名了 ${target}`
+  }
   if (a.includes('change_password')) {
     return `${user} 修改了账户密码`
+  }
+  if (a.includes('reset_password')) {
+    return `${user} 重置了 ${target} 的密码`
   }
   if (a.includes('create_user')) {
     return `${user} 创建了新用户 ${target}`
   }
   if (a.includes('update_user')) {
     return `${user} 修改了用户 ${target} 的信息`
+  }
+  if (a.includes('create_department_member')) {
+    return `${user} 添加了部门成员 ${target}`
+  }
+  if (a.includes('remove_department_member')) {
+    return `${user} 移除了部门成员 ${target}`
   }
   if (a.includes('login_failed')) {
     return `${user} 登录失败`
@@ -2161,37 +2353,21 @@ function formatAuditStatusLabel(log) {
 }
 
 const filteredAuditList = computed(() => {
-  const kw = (auditSearch.value || '').trim().toLowerCase()
   return (auditList.value || []).filter(log => {
     const type = auditInferType(log)
     const matchesAction = auditActionFilter.value === 'all' || type === auditActionFilter.value
     // 当前审计日志未记录失败状态，这里暂全部视为成功
     const matchesStatus = auditStatusFilter.value === 'all' || auditStatusFilter.value === 'success'
-    const text =
-      (log.username || '') +
-      (log.action || '') +
-      (log.detail || '') +
-      (log.resource_type || '') +
-      (log.resource_id || '')
-    const matchesSearch = !kw || text.toLowerCase().includes(kw)
-    return matchesAction && matchesStatus && matchesSearch
+    return matchesAction && matchesStatus
   })
 })
 
 const filteredDeptAuditList = computed(() => {
-  const kw = (auditSearch.value || '').trim().toLowerCase()
-  return (auditList.value || []).filter(log => {
+  return (deptAuditList.value || []).filter(log => {
     const type = auditInferType(log)
     const matchesAction = auditActionFilter.value === 'all' || type === auditActionFilter.value
     const matchesStatus = auditStatusFilter.value === 'all' || auditStatusFilter.value === 'success'
-    const text =
-      (log.username || '') +
-      (log.action || '') +
-      (log.detail || '') +
-      (log.resource_type || '') +
-      (log.resource_id || '')
-    const matchesSearch = !kw || text.toLowerCase().includes(kw)
-    return matchesAction && matchesStatus && matchesSearch
+    return matchesAction && matchesStatus
   })
 })
 
@@ -2398,25 +2574,6 @@ async function permDeleteDeptTrashItem(item) {
   }
 }
 
-function formatDate(s) {
-  if (!s) return '-'
-  try {
-    let raw = String(s)
-    // 审计日志历史数据可能是不带时区的时间字符串，这里按 UTC 解析后再转北京时间
-    if (!raw.endsWith('Z') && !raw.includes('+')) {
-      raw = raw.replace(' ', 'T') + 'Z'
-    }
-    const d = new Date(raw)
-    if (Number.isNaN(d.getTime())) return String(s)
-    return d.toLocaleString('zh-CN', {
-      timeZone: 'Asia/Shanghai',
-      hour12: false,
-    })
-  } catch {
-    return String(s)
-  }
-}
-
 function formatBytes(b) {
   if (!b || b <= 0) return '0 B'
   if (b < 1024) return `${b} B`
@@ -2489,17 +2646,6 @@ async function toggleNotifySetting(s) {
   }
 }
 
-function onToggleChannel(channel, checked) {
-  const cur = sendForm.value.channels || []
-  if (checked) {
-    if (!cur.includes(channel)) {
-      sendForm.value.channels = [...cur, channel]
-    }
-  } else {
-    sendForm.value.channels = cur.filter((c) => c !== channel)
-  }
-}
-
 async function doSendNotification() {
   err.value = ''
   if (!sendForm.value.title.trim()) {
@@ -2510,17 +2656,12 @@ async function doSendNotification() {
     err.value = '请输入通知内容'
     return
   }
-  if (!sendForm.value.channels.length) {
-    err.value = '请至少选择一个发送渠道'
-    return
-  }
   try {
     sendingNotify.value = true
     await api.sendAdminNotification({
       title: sendForm.value.title.trim(),
       content: sendForm.value.content.trim(),
       target: sendForm.value.target,
-      channels: sendForm.value.channels,
     })
     await loadNotifyAll()
     showSendDialog.value = false
@@ -2528,7 +2669,6 @@ async function doSendNotification() {
       title: '',
       content: '',
       target: 'all',
-      channels: ['system'],
     }
   } catch (e) {
     err.value = e.message
@@ -2543,7 +2683,6 @@ function closeSendDialog() {
     title: '',
     content: '',
     target: 'all',
-    channels: ['system'],
   }
   err.value = ''
 }
@@ -2568,7 +2707,10 @@ function switchTab(name) {
   } else {
     stopStorageAutoRefresh()
   }
-  if (name === 'users') loadUsers()
+  if (name === 'users') {
+    loadUsers()
+    loadUserAdminStats()
+  }
   if (name === 'departments') loadDepartments()
   if (name === 'dept-members') loadDeptMembers()
   if (name === 'dept-trash') loadDeptTrashAdmin()
@@ -2663,6 +2805,14 @@ function trendTextClass(trend) {
   return 'text-green'
 }
 
+async function loadUserAdminStats() {
+  try {
+    userAdminStats.value = await api.getUserAdminStats()
+  } catch (e) {
+    userAdminStats.value = null
+  }
+}
+
 async function loadUsers() {
   try {
     const params = {}
@@ -2723,16 +2873,35 @@ async function loadDeptMembers() {
   }
 }
 
+function buildAuditServerFilterParams() {
+  const params = {}
+  if (auditStartDate.value) params.start_date = auditStartDate.value
+  if (auditEndDate.value) params.end_date = auditEndDate.value
+  const s = auditSearch.value?.trim()
+  if (s) params.search = s
+  return params
+}
+
 async function loadAudit() {
   try {
-    const params = {
+    const base = buildAuditServerFilterParams()
+    const listParams = {
+      ...base,
       limit: auditPageSize,
       offset: (auditPage.value - 1) * auditPageSize,
     }
-    if (auditStartDate.value) params.start_date = auditStartDate.value
-    if (auditEndDate.value) params.end_date = auditEndDate.value
-    const logs = await api.listAuditLogs(params)
+    const emptyStats = {
+      total: 0,
+      distinct_user_count: 0,
+      file_resource_count: 0,
+      library_resource_count: 0,
+    }
+    const [logs, stats] = await Promise.all([
+      api.listAuditLogs(listParams),
+      api.getAuditLogsStats(base),
+    ])
     auditList.value = logs || []
+    auditStats.value = stats && typeof stats === 'object' ? { ...emptyStats, ...stats } : emptyStats
     auditHasMore.value = (logs || []).length === auditPageSize
   } catch (e) {
     err.value = e.message
@@ -2741,14 +2910,14 @@ async function loadAudit() {
 
 async function loadDeptAudit() {
   try {
+    const base = buildAuditServerFilterParams()
     const params = {
+      ...base,
       limit: deptAuditPageSize,
       offset: (deptAuditPage.value - 1) * deptAuditPageSize,
     }
-    if (auditStartDate.value) params.start_date = auditStartDate.value
-    if (auditEndDate.value) params.end_date = auditEndDate.value
     const logs = await api.listDepartmentAuditLogs(params)
-    auditList.value = logs || []
+    deptAuditList.value = logs || []
     deptAuditHasMore.value = (logs || []).length === deptAuditPageSize
   } catch (e) {
     err.value = e.message
@@ -2793,9 +2962,8 @@ function goNextAuditPage() {
 async function exportAuditCsv() {
   err.value = ''
   try {
-    const params = { limit: 500 }
-    if (auditStartDate.value) params.start_date = auditStartDate.value
-    if (auditEndDate.value) params.end_date = auditEndDate.value
+    const base = buildAuditServerFilterParams()
+    const params = { limit: 500, ...base }
     const allLogs = []
     let offset = 0
     let chunk
@@ -2805,19 +2973,11 @@ async function exportAuditCsv() {
       offset += 500
     } while (Array.isArray(chunk) && chunk.length === 500)
 
-    const kw = (auditSearch.value || '').trim().toLowerCase()
     const filtered = allLogs.filter((log) => {
       const type = auditInferType(log)
       const matchesAction = auditActionFilter.value === 'all' || type === auditActionFilter.value
       const matchesStatus = auditStatusFilter.value === 'all' || auditStatusFilter.value === 'success'
-      const text =
-        (log.username || '') +
-        (log.action || '') +
-        (log.detail || '') +
-        (log.resource_type || '') +
-        (log.resource_id || '')
-      const matchesSearch = !kw || text.toLowerCase().includes(kw)
-      return matchesAction && matchesStatus && matchesSearch
+      return matchesAction && matchesStatus
     })
 
     const rows = [
@@ -2961,6 +3121,11 @@ async function doDeleteDept(node) {
 function openEditUserPermission(u) {
   editingUserPerm.value = u
   editPermRole.value = u.role || 'staff'
+  editPermSupervisedDeptIds.value = Array.isArray(u.supervised_department_ids)
+    ? u.supervised_department_ids.map(Number)
+    : []
+  editSupervisedDeptPanelOpen.value = false
+  editSupervisedDeptKeyword.value = ''
   editPermIsActive.value = !!u.is_active
   editPermIsSuperuser.value = !!u.is_superuser
   editUserPermError.value = ''
@@ -2971,8 +3136,18 @@ function openEditUserPermission(u) {
 function closeEditUserPermission() {
   showEditUserPermission.value = false
   editingUserPerm.value = null
+  editPermSupervisedDeptIds.value = []
+  editSupervisedDeptPanelOpen.value = false
+  editSupervisedDeptKeyword.value = ''
   editUserPermError.value = ''
   savingUserPerm.value = false
+}
+
+function _sameIdList(a, b) {
+  const sa = [...(a || [])].map(Number).sort((x, y) => x - y)
+  const sb = [...(b || [])].map(Number).sort((x, y) => x - y)
+  if (sa.length !== sb.length) return false
+  return sa.every((v, i) => v === sb[i])
 }
 
 async function saveUserPermission() {
@@ -2999,12 +3174,29 @@ async function saveUserPermission() {
       if (!targetIsSuperuser) patch.role = targetRole
     }
 
+    const prevSupervised = Array.isArray(u.supervised_department_ids) ? u.supervised_department_ids : []
+    if (
+      !targetIsSuperuser &&
+      targetRole === 'division_leader' &&
+      !_sameIdList(editPermSupervisedDeptIds.value, prevSupervised)
+    ) {
+      patch.supervised_department_ids = [...editPermSupervisedDeptIds.value].map(Number)
+    }
+    if (
+      !targetIsSuperuser &&
+      targetRole === 'division_leader' &&
+      patch.role === 'division_leader' &&
+      patch.supervised_department_ids === undefined
+    ) {
+      patch.supervised_department_ids = [...editPermSupervisedDeptIds.value].map(Number)
+    }
+
     if (!Object.keys(patch).length) {
       closeEditUserPermission()
       return
     }
     await api.updateUser(u.id, patch)
-    await loadUsers()
+    await Promise.all([loadUsers(), loadUserAdminStats()])
     closeEditUserPermission()
   } catch (e) {
     editUserPermError.value = e.message || '保存失败'
@@ -3060,6 +3252,9 @@ function closeCreateUser() {
   newUserPassword.value = ''
   newUserDeptId.value = null
   newUserRoleStaff.value = 'staff'
+  newUserSupervisedDeptIds.value = []
+  newSupervisedDeptPanelOpen.value = false
+  newSupervisedDeptKeyword.value = ''
   newUserIsSuperuser.value = false
   err.value = ''
 }
@@ -3081,6 +3276,9 @@ async function doCreateUserModal() {
   try {
     const deptId = newUserDeptId.value ? Number(newUserDeptId.value) : null
     const role = newUserRoleStaff.value || 'staff'
+    const supervisedIds = role === 'division_leader'
+      ? [...newUserSupervisedDeptIds.value].map(Number)
+      : null
     await api.createUser(
       newUserEmail.value.trim(),
       newUserUsername.value.trim(),
@@ -3088,6 +3286,7 @@ async function doCreateUserModal() {
       newUserIsSuperuser.value,
       deptId,
       role,
+      supervisedIds,
     )
     showCreateUser.value = false
     newUserEmail.value = ''
@@ -3095,8 +3294,9 @@ async function doCreateUserModal() {
     newUserPassword.value = ''
     newUserDeptId.value = null
     newUserRoleStaff.value = 'staff'
+    newUserSupervisedDeptIds.value = []
     newUserIsSuperuser.value = false
-    await loadUsers()
+    await Promise.all([loadUsers(), loadUserAdminStats()])
   } catch (e) {
     err.value = e.message
   }
@@ -3176,6 +3376,15 @@ async function removeDeptMember(u) {
   }
 }
 
+function _closeSupervisedDeptPanels() {
+  editSupervisedDeptPanelOpen.value = false
+  newSupervisedDeptPanelOpen.value = false
+}
+
+function _onDocumentClickForSupervisedDeptPanels() {
+  _closeSupervisedDeptPanels()
+}
+
 onMounted(async () => {
   try {
     me.value = await api.getMe()
@@ -3183,6 +3392,7 @@ onMounted(async () => {
     router.push('/login')
     return
   }
+  document.addEventListener('click', _onDocumentClickForSupervisedDeptPanels)
 
   // URL 指定了 tab 时（如从顶部栏「部门管理」进入）
   if (route.query?.tab === 'departments') {
@@ -3195,6 +3405,7 @@ onMounted(async () => {
   if (me.value?.is_superuser) {
     await Promise.all([
       loadUsers(),
+      loadUserAdminStats(),
       loadDepartments(),
       loadStorageAll(),
       loadAudit(),
@@ -3215,6 +3426,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  document.removeEventListener('click', _onDocumentClickForSupervisedDeptPanels)
   stopStorageAutoRefresh()
 })
 </script>
@@ -3559,11 +3771,6 @@ onUnmounted(() => {
   color: #1d4ed8;
 }
 
-.chip-email {
-  background: #ede9fe;
-  color: #6d28d9;
-}
-
 .admin-notify-chip-icon {
   width: 12px;
   height: 12px;
@@ -3742,6 +3949,42 @@ onUnmounted(() => {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+  table-layout: fixed;
+}
+
+.audit-table th:nth-child(1),
+.audit-table td:nth-child(1) {
+  width: 168px;
+}
+
+.audit-table th:nth-child(2),
+.audit-table td:nth-child(2) {
+  width: 100px;
+}
+
+.audit-table th:nth-child(3),
+.audit-table td:nth-child(3) {
+  width: 120px;
+}
+
+.audit-table th:nth-child(4),
+.audit-table td:nth-child(4) {
+  width: 120px;
+}
+
+.audit-table th:nth-child(5),
+.audit-table td:nth-child(5) {
+  width: auto;
+}
+
+.audit-table th:nth-child(6),
+.audit-table td:nth-child(6) {
+  width: 128px;
+}
+
+.audit-table th:nth-child(7),
+.audit-table td:nth-child(7) {
+  width: 72px;
 }
 
 .audit-table th,
@@ -3794,6 +4037,18 @@ onUnmounted(() => {
 
 .audit-cell-op {
   white-space: nowrap;
+}
+
+.audit-cell-target {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.45;
+  color: #4b5563;
+}
+
+.tag-file-comment {
+  background: #e0e7ff;
+  color: #4338ca;
 }
 
 .audit-tag {
@@ -4161,6 +4416,14 @@ onUnmounted(() => {
   margin-bottom: 24px;
 }
 
+.audit-stats-footnote {
+  margin-top: -12px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
 .admin-stat-card {
   background: #fff;
   border-radius: 12px;
@@ -4359,9 +4622,162 @@ onUnmounted(() => {
   color: #b45309;
 }
 
+.badge-division-leader {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
 .badge-dept-leader {
   background: #dbeafe;
   color: #1d4ed8;
+}
+
+.admin-multi-dropdown {
+  position: relative;
+}
+
+.admin-multi-dropdown-trigger {
+  width: 100%;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 14px;
+  color: var(--text, #111827);
+  cursor: pointer;
+  text-align: left;
+}
+
+.admin-multi-dropdown-trigger:hover {
+  border-color: var(--primary, #2563eb);
+}
+
+.admin-multi-dropdown-trigger[aria-expanded="true"] {
+  border-color: var(--primary, #2563eb);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+.admin-multi-dropdown-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text, #111827);
+}
+
+.admin-multi-dropdown-value.is-placeholder {
+  color: var(--text-secondary, #6b7280);
+}
+
+.admin-multi-dropdown-chevron {
+  flex-shrink: 0;
+  color: var(--text-secondary, #6b7280);
+  font-size: 12px;
+  transition: transform 0.15s ease;
+}
+
+.admin-multi-dropdown-trigger[aria-expanded="true"] .admin-multi-dropdown-chevron {
+  transform: rotate(180deg);
+}
+
+.admin-multi-dropdown-panel {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  padding: 8px;
+}
+
+.admin-multi-dropdown-search {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 13px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+
+.admin-multi-dropdown-list {
+  max-height: 180px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.admin-multi-dropdown-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px;
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+  border-radius: 6px;
+  width: 100%;
+  margin-bottom: 0;
+}
+
+.admin-multi-dropdown-option:hover {
+  background: #f3f4f6;
+}
+
+.admin-multi-dropdown-check {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.admin-multi-dropdown-option input[type="checkbox"] {
+  flex: 0 0 16px;
+  width: 16px !important;
+  height: 16px !important;
+  min-width: 16px;
+  min-height: 16px;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.admin-multi-dropdown-label {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.modal .form-group label.admin-multi-dropdown-option {
+  display: flex;
+  margin-bottom: 0;
+  font-weight: 400;
+}
+
+.modal .form-group .admin-multi-dropdown-option input[type="checkbox"] {
+  width: 16px !important;
+  padding: 0;
+}
+
+.admin-multi-dropdown-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border, #e5e7eb);
 }
 
 .admin-role-select {
@@ -4559,6 +4975,7 @@ onUnmounted(() => {
 
 .user-modal-card {
   min-width: 520px;
+  overflow: visible;
 }
 
 .user-modal-grid {
@@ -4585,6 +5002,10 @@ onUnmounted(() => {
   max-height: 90vh;
   overflow: auto;
   background: #fff;
+}
+
+.modal .card.user-modal-card {
+  overflow: visible;
 }
 
 .modal .card h3 {

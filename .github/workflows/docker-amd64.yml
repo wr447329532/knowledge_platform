@@ -1,10 +1,20 @@
-# 推荐：linux/amd64 镜像在 GitHub 上打（原生 amd64 + Debian 源稳定），避免本机 Mac 模拟 amd64 慢、apt 502。
-# 使用：Actions → 本 workflow → Run workflow。产物推 GHCR :latest。
-# 服务器：docker login ghcr.io 后 docker pull ghcr.io/<小写 owner>/knowledge_platform-app:latest（nginx 同理）。
+# linux/amd64 在 GitHub 原生构建并推 GHCR；服务器只需 docker compose pull && up（见 deploy/.env.example.ghcr）。
+# 手动运行：Actions → 本 workflow → Run workflow。
 name: Docker linux/amd64 → GHCR
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "docker/**"
+      - ".github/workflows/docker-amd64.yml"
+      - "backend/**"
+      - "frontend/**"
+      - "requirements.txt"
+      - ".dockerignore"
+      - "alembic/**"
 
 permissions:
   contents: read
@@ -28,7 +38,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push app
+      - name: Build & push base（apt / LibreOffice，缓存命中时不重做）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/base.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ steps.meta.outputs.owner_lc }}/knowledge_platform-base:latest
+          build-args: USE_CN_MIRROR=0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push app（代码 + pip，依赖上一步 base）
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -36,7 +58,9 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ghcr.io/${{ steps.meta.outputs.owner_lc }}/knowledge_platform-app:latest
-          build-args: USE_CN_MIRROR=0
+          build-args: |
+            USE_CN_MIRROR=0
+            BASE_IMAGE=ghcr.io/${{ steps.meta.outputs.owner_lc }}/knowledge_platform-base:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

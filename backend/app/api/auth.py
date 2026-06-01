@@ -3,7 +3,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from backend.app.api.deps import get_current_user, get_current_active_superuser
@@ -13,6 +13,12 @@ from backend.app.db.session import get_db
 from backend.app.models.audit import AuditLog
 from backend.app.models.department import Department
 from backend.app.models.user import User
+from backend.app.core.oversight_access import ROLE_DIVISION_LEADER
+from backend.app.services.supervised_department_service import (
+    clear_supervised_departments_if_not_division_leader,
+    list_supervised_department_ids,
+    replace_supervised_departments,
+)
 from backend.app.schemas.auth import ChangePassword, Token, UserCreate, UserRead, UserUpdate
 
 
@@ -32,12 +38,24 @@ class SecurityInfoRead(BaseModel):
     last_password_change_at: Optional[str] = None
 
 
-def _user_to_read(user: User, is_superuser_override: bool | None = None) -> UserRead:
+class UserAdminStatsRead(BaseModel):
+    """管理员用户看板聚合数量（不受列表搜索/分页影响）"""
+
+    total_users: int
+    active_users: int
+    inactive_users: int
+    superuser_users: int
+
+
+def _user_to_read(user: User, is_superuser_override: bool | None = None, db: Session | None = None) -> UserRead:
     """将 User ORM 转为 UserRead，兼容邮箱与部门。"""
     is_superuser = is_superuser_override if is_superuser_override is not None else (user.username == "admin" or user.is_superuser)
     email = user.email if user.email and user.email not in ("admin@local", "admin@localhost") else "admin@example.com"
     dept_name = user.department.name if getattr(user, "department", None) and user.department else None
     role = getattr(user, "role", "staff")
+    supervised_ids: list[int] = []
+    if db is not None:
+        supervised_ids = list_supervised_department_ids(db, user.id)
     return UserRead(
         id=user.id,
         username=user.username,
@@ -49,6 +67,7 @@ def _user_to_read(user: User, is_superuser_override: bool | None = None) -> User
         department_id=user.department_id,
         department_name=dept_name,
         is_department_leader=False,
+        supervised_department_ids=supervised_ids,
     )
 
 
@@ -66,7 +85,7 @@ def get_me(
         .first()
         is not None
     )
-    user_read = _user_to_read(current_user, is_superuser_override=is_super)
+    user_read = _user_to_read(current_user, is_superuser_override=is_super, db=db)
     user_read.is_department_leader = is_leader
     return user_read
 
@@ -173,7 +192,7 @@ def register(
         if not dept:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="所选部门不存在")
     role = getattr(user_in, "role", "staff") or "staff"
-    if role not in ("staff", "dept_leader", "executive"):
+    if role not in ("staff", "dept_leader", "executive", ROLE_DIVISION_LEADER):
         role = "staff"
     user = User(
         username=user_in.username,
@@ -186,6 +205,8 @@ def register(
     )
     db.add(user)
     db.flush()
+    if role == ROLE_DIVISION_LEADER and getattr(user_in, "supervised_department_ids", None):
+        replace_supervised_departments(db, user, user_in.supervised_department_ids)
     log_audit(
         db,
         current_user.id,
@@ -198,7 +219,7 @@ def register(
     )
     db.commit()
     db.refresh(user)
-    return _user_to_read(user)
+    return _user_to_read(user, db=db)
 
 
 @router.post("/login", response_model=Token)
@@ -230,6 +251,32 @@ def login(
     return Token(access_token=access_token)
 
 
+@router.get("/users/stats", response_model=UserAdminStatsRead)
+def users_admin_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_superuser),
+):
+    """仅管理员：返回全库用户计数，与用户列表筛选条件无关。"""
+    total_users = db.query(func.count(User.id)).scalar() or 0
+    active_users = (
+        db.query(func.count(User.id)).filter(User.is_active.is_(True)).scalar()
+        or 0
+    )
+    inactive_users = (
+        db.query(func.count(User.id)).filter(User.is_active.is_(False)).scalar()
+        or 0
+    )
+    # 与 _user_to_read 一致：内置 admin 账号或标记为超管的账号计为管理员
+    super_expr = or_(User.username == "admin", User.is_superuser.is_(True))
+    superuser_users = db.query(func.count(User.id)).filter(super_expr).scalar() or 0
+    return UserAdminStatsRead(
+        total_users=total_users,
+        active_users=active_users,
+        inactive_users=inactive_users,
+        superuser_users=superuser_users,
+    )
+
+
 @router.get("/users", response_model=List[UserRead])
 def list_users(
     search: Optional[str] = Query(None, description="按用户名或邮箱模糊搜索"),
@@ -253,7 +300,7 @@ def list_users(
     leader_ids = {r[0] for r in leader_rows if r[0] is not None}
     out: list[UserRead] = []
     for u in users:
-        ur = _user_to_read(u)
+        ur = _user_to_read(u, db=db)
         ur.is_department_leader = u.id in leader_ids
         out.append(ur)
     return out
@@ -341,7 +388,7 @@ def update_user(
             ip_address=get_client_ip(request),
         )
     if body.department_id is not None:
-        if body.department_id == 0:
+        if body.department_id == 0: 
             user.department_id = None
         else:
             dept = db.query(Department).filter(Department.id == body.department_id).first()
@@ -359,8 +406,11 @@ def update_user(
             ip_address=get_client_ip(request),
         )
     if body.role is not None:
-        if body.role not in ("staff", "dept_leader", "executive"):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="角色取值须为 staff、dept_leader 或 executive")
+        if body.role not in ("staff", "dept_leader", "executive", ROLE_DIVISION_LEADER):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="角色取值须为 staff、dept_leader、executive 或 division_leader",
+            )
         user.role = body.role
         if user.department_id is not None:
             dept = db.query(Department).filter(Department.id == user.department_id).first()
@@ -370,6 +420,7 @@ def update_user(
                 else:
                     if dept.leader_user_id == user.id:
                         dept.leader_user_id = None
+        clear_supervised_departments_if_not_division_leader(db, user)
         log_audit(
             db,
             current_user.id,
@@ -380,7 +431,24 @@ def update_user(
             f"role={body.role}",
             ip_address=get_client_ip(request),
         )
+    if body.supervised_department_ids is not None:
+        if user.role != ROLE_DIVISION_LEADER:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="仅分管领导可配置分管部门",
+            )
+        replace_supervised_departments(db, user, body.supervised_department_ids)
+        log_audit(
+            db,
+            current_user.id,
+            current_user.username,
+            "update_user",
+            "user",
+            user.id,
+            f"supervised_department_ids={body.supervised_department_ids}",
+            ip_address=get_client_ip(request),
+        )
     db.commit()
     db.refresh(user)
-    return _user_to_read(user)
+    return _user_to_read(user, db=db)
 

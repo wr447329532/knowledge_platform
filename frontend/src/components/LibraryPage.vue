@@ -94,10 +94,7 @@
                 {{ lib.description || '-' }}
               </div>
               <div class="lib-col-type">
-                <span
-                  class="shared-library-type"
-                  :class="libraryTypeClass(lib)"
-                >{{ libraryTypeText(lib) }}</span>
+                <LibraryTypeTags :lib="lib" />
               </div>
               <div class="lib-col-source">
                 <template v-if="lib.is_owner">-</template>
@@ -188,11 +185,7 @@
             </div>
             <div class="lib-card-meta">
               <span v-if="!lib.is_owner" class="lib-badge-shared">共享给我</span>
-              <span
-                v-else
-                class="shared-library-type"
-                :class="libraryTypeClass(lib)"
-              >{{ libraryTypeText(lib) }}</span>
+              <LibraryTypeTags :lib="lib" />
               <div v-if="!lib.is_owner" class="lib-card-share-meta">
                 <span>分享者：{{ lib.owner_username || '-' }}</span>
                 <span v-if="lib.department_name">来源：{{ lib.department_name }}</span>
@@ -305,10 +298,7 @@
                   {{ lib.description || '-' }}
                 </div>
                 <div class="lib-col-type">
-                  <span
-                    class="shared-library-type"
-                    :class="libraryTypeClass(lib)"
-                  >{{ libraryTypeText(lib) }}</span>
+                  <LibraryTypeTags :lib="lib" />
                 </div>
                 <div class="lib-col-source">
                   <template v-if="lib.is_owner">-</template>
@@ -397,11 +387,7 @@
               </div>
               <div class="lib-card-meta">
                 <span v-if="!lib.is_owner" class="lib-badge-shared">共享给我</span>
-                <span
-                  v-else
-                  class="shared-library-type"
-                  :class="libraryTypeClass(lib)"
-                >{{ libraryTypeText(lib) }}</span>
+                <LibraryTypeTags :lib="lib" />
                 <div v-if="!lib.is_owner" class="lib-card-share-meta">
                   <span>分享者：{{ lib.owner_username || '-' }}</span>
                   <span v-if="lib.department_name">来源：{{ lib.department_name }}</span>
@@ -413,7 +399,25 @@
         <p v-if="filesLoading" class="empty-hint">加载中...</p>
         <div v-else-if="searchApplied" class="search-results-section">
           <div class="search-results-header">
-            <span>搜索「{{ searchKeyword }}」共 {{ searchResults.length }} 项</span>
+            <span>
+              搜索「{{ searchKeyword }}」
+              <template v-if="librarySearchMatches.length + searchResults.length">
+                共 {{ librarySearchMatches.length + searchResults.length }} 项（资料库 {{ librarySearchMatches.length }}，文件 {{ searchResults.length }}）
+              </template>
+              <template v-else>无匹配项</template>
+            </span>
+          </div>
+          <div v-if="librarySearchMatches.length" class="lib-search-lib-hits-wrap">
+            <div class="child-libs-title">匹配的资料库</div>
+            <ul class="lib-search-lib-hits">
+              <li v-for="hit in librarySearchMatches" :key="'sh-' + hit.id">
+                <button type="button" class="lib-search-lib-link" @click="selectLib(hit)">
+                  <Icons name="folder" class="lib-folder-icon" />
+                  <span class="lib-search-lib-name">{{ hit.name }}</span>
+                  <span v-if="hit.description" class="lib-search-lib-desc">{{ hit.description }}</span>
+                </button>
+              </li>
+            </ul>
           </div>
           <!-- 搜索结果行视图：沿用下方 file-grid 的样式和布局 -->
           <template v-if="fileViewMode === 'list'">
@@ -483,7 +487,11 @@
                   </div>
                 </span>
               </div>
-              <p v-if="!sortedSearchResults.length" class="empty-hint" style="padding:12px 20px;">未找到匹配结果</p>
+              <p
+                v-if="!sortedSearchResults.length && !librarySearchMatches.length"
+                class="empty-hint"
+                style="padding:12px 20px;"
+              >未找到匹配结果</p>
             </div>
           </template>
           <!-- 搜索结果网格视图：沿用文件卡片样式 -->
@@ -533,12 +541,12 @@
                 >移动</button>
               </div>
             </div>
-            <p v-if="!sortedSearchResults.length" class="empty-hint">未找到匹配结果</p>
+            <p v-if="!sortedSearchResults.length && !librarySearchMatches.length" class="empty-hint">未找到匹配结果</p>
           </div>
         </div>
 
-        <!-- 正常文件列表视图 -->
-        <template v-if="fileViewMode === 'list'">
+        <!-- 正常文件列表视图：与加载中、库内搜索互斥，否则会叠在搜索结果下方 -->
+        <template v-else-if="fileViewMode === 'list'">
           <div class="file-grid">
             <div class="file-grid-header">
               <span>名称</span>
@@ -610,6 +618,10 @@
                       class="btn-small"
                       @click="openVersions(f); closeActionMenu()"
                     >版本</button>
+                    <button
+                      class="btn-small"
+                      @click="openFileComments(f); closeActionMenu()"
+                    >评论</button>
                   </template>
                   <button
                     v-if="currentLib?.is_writeable"
@@ -679,6 +691,10 @@
                   class="btn-small"
                   @click="openVersions(f); closeActionMenu()"
                 >版本</button>
+                <button
+                  class="btn-small"
+                  @click="openFileComments(f); closeActionMenu()"
+                >评论</button>
               </template>
               <button
                 v-if="currentLib?.is_writeable"
@@ -700,7 +716,7 @@
         </div>
 
         <p
-          v-if="currentLib && !filesLoading && files.length === 0 && !searchResults.length"
+          v-if="currentLib && !filesLoading && !searchApplied && files.length === 0 && !searchResults.length"
           class="empty-hint"
         >
           当前目录为空，可上传文件或新建目录。
@@ -738,7 +754,7 @@
 <script setup>
 import { computed } from 'vue'
 import Icons from './Icons.vue'
-import { libraryTypeClass, libraryTypeText } from '../utils/libraryDisplay.js'
+import LibraryTypeTags from './LibraryTypeTags.vue'
 
 const props = defineProps({
   activeDeptId: Number,
@@ -754,6 +770,8 @@ const props = defineProps({
   files: { type: Array, default: () => [] },
   searchResults: { type: Array, default: () => [] },
   searchApplied: { type: Boolean, default: false },
+  /** 库内树搜索：名称/描述匹配的子资料库（含多级） */
+  librarySearchMatches: { type: Array, default: () => [] },
   rootSearchLibraries: { type: Array, default: () => [] },
   rootSearchFiles: { type: Array, default: () => [] },
   sortedSearchResults: { type: Array, default: () => [] },
@@ -783,6 +801,7 @@ const props = defineProps({
   openMoveFile: { type: Function, required: true },
   goUp: { type: Function, required: true },
   openVersions: { type: Function, required: true },
+  openFileComments: { type: Function, required: true },
   delFile: { type: Function, required: true },
   enterDir: { type: Function, required: true },
   clearSearch: { type: Function, required: true },
@@ -950,7 +969,8 @@ function childLibCanManage(lib) {
 
 .lib-list-head {
   display: grid;
-  grid-template-columns: minmax(0, 2.8fr) minmax(0, 2.6fr) minmax(0, 1.2fr) minmax(0, 2fr) 120px;
+  grid-template-columns: minmax(0, 2.5fr) minmax(0, 2.1fr) minmax(168px, 2fr) minmax(0, 1.7fr) 120px;
+  column-gap: 24px;
   padding: 10px 16px;
   background: #f9fafb;
   border-bottom: 1px solid #e5e7eb;
@@ -962,7 +982,8 @@ function childLibCanManage(lib) {
 
 .lib-list-row {
   display: grid;
-  grid-template-columns: minmax(0, 2.8fr) minmax(0, 2.6fr) minmax(0, 1.2fr) minmax(0, 2fr) 120px;
+  grid-template-columns: minmax(0, 2.5fr) minmax(0, 2.1fr) minmax(168px, 2fr) minmax(0, 1.7fr) 120px;
+  column-gap: 24px;
   padding: 10px 16px;
   font-size: 14px;
   align-items: center;
@@ -1020,6 +1041,9 @@ function childLibCanManage(lib) {
 
 .lib-col-type {
   color: #4b5563;
+  justify-self: start;
+  padding-right: 8px;
+  overflow: visible;
 }
 
 .lib-col-source {
@@ -1028,6 +1052,7 @@ function childLibCanManage(lib) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  padding-left: 4px;
 }
 
 .lib-actions {
@@ -1195,6 +1220,52 @@ function childLibCanManage(lib) {
   color: #374151;
   margin: 0;
   padding: 0 2px;
+}
+
+.lib-search-lib-hits-wrap {
+  margin: 12px 0 16px;
+  padding: 12px 16px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+}
+.lib-search-lib-hits {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lib-search-lib-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f9fafb;
+  cursor: pointer;
+  font-size: 14px;
+  color: #111827;
+}
+.lib-search-lib-link:hover {
+  background: #f3f4f6;
+  border-color: #d1d5db;
+}
+.lib-search-lib-name {
+  font-weight: 500;
+}
+.lib-search-lib-desc {
+  margin-left: auto;
+  font-size: 12px;
+  color: #6b7280;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
 }
 
 /* 文件列表（当前库「全部文件」） */

@@ -95,4 +95,20 @@ tr:hover { background: #fafbfc; }
 .shared-library-type.type-dept { background: #ede9fe; color: #6d28d9; }
 .shared-library-type.type-personal { background: #e0f2fe; color: #0369a1; }
 .shared-library-type.type-public { background: #dcfce7; color: #166534; }
+
+/* 双标签：库类型 + 访问权限 */
+.library-type-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  max-width: 100%;
+}
+.shared-library-type.type-access-self { background: #f1f5f9; color: #475569; }
+.shared-library-type.type-access-members { background: #dbeafe; color: #1d4ed8; }
+.shared-library-type.type-access-departments { background: #f3e8ff; color: #7e22ce; }
+.shared-library-type.type-access-departments-members { background: #ede9fe; color: #5b21b6; }
+.shared-library-type.type-access-dept { background: #ede9fe; color: #6d28d9; }
+.shared-library-type.type-access-dept-members { background: #ddd6fe; color: #5b21b6; }
+.shared-library-type.type-access-public { background: #dcfce7; color: #166534; }
 </style>

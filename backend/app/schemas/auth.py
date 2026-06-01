@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -30,8 +30,9 @@ class UserCreate(UserBase):
     email: EmailStr = Field(..., description="邮箱，登录时必填")
     password: str = Field(..., min_length=8, max_length=128)
     is_superuser: bool = False  # 仅管理员创建账号时可指定
-    role: str = "staff"  # staff | dept_leader | executive
+    role: str = "staff"  # staff | dept_leader | executive | division_leader
     department_id: Optional[int] = None
+    supervised_department_ids: Optional[List[int]] = None
 
     @field_validator("password")
     @classmethod
@@ -48,6 +49,7 @@ class UserRead(UserBase):
     department_id: Optional[int] = None
     department_name: Optional[str] = None
     is_department_leader: bool = False
+    supervised_department_ids: List[int] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
@@ -69,7 +71,8 @@ class UserUpdate(BaseModel):
     is_superuser: Optional[bool] = None
     new_password: Optional[str] = Field(None, min_length=8, max_length=128)
     department_id: Optional[int] = None
-    role: Optional[str] = None  # staff | dept_leader | executive
+    role: Optional[str] = None  # staff | dept_leader | executive | division_leader
+    supervised_department_ids: Optional[List[int]] = None
 
     @field_validator("new_password")
     @classmethod

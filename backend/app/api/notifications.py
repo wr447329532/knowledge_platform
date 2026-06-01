@@ -1,11 +1,12 @@
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_user
+from backend.app.core.audit import get_client_ip, log_audit
 from backend.app.db.session import get_db
 from backend.app.models.notification import (
     Notification,
@@ -26,11 +27,33 @@ class NotificationRead(BaseModel):
   message: str
   created_at: datetime
   is_read: bool
+  resource_type: Optional[str] = None
+  resource_id: Optional[int] = None
+  extra_json: Optional[str] = None
 
   class Config:
     from_attributes = True
 
 
+class UnreadCountRead(BaseModel):
+  count: int
+
+
+@router.get("/unread-count", response_model=UnreadCountRead)
+def unread_notification_count(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+  """当前用户未读通知数量（用于铃铛角标轮询，比拉全量列表更轻）。"""
+  count = (
+      db.query(Notification)
+      .filter(Notification.user_id == current_user.id, Notification.is_read.is_(False))
+      .count()
+  )
+  return UnreadCountRead(count=count)
+
+
+@router.get("", response_model=List[NotificationRead])
 @router.get("/", response_model=List[NotificationRead])
 def list_notifications(
     unread_only: bool = Query(False, description="仅返回未读通知"),
@@ -88,6 +111,10 @@ def create_notification(
     type: str = "info",
     title: str,
     message: str,
+    resource_type: Optional[str] = None,
+    resource_id: Optional[int] = None,
+    extra_json: Optional[str] = None,
+    commit: bool = True,
 ) -> Notification:
   """内部辅助函数：为指定用户创建一条通知。"""
   n = Notification(
@@ -95,21 +122,73 @@ def create_notification(
       type=type,
       title=title,
       message=message,
+      resource_type=resource_type,
+      resource_id=resource_id,
+      extra_json=extra_json,
   )
   db.add(n)
-  db.commit()
-  db.refresh(n)
+  if commit:
+    db.commit()
+    db.refresh(n)
+  else:
+    db.flush()
+    db.refresh(n)
   return n
+
+
+def is_notification_enabled(db: Session, setting_key: str) -> bool:
+  row = db.query(NotificationSetting).filter(NotificationSetting.key == setting_key).first()
+  if row is None:
+    return True
+  return bool(row.enabled)
+
+
+def create_notification_if_enabled(
+    db: Session,
+    *,
+    setting_key: str,
+    user_id: int,
+    type: str,
+    title: str,
+    message: str,
+    resource_type: Optional[str] = None,
+    resource_id: Optional[int] = None,
+    extra_json: Optional[str] = None,
+    commit: bool = True,
+) -> Optional[Notification]:
+  if not is_notification_enabled(db, setting_key):
+    return None
+  return create_notification(
+      db,
+      user_id=user_id,
+      type=type,
+      title=title,
+      message=message,
+      resource_type=resource_type,
+      resource_id=resource_id,
+      extra_json=extra_json,
+      commit=commit,
+  )
+
+
+SYSTEM_CHANNEL = "system"
 
 
 def _channels_to_list(ch: str | None) -> List[str]:
   if not ch:
     return []
-  return [c for c in ch.split(",") if c]
+  return [c.strip() for c in ch.split(",") if c.strip()]
+
+
+def _normalize_channels_list(channels: List[str] | None) -> List[str]:
+  """平台仅支持站内通知，过滤掉未实现的 email 等渠道。"""
+  normalized = [c for c in (channels or []) if c and c != "email"]
+  return [SYSTEM_CHANNEL] if SYSTEM_CHANNEL in normalized or not normalized else normalized
 
 
 def _channels_from_list(channels: List[str]) -> str:
-  return ",".join(sorted(set(channels))) if channels else ""
+  normalized = _normalize_channels_list(channels)
+  return ",".join(sorted(set(normalized))) if normalized else SYSTEM_CHANNEL
 
 
 class TemplateRead(BaseModel):
@@ -159,7 +238,6 @@ class AdminSendRequest(BaseModel):
   title: str
   content: str
   target: str = Field("all", description="all | department | custom")
-  channels: List[str] = Field(default_factory=lambda: ["system"])
 
 
 _DEFAULT_TEMPLATES = [
@@ -169,102 +247,103 @@ _DEFAULT_TEMPLATES = [
     "title": "您收到了新的共享文件",
     "content": "{user} 向您分享了文件 {filename}",
     "enabled": True,
-    "channels": "system,email",
+    "channels": "system",
     "icon": "file",
   },
   {
-    "name": "存储空间警告",
-    "type": "storage_warning",
-    "title": "存储空间不足提醒",
-    "content": "您的存储空间已使用 {percentage}%，建议及时清理",
-    "enabled": True,
-    "channels": "system,email",
-    "icon": "database",
-  },
-  {
-    "name": "权限变更通知",
-    "type": "permission_change",
-    "title": "权限已更新",
-    "content": "管理员已修改您的权限设置",
+    "name": "文件上传通知",
+    "type": "file_upload",
+    "title": "文件库有新文件",
+    "content": "{user} 在文件库 {library} 中上传了 {filename}",
     "enabled": True,
     "channels": "system",
-    "icon": "lock",
+    "icon": "file",
   },
   {
-    "name": "文件审批提醒",
-    "type": "file_approval",
-    "title": "待审批文件提醒",
-    "content": "您有 {count} 个文件等待审批",
-    "enabled": False,
-    "channels": "system,email",
-    "icon": "check-circle",
-  },
-  {
-    "name": "系统维护通知",
-    "type": "system_maintenance",
-    "title": "系统维护公告",
-    "content": "系统将于 {time} 进行维护，预计持续 {duration}",
+    "name": "评论与回复",
+    "type": "comment",
+    "title": "文件有新评论",
+    "content": "{user} 在「{filename}」中发表了评论",
     "enabled": True,
-    "channels": "system,email",
+    "channels": "system",
+    "icon": "file-text",
+  },
+  {
+    "name": "@提及通知",
+    "type": "mention",
+    "title": "有人在文件中提及了你",
+    "content": "{user} 在「{filename}」中提及了你",
+    "enabled": True,
+    "channels": "system",
+    "icon": "file-text",
+  },
+  {
+    "name": "系统公告",
+    "type": "maintenance",
+    "title": "系统公告",
+    "content": "管理员发布了新的系统通知",
+    "enabled": True,
+    "channels": "system",
     "icon": "settings",
   },
 ]
 
 
 def _icon_for_type(t: str) -> str:
-  if t == "file_share":
+  if t in ("file_share", "file_upload"):
     return "file"
-  if t == "storage_warning":
-    return "database"
-  if t == "permission_change":
-    return "lock"
-  if t == "file_approval":
-    return "check-circle"
-  if t == "system_maintenance":
+  if t in ("comment", "mention"):
+    return "file-text"
+  if t == "maintenance":
     return "settings"
   return "bell"
 
 
 _DEFAULT_SETTINGS = [
-  # 文件操作
-  ("file_upload", "文件操作", "文件上传通知", True),
-  ("file_share", "文件操作", "文件分享通知", True),
-  ("file_download", "文件操作", "文件下载通知", False),
-  ("file_delete", "文件操作", "文件删除通知", True),
-  # 系统通知
-  ("storage_warning", "系统通知", "存储空间警告", True),
-  ("login_alert", "系统通知", "异地登录提醒", True),
-  ("system_update", "系统通知", "系统更新通知", True),
-  ("maintenance", "系统通知", "维护公告", True),
-  # 协作通知
-  ("comment", "协作通知", "评论通知", True),
-  ("mention", "协作通知", "@提及通知", True),
-  ("approval", "协作通知", "审批通知", True),
-  ("task", "协作通知", "任务分配通知", False),
+  ("file_upload", "文件操作", "新文件/新版本上传", True),
+  ("file_share", "文件操作", "文件被分享给我", True),
+  ("comment", "协作", "文件评论与回复", True),
+  ("mention", "协作", "@提及我", True),
+  ("maintenance", "系统", "管理员公告", True),
 ]
 
 
 def _ensure_default_templates(db: Session) -> None:
-  if db.query(NotificationTemplate).count() > 0:
-    return
-  for t in _DEFAULT_TEMPLATES:
-    db.add(NotificationTemplate(**t))
-  db.commit()
+  if db.query(NotificationTemplate).count() == 0:
+    for t in _DEFAULT_TEMPLATES:
+      db.add(NotificationTemplate(**t))
+    db.commit()
+  _strip_email_channels_from_templates(db)
+
+
+def _strip_email_channels_from_templates(db: Session) -> None:
+  """历史数据可能含 email 渠道，统一归一为站内通知。"""
+  changed = False
+  for row in db.query(NotificationTemplate).all():
+    normalized = _channels_from_list(_channels_to_list(row.channels))
+    if row.channels != normalized:
+      row.channels = normalized
+      changed = True
+  if changed:
+    db.commit()
 
 
 def _ensure_default_settings(db: Session) -> None:
-  if db.query(NotificationSetting).count() > 0:
-    return
+  existing = {s.key: s for s in db.query(NotificationSetting).all()}
+  changed = False
   for key, category, name, enabled in _DEFAULT_SETTINGS:
-    db.add(
-      NotificationSetting(
-        key=key,
-        category=category,
-        name=name,
-        enabled=enabled,
+    if key not in existing:
+      db.add(
+        NotificationSetting(
+          key=key,
+          category=category,
+          name=name,
+          enabled=enabled,
+        )
       )
-    )
-  db.commit()
+      changed = True
+  if changed:
+    db.commit()
 
 
 @router.get("/admin/templates", response_model=List[TemplateRead])
@@ -294,7 +373,7 @@ def list_templates_admin(
         title=r.title,
         content=r.content,
         enabled=effective_enabled,
-        channels=_channels_to_list(r.channels),
+        channels=_normalize_channels_list(_channels_to_list(r.channels)),
         icon=_icon_for_type(r.type),
       )
     )
@@ -326,7 +405,7 @@ def list_history_admin(
         recipients=r.recipients,
         sent_at=r.sent_at,
         status=r.status,
-        channels=_channels_to_list(r.channels),
+        channels=_normalize_channels_list(_channels_to_list(r.channels)),
       )
     )
   return out
@@ -369,41 +448,54 @@ def update_setting_admin(
 @router.post("/admin/send", status_code=status.HTTP_204_NO_CONTENT)
 def send_admin_notification(
   body: AdminSendRequest,
+  request: Request,
   db: Session = Depends(get_db),
   current_user: User = Depends(get_current_user),
 ):
-  """管理员：从「通知管理」页面发送一条自定义通知给用户。
-
-  当前实现：
-  - target = all：发送给所有活跃用户
-  - target = department/custom：暂时等同于 all，后续可扩展为精确选择
-  """
+  """管理员：发送站内公告给活跃用户（仅站内通知，无邮件）。"""
   if not current_user.is_superuser:
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅管理员可发送通知")
 
-  # 目前按活跃用户统计
+  title = (body.title or "").strip()
+  content = (body.content or "").strip()
+  if not title or not content:
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="标题和内容不能为空")
+
   users = db.query(User).filter(User.is_active.is_(True)).all()
   recipients = 0
   for u in users:
+    if u.id == current_user.id:
+      continue
     create_notification(
       db,
       user_id=u.id,
-      type="info",
-      title=body.title,
-      message=body.content,
+      type="maintenance",
+      title=title,
+      message=content,
+      commit=False,
     )
     recipients += 1
 
   log = NotificationSendLog(
-    title=body.title,
-    content=body.content,
+    title=title,
+    content=content,
     target=body.target,
     target_value=None,
-    channels=_channels_from_list(body.channels),
+    channels=SYSTEM_CHANNEL,
     recipients=recipients,
     status="sent",
   )
   db.add(log)
+  log_audit(
+    db,
+    current_user.id,
+    current_user.username,
+    "notification",
+    "notification",
+    None,
+    f"recipients={recipients} target={body.target} title={title[:80]}",
+    ip_address=get_client_ip(request),
+  )
   db.commit()
   return None
 

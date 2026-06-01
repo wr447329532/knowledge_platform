@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     # 部门配额策略：状态阈值（百分比）
     STORAGE_DEPT_WARNING_PCT: float = 85.0
     STORAGE_DEPT_CRITICAL_PCT: float = 95.0
+    # 单文件上传大小上限（字节），默认 2GB；可通过 MAX_UPLOAD_FILE_BYTES 覆盖
+    MAX_UPLOAD_FILE_BYTES: int = 2 * 1024 * 1024 * 1024
     # 数据库初始化策略（开发默认开启；生产建议关闭，改用 Alembic）
     DB_AUTO_CREATE_TABLES_ON_STARTUP: bool = True
     DB_COMPAT_PATCH_ON_STARTUP: bool = True

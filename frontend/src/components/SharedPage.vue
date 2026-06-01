@@ -29,50 +29,72 @@
           </div>
           <p class="shared-loading-text">加载中...</p>
         </div>
-        <div v-else-if="mySharesList.length > 0" class="shared-table-card">
-          <table class="shared-table">
-            <thead>
-              <tr>
-                <th>文件库名称</th>
-                <th>类型</th>
-                <th>共享范围</th>
-                <th>创建时间</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in mySharesList" :key="row.id">
-                <td class="shared-td-name">
-                  <div class="shared-file-name" :title="row.name">
-                    <Icons name="folder" class="shared-file-icon" />
-                    <span class="shared-file-path">{{ row.name }}</span>
-                  </div>
-                </td>
-                <td>
-                  <span
-                    class="shared-library-type"
-                    :class="libraryTypeClass(row)"
-                  >
-                    {{ libraryTypeText(row) }}
-                  </span>
-                </td>
-                <td class="shared-td-to">
-                  <span class="shared-user">{{ row.share_scope }}</span>
-                </td>
-                <td class="shared-td-time">
-                  {{ formatDateStr(row.created_at) }}
-                </td>
-                <td class="shared-td-action-last">
-                  <button type="button" class="shared-link-btn" @click="emit('open-shared-lib', row)">查看</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <template v-else-if="mySharesList.length > 0">
+          <div class="shared-table-card">
+            <table class="shared-table">
+              <thead>
+                <tr>
+                  <th>文件库名称</th>
+                  <th>类型</th>
+                  <th>共享范围</th>
+                  <th>创建时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in mySharesList" :key="row.id">
+                  <td class="shared-td-name">
+                    <div class="shared-file-name" :title="row.name">
+                      <Icons name="folder" class="shared-file-icon" />
+                      <span class="shared-file-path">{{ row.name }}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <LibraryTypeTags :lib="row" />
+                  </td>
+                  <td class="shared-td-to">
+                    <span class="shared-user">{{ row.share_scope }}</span>
+                  </td>
+                  <td class="shared-td-time">
+                    {{ formatDateStr(row.created_at) }}
+                  </td>
+                  <td class="shared-td-action-last">
+                    <button type="button" class="shared-link-btn" @click="emit('open-shared-lib', row)">查看</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="!listSearchActive" class="audit-pagination shared-list-pagination">
+            <div class="audit-pagination-actions">
+              <button
+                type="button"
+                class="admin-btn-secondary page-icon-btn"
+                :disabled="mySharesOffset <= 0"
+                title="上一页"
+                @click="emit('mine-prev')"
+              >
+                <Icons name="arrow-left" />
+              </button>
+              <button
+                type="button"
+                class="admin-btn-secondary page-icon-btn"
+                :disabled="!mySharesHasMore"
+                title="下一页"
+                @click="emit('mine-next')"
+              >
+                <Icons name="chevron-right" />
+              </button>
+            </div>
+            <div class="audit-pagination-info">
+              第 {{ Math.floor(mySharesOffset / librariesLimit) + 1 }} 页，每页 {{ librariesLimit }} 条
+            </div>
+          </div>
+        </template>
         <div v-else class="shared-empty">
           <div class="shared-empty-icon-wrap"><Icons name="share" class="shared-empty-icon" /></div>
           <p class="shared-empty-title">暂无共享文件库</p>
-          <p class="shared-empty-desc">创建文件库并设置为公开、部门可见或添加成员后，会在此显示</p>
+          <p class="shared-empty-desc">创建文件库并设置为公开、部门可见、指定部门或添加成员后，会在此显示</p>
         </div>
       </template>
 
@@ -86,46 +108,68 @@
           </div>
           <p class="shared-loading-text">加载中...</p>
         </div>
-        <div v-else-if="receivedSharesList.length > 0" class="shared-table-card">
-          <table class="shared-table">
-            <thead>
-              <tr>
-                <th>文件库名称</th>
-                <th>类型</th>
-                <th>所有者</th>
-                <th>共享范围</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in receivedSharesList" :key="row.id">
-                <td class="shared-td-name">
-                  <div class="shared-file-name" :title="row.name">
-                    <Icons name="folder" class="shared-file-icon" />
-                    <span class="shared-file-path">{{ row.name }}</span>
-                  </div>
-                </td>
-                <td>
-                  <span
-                    class="shared-library-type"
-                    :class="libraryTypeClass(row)"
-                  >
-                    {{ libraryTypeText(row) }}
-                  </span>
-                </td>
-                <td class="shared-td-to">
-                  <span class="shared-user">{{ row.owner_username }}</span>
-                </td>
-                <td>
-                  <span class="shared-cell">{{ row.share_scope }}</span>
-                </td>
-                <td class="shared-td-action-last">
-                  <button type="button" class="shared-link-btn" @click="emit('open-shared-lib', row)">查看</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <template v-else-if="receivedSharesList.length > 0">
+          <div class="shared-table-card">
+            <table class="shared-table">
+              <thead>
+                <tr>
+                  <th>文件库名称</th>
+                  <th>类型</th>
+                  <th>所有者</th>
+                  <th>共享范围</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in receivedSharesList" :key="row.id">
+                  <td class="shared-td-name">
+                    <div class="shared-file-name" :title="row.name">
+                      <Icons name="folder" class="shared-file-icon" />
+                      <span class="shared-file-path">{{ row.name }}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <LibraryTypeTags :lib="row" />
+                  </td>
+                  <td class="shared-td-to">
+                    <span class="shared-user">{{ row.owner_username }}</span>
+                  </td>
+                  <td>
+                    <span class="shared-cell">{{ row.share_scope }}</span>
+                  </td>
+                  <td class="shared-td-action-last">
+                    <button type="button" class="shared-link-btn" @click="emit('open-shared-lib', row)">查看</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="!listSearchActive" class="audit-pagination shared-list-pagination">
+            <div class="audit-pagination-actions">
+              <button
+                type="button"
+                class="admin-btn-secondary page-icon-btn"
+                :disabled="receivedSharesOffset <= 0"
+                title="上一页"
+                @click="emit('tome-prev')"
+              >
+                <Icons name="arrow-left" />
+              </button>
+              <button
+                type="button"
+                class="admin-btn-secondary page-icon-btn"
+                :disabled="!receivedSharesHasMore"
+                title="下一页"
+                @click="emit('tome-next')"
+              >
+                <Icons name="chevron-right" />
+              </button>
+            </div>
+            <div class="audit-pagination-info">
+              第 {{ Math.floor(receivedSharesOffset / librariesLimit) + 1 }} 页，每页 {{ librariesLimit }} 条
+            </div>
+          </div>
+        </template>
         <div v-else class="shared-empty">
           <div class="shared-empty-icon-wrap"><Icons name="share" class="shared-empty-icon" /></div>
           <p class="shared-empty-title">暂无他人共享给您的文件库</p>
@@ -138,7 +182,7 @@
         <div class="shared-empty">
           <div class="shared-empty-icon-wrap"><Icons name="share" class="shared-empty-icon" /></div>
           <p class="shared-empty-title">暂无共享文件库</p>
-          <p class="shared-empty-desc">创建文件库并设置为公开、部门可见或添加成员后，会在此显示</p>
+          <p class="shared-empty-desc">创建文件库并设置为公开、部门可见、指定部门或添加成员后，会在此显示</p>
         </div>
       </template>
     </div>
@@ -147,7 +191,7 @@
 
 <script setup>
 import Icons from './Icons.vue'
-import { libraryTypeClass, libraryTypeText } from '../utils/libraryDisplay.js'
+import LibraryTypeTags from './LibraryTypeTags.vue'
 
 defineProps({
   sharedSubTab: String,
@@ -155,9 +199,15 @@ defineProps({
   mySharesLoading: Boolean,
   receivedSharesList: Array,
   receivedSharesLoading: Boolean,
+  librariesLimit: { type: Number, default: 20 },
+  mySharesOffset: { type: Number, default: 0 },
+  mySharesHasMore: { type: Boolean, default: false },
+  receivedSharesOffset: { type: Number, default: 0 },
+  receivedSharesHasMore: { type: Boolean, default: false },
+  listSearchActive: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['tab', 'open-shared-lib'])
+const emit = defineEmits(['tab', 'open-shared-lib', 'mine-prev', 'mine-next', 'tome-prev', 'tome-next'])
 
 function formatDateStr(s) {
   if (!s) return ''
@@ -331,4 +381,34 @@ function formatDateStr(s) {
 .shared-empty-title { margin: 0 0 8px 0; font-size: 17px; font-weight: 600; color: #374151; }
 .shared-empty-desc { margin: 0; font-size: 14px; color: #9ca3af; line-height: 1.5; }
 .btn-small { font-size: 12px; padding: 4px 10px; }
+
+/* 与 LibraryPage / DepartmentFiles 列表分页一致 */
+.audit-pagination.shared-list-pagination {
+  margin-top: 12px;
+  padding: 0;
+  border-top: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  font-size: 12px;
+  color: #6b7280;
+  position: static;
+  background: transparent;
+}
+
+.audit-pagination-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.page-icon-btn {
+  width: 34px;
+  min-width: 34px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 </style>

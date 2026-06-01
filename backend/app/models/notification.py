@@ -22,6 +22,10 @@ class Notification(Base):
 
     is_read = Column(Boolean, nullable=False, default=False, index=True)
 
+    resource_type = Column(String(32), nullable=True)
+    resource_id = Column(Integer, nullable=True)
+    extra_json = Column(Text, nullable=True)
+
     created_at = Column(
         DateTime,
         default=lambda: datetime.now(timezone.utc),

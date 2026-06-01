@@ -26,12 +26,13 @@ from backend.app.core.library_access import (
     can_download_file,
     can_download_in_library_list_context,
     can_access_file,
+    collect_descendant_library_ids,
     get_accessible_library_ids,
     has_library_access,
     libraries_accessible_base_query,
     resolve_root_library,
 )
-from backend.app.api.notifications import create_notification
+from backend.app.api.notifications import create_notification, create_notification_if_enabled
 from backend.app.db.session import get_db
 from backend.app.models.department import Department
 from backend.app.models.file import FileEntry, FileVersion, FileVersionTrash
@@ -45,6 +46,21 @@ settings = get_settings()
 router = APIRouter(prefix="/files", tags=["files"])
 
 
+def _max_upload_file_bytes() -> int:
+    return int(getattr(settings, "MAX_UPLOAD_FILE_BYTES", 2 * 1024 * 1024 * 1024))
+
+
+def _upload_size_limit_label() -> str:
+    limit = _max_upload_file_bytes()
+    gb = 1024 * 1024 * 1024
+    if limit >= gb and limit % gb == 0:
+        return f"{limit // gb}GB"
+    mb = 1024 * 1024
+    if limit >= mb and limit % mb == 0:
+        return f"{limit // mb}MB"
+    return f"{limit} 字节"
+
+
 class FileRead(BaseModel):
     id: int
     library_id: int
@@ -56,6 +72,22 @@ class FileRead(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class LibrarySearchHit(BaseModel):
+    """库内树搜索：名称/描述匹配的资料库（含子库）。"""
+
+    id: int
+    name: str
+    description: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class FileSearchResponse(BaseModel):
+    files: List[FileRead]
+    libraries: List[LibrarySearchHit]
 
 
 class FileDirMoveTarget(BaseModel):
@@ -99,6 +131,7 @@ class GlobalTrashItem(BaseModel):
     version_no: Optional[int] = None
     library_id: Optional[int] = None
     library_name: Optional[str] = None
+    library_breadcrumb: Optional[str] = None  # 一级至当前资料库：如「A / B / C」
     username: Optional[str] = None  # 删除人（若无则回退为文件创建人/库拥有者）
     path: Optional[str] = None
     is_dir: Optional[bool] = None
@@ -112,6 +145,50 @@ class GlobalTrashPage(BaseModel):
     has_more: bool
     limit: int
     offset: int
+
+
+def _prefetch_library_ancestors_map(db: Session, seed_ids: set[int]) -> dict[int, Library]:
+    """自给定资料库 id 起，沿 parent_id 拉齐所有祖先行，用于拼一级/二级/三级名称链。"""
+    by_id: dict[int, Library] = {}
+    frontier = {int(i) for i in seed_ids if i is not None}
+    safety = 0
+    while frontier and safety < 200:
+        safety += 1
+        missing = frontier - set(by_id.keys())
+        if not missing:
+            break
+        rows = db.query(Library).filter(Library.id.in_(missing)).all()
+        next_front: set[int] = set()
+        for lib in rows:
+            by_id[lib.id] = lib
+            pid = getattr(lib, "parent_id", None)
+            if pid is not None:
+                next_front.add(int(pid))
+        frontier = next_front
+    return by_id
+
+
+def _library_breadcrumb_from_map(lib_id: int | None, by_id: dict[int, Library]) -> Optional[str]:
+    if lib_id is None:
+        return None
+    names: list[str] = []
+    cur_id: int | None = int(lib_id)
+    seen: set[int] = set()
+    for _ in range(64):
+        if cur_id is None or cur_id in seen:
+            break
+        seen.add(cur_id)
+        lib = by_id.get(cur_id)
+        if lib is None:
+            names.append(f"库#{cur_id}")
+            break
+        names.append((getattr(lib, "name", None) or "").strip() or f"库#{lib.id}")
+        pid = getattr(lib, "parent_id", None)
+        cur_id = int(pid) if pid is not None else None
+    if not names:
+        return None
+    names.reverse()
+    return " / ".join(names)
 
 
 class FileVersionRead(BaseModel):
@@ -204,6 +281,22 @@ def _check_trash_permission(db: Session, library_id: int, user: User) -> Library
         if not dept or getattr(dept, "leader_user_id", None) != user.id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="部门库回收站仅部门负责人可操作")
     return lib
+
+
+def _can_manage_personal_trash_library(
+    lib: Library | None,
+    user: User,
+    dept_leader_map: dict[int, Optional[int]],
+) -> bool:
+    """个人回收站：能否对该库相关条目执行恢复/彻底删除（私人库≈拥有者；部门库≈负责人）。"""
+    if lib is None:
+        return False
+    if user.is_superuser:
+        return True
+    if getattr(lib, "department_id", None) is None:
+        return lib.owner_id == user.id
+    leader_id = dept_leader_map.get(int(lib.department_id))
+    return leader_id is not None and leader_id == user.id
 
 
 @router.get("/shares", response_model=List[FileShareRead])
@@ -312,8 +405,9 @@ def add_file_share(
                 f"用户「{current_user.username or current_user.email}」向你分享了文件「{entry.path}」，"
                 f"权限：{perm_label}"
             )
-            create_notification(
+            create_notification_if_enabled(
                 db,
+                setting_key="file_share",
                 user_id=user.id,
                 type="file_share_to_me",
                 title=title,
@@ -536,22 +630,22 @@ async def upload_file(
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / file.filename
 
-    # 单个文件大小限制（500MB）
-    MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024
+    max_file_size_bytes = _max_upload_file_bytes()
+    size_limit_label = _upload_size_limit_label()
 
     size = 0
     async with aiofiles.open(dest_path, "wb") as f:
         while chunk := await file.read(1024 * 1024):
             size += len(chunk)
-            if size > MAX_FILE_SIZE_BYTES:
+            if size > max_file_size_bytes:
                 try:
                     dest_path.unlink()
                     dest_dir.rmdir()
                 except OSError:
                     pass
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="单个文件大小不能超过 500MB",
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"单个文件大小不能超过 {size_limit_label}",
                 )
             await f.write(chunk)
 
@@ -578,7 +672,7 @@ async def upload_file(
         ip_address=get_client_ip(request),
     )
 
-    # 通知：库拥有者 / 上传者 知晓有新文件/新版本
+    # 通知：库拥有者知晓有新文件/新版本（上传者本人不重复提醒）
     try:
         if next_version_no == 1:
             notif_type = "file_upload"
@@ -587,7 +681,6 @@ async def upload_file(
                 f"用户「{current_user.username or current_user.email}」在文件库「{lib.name}」中上传了新文件："
                 f"{relative_path}"
             )
-            msg_for_self = f"你在文件库「{lib.name}」中上传了新文件：{relative_path}"
         else:
             notif_type = "file_new_version"
             title = "文件有新版本"
@@ -595,28 +688,16 @@ async def upload_file(
                 f"用户「{current_user.username or current_user.email}」在文件库「{lib.name}」中上传了文件「{relative_path}」"
                 f"的新版本（第 {next_version_no} 个版本）"
             )
-            msg_for_self = (
-                f"你在文件库「{lib.name}」中上传了文件「{relative_path}」的新版本（第 {next_version_no} 个版本）"
-            )
 
-        # 1）发送给库拥有者（若存在且不是当前用户）
         if lib.owner_id and lib.owner_id != current_user.id:
-            create_notification(
+            create_notification_if_enabled(
                 db,
+                setting_key="file_upload",
                 user_id=lib.owner_id,
                 type=notif_type,
                 title=title,
                 message=msg_for_owner,
             )
-
-        # 2）发送给上传者本人（无论是否为库拥有者）
-        create_notification(
-            db,
-            user_id=current_user.id,
-            type=notif_type,
-            title=title,
-            message=msg_for_self,
-        )
     except Exception:
         logger.warning("通知发送失败，不影响主流程", exc_info=True)
 
@@ -1292,6 +1373,24 @@ def list_dept_trash(
     for u in creators:
         creator_name_map[u.id] = u.username or u.email or f"用户{u.id}"
 
+    version_rows = (
+        db.query(FileVersionTrash)
+        .filter(FileVersionTrash.library_id.in_(lib_ids))
+        .order_by(FileVersionTrash.deleted_at.desc())
+        .all()
+        if lib_ids
+        else []
+    )
+
+    _dept_trash_seed: set[int] = set()
+    for lib in deleted_libs:
+        _dept_trash_seed.add(lib.id)
+    for e in entries:
+        _dept_trash_seed.add(e.library_id)
+    for r in version_rows:
+        _dept_trash_seed.add(r.library_id)
+    dept_lib_tree = _prefetch_library_ancestors_map(db, _dept_trash_seed)
+
     items: list[GlobalTrashItem] = []
 
     # 1) 已删除部门库
@@ -1305,6 +1404,7 @@ def list_dept_trash(
                 type="library",
                 library_id=lib.id,
                 library_name=getattr(lib, "name", "") or None,
+                library_breadcrumb=_library_breadcrumb_from_map(lib.id, dept_lib_tree),
                 path=getattr(lib, "name", "") or None,
                 is_dir=True,
                 deleted_at=getattr(lib, "deleted_at"),
@@ -1331,6 +1431,7 @@ def list_dept_trash(
                 type="file",
                 library_id=e.library_id,
                 library_name=lib_names.get(e.library_id) or None,
+                library_breadcrumb=_library_breadcrumb_from_map(e.library_id, dept_lib_tree),
                 path=e.path,
                 is_dir=e.is_dir,
                 deleted_at=e.deleted_at,
@@ -1341,14 +1442,6 @@ def list_dept_trash(
         )
 
     # 3) 活跃部门库中的“已删历史版本”
-    version_rows = (
-        db.query(FileVersionTrash)
-        .filter(FileVersionTrash.library_id.in_(lib_ids))
-        .order_by(FileVersionTrash.deleted_at.desc())
-        .all()
-        if lib_ids
-        else []
-    )
     version_entry_ids = {r.file_entry_id for r in version_rows}
     version_entries = (
         db.query(FileEntry).filter(FileEntry.id.in_(version_entry_ids)).all()
@@ -1372,6 +1465,7 @@ def list_dept_trash(
                 version_no=r.version_no,
                 library_id=r.library_id,
                 library_name=lib_names.get(r.library_id) or None,
+                library_breadcrumb=_library_breadcrumb_from_map(r.library_id, dept_lib_tree),
                 path=f"{entry_path} (历史版本 v{r.version_no})",
                 is_dir=False,
                 deleted_at=r.deleted_at,
@@ -1460,9 +1554,11 @@ def list_global_trash(
     lib_ids = {int(m["library_id"]) for m in mappings if m.get("library_id") is not None}
     entry_ids = {int(m["entry_id"]) for m in mappings if m.get("entry_id") is not None}
 
-    libs = db.query(Library).filter(Library.id.in_(lib_ids)).all() if lib_ids else []
-    lib_name_map: dict[int, str] = {lib.id: (lib.name or "") for lib in libs}
-    lib_owner_map: dict[int, Optional[int]] = {lib.id: lib.owner_id for lib in libs}
+    lib_tree = _prefetch_library_ancestors_map(db, set(lib_ids)) if lib_ids else {}
+    lib_name_map: dict[int, str] = {lid: ((lib.name or "") if lib else "") for lid, lib in lib_tree.items()}
+    lib_owner_map: dict[int, Optional[int]] = {
+        lid: lib.owner_id for lid, lib in lib_tree.items() if lib is not None
+    }
 
     entries = db.query(FileEntry).filter(FileEntry.id.in_(entry_ids)).all() if entry_ids else []
     entry_map: dict[int, FileEntry] = {e.id: e for e in entries}
@@ -1505,6 +1601,7 @@ def list_global_trash(
                     version_no=version_no,
                     library_id=lib_id,
                     library_name=lib_name_map.get(lib_id) if lib_id else None,
+                    library_breadcrumb=_library_breadcrumb_from_map(lib_id, lib_tree),
                     path=f"{entry_path} (历史版本 v{version_no})" if version_no is not None else entry_path,
                     is_dir=False,
                     deleted_at=m["deleted_at"],
@@ -1523,6 +1620,7 @@ def list_global_trash(
                     type="library",
                     library_id=lib_id,
                     library_name=lib_name,
+                    library_breadcrumb=_library_breadcrumb_from_map(lib_id, lib_tree),
                     path=lib_name or None,
                     is_dir=True,
                     deleted_at=m["deleted_at"],
@@ -1540,6 +1638,7 @@ def list_global_trash(
                 type="file",
                 library_id=lib_id,
                 library_name=lib_name_map.get(lib_id) if lib_id else None,
+                library_breadcrumb=_library_breadcrumb_from_map(lib_id, lib_tree),
                 path=m["path"],
                 is_dir=bool(m["is_dir"]),
                 deleted_at=m["deleted_at"],
@@ -1552,165 +1651,219 @@ def list_global_trash(
     return GlobalTrashPage(items=items, has_more=has_more, limit=limit, offset=offset)
 
 
-@router.get("/my-trash", response_model=List[GlobalTrashItem])
+@router.get("/my-trash", response_model=GlobalTrashPage)
 def list_my_trash(
+    limit: int = Query(50, ge=1, le=500, description="每页数量"),
+    offset: int = Query(0, ge=0, description="起始偏移量"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    我的回收站视图（主页「回收站」）：
+    我的回收站视图（主页「回收站」），与全局回收站一致的统一流分页：
     - 库：当前用户拥有的所有已软删资料库
-    - 文件：任意库中由当前用户创建的已删文件，或位于当前用户拥有的库中的已删文件
+    - 文件：所在库仍存在时，由我创建的已删文件，或位于我拥有的库中的已删文件
+    - 历史版本：所在库仍存在时，我拥有的库中的已删版本，或由我删除的版本
     """
     user_id = current_user.id
 
-    items: list[GlobalTrashItem] = []
-
-    # 1) 我拥有的已软删资料库（管理员在这里也只看“自己拥有的库”）
-    my_deleted_libs = (
-        db.query(Library)
-        .filter(
-            Library.deleted_at != None,  # noqa: E711
+    file_stmt = (
+        select(
+            literal("file", type_=String).label("type"),
+            cast(FileEntry.id, String).label("id"),
+            literal(None, type_=String).label("entry_id"),
+            literal(None, type_=String).label("version_no"),
+            FileEntry.library_id.label("library_id"),
+            FileEntry.path.label("path"),
+            FileEntry.is_dir.label("is_dir"),
+            FileEntry.deleted_at.label("deleted_at"),
+            FileEntry.created_by_id.label("actor_user_id"),
+        )
+        .select_from(FileEntry)
+        .join(Library, Library.id == FileEntry.library_id)
+        .where(
+            FileEntry.deleted_at.is_not(None),
+            Library.deleted_at.is_(None),
+            or_(Library.owner_id == user_id, FileEntry.created_by_id == user_id),
+        )
+    )
+    library_stmt = (
+        select(
+            literal("library", type_=String).label("type"),
+            cast(Library.id, String).label("id"),
+            literal(None, type_=String).label("entry_id"),
+            literal(None, type_=String).label("version_no"),
+            Library.id.label("library_id"),
+            Library.name.label("path"),
+            literal(True, type_=Boolean).label("is_dir"),
+            Library.deleted_at.label("deleted_at"),
+            Library.owner_id.label("actor_user_id"),
+        )
+        .where(
+            Library.deleted_at.is_not(None),
             Library.owner_id == user_id,
         )
-        .all()
     )
-    owner_username = current_user.username or current_user.email or f"用户{user_id}"
-    # 预取部门信息用于权限判断
-    dept_ids = {lib.department_id for lib in my_deleted_libs if getattr(lib, "department_id", None)}
+    version_stmt = (
+        select(
+            literal("file_version", type_=String).label("type"),
+            cast(FileVersionTrash.id, String).label("id"),
+            cast(FileVersionTrash.file_entry_id, String).label("entry_id"),
+            cast(FileVersionTrash.version_no, String).label("version_no"),
+            FileVersionTrash.library_id.label("library_id"),
+            literal(None, type_=String).label("path"),
+            literal(False, type_=Boolean).label("is_dir"),
+            FileVersionTrash.deleted_at.label("deleted_at"),
+            FileVersionTrash.deleted_by_id.label("actor_user_id"),
+        )
+        .select_from(FileVersionTrash)
+        .join(Library, Library.id == FileVersionTrash.library_id)
+        .where(
+            Library.deleted_at.is_(None),
+            FileVersionTrash.deleted_at.is_not(None),
+            or_(Library.owner_id == user_id, FileVersionTrash.deleted_by_id == user_id),
+        )
+    )
+
+    unified = union_all(file_stmt, library_stmt, version_stmt).subquery("my_trash_stream")
+
+    page_stmt = (
+        select(unified)
+        .order_by(
+            unified.c.deleted_at.desc(),
+            unified.c.type.asc(),
+            unified.c.id.desc(),
+        )
+        .offset(offset)
+        .limit(limit + 1)
+    )
+    rows = db.execute(page_stmt).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
+    if not rows:
+        return GlobalTrashPage(items=[], has_more=False, limit=limit, offset=offset)
+
+    mappings = [r._mapping for r in rows]
+    lib_ids = {int(m["library_id"]) for m in mappings if m.get("library_id") is not None}
+    entry_ids = {int(m["entry_id"]) for m in mappings if m.get("entry_id") is not None}
+
+    lib_tree = _prefetch_library_ancestors_map(db, set(lib_ids)) if lib_ids else {}
+    lib_name_map: dict[int, str] = {lid: ((lib.name or "") if lib else "") for lid, lib in lib_tree.items()}
+    lib_by_id: dict[int, Library] = lib_tree
+    lib_owner_map: dict[int, Optional[int]] = {
+        lid: lib.owner_id for lid, lib in lib_tree.items() if lib is not None
+    }
+
+    dept_raw_ids = set()
+    for lid in lib_ids:
+        lib = lib_tree.get(lid)
+        did = getattr(lib, "department_id", None) if lib else None
+        if did is not None:
+            dept_raw_ids.add(int(did))
     depts = (
-        db.query(Department).filter(Department.id.in_(dept_ids)).all() if dept_ids else []
+        db.query(Department).filter(Department.id.in_(dept_raw_ids)).all() if dept_raw_ids else []
     )
     dept_leader_map: dict[int, Optional[int]] = {
-        d.id: getattr(d, "leader_user_id", None) for d in depts
+        int(d.id): getattr(d, "leader_user_id", None) for d in depts
     }
 
-    def _can_manage_library_soft(lib: Library, u: User) -> bool:
-        """用于回收站权限判断的轻量版：不抛异常，仅返回布尔值。"""
-        if u.is_superuser:
-            return True
-        # 个人库：仅拥有者
-        if getattr(lib, "department_id", None) is None:
-            return lib.owner_id == u.id
-        # 部门库：仅部门负责人
-        leader_id = dept_leader_map.get(lib.department_id)
-        return leader_id is not None and leader_id == u.id
+    entries = db.query(FileEntry).filter(FileEntry.id.in_(entry_ids)).all() if entry_ids else []
+    entry_map: dict[int, FileEntry] = {e.id: e for e in entries}
 
-    for lib in my_deleted_libs:
-        # 仅当当前用户对该库有管理权限时，才允许在个人回收站中对库执行恢复/删除
-        can_manage = _can_manage_library_soft(lib, current_user)
-        items.append(
-            GlobalTrashItem(
-                id=lib.id,
-                type="library",
-                library_id=lib.id,
-                library_name=getattr(lib, "name", "") or None,
-                path=getattr(lib, "name", "") or None,
-                is_dir=True,
-                deleted_at=getattr(lib, "deleted_at"),
-                username=owner_username,
-                can_restore=can_manage,
-                can_delete=can_manage,
+    user_ids: set[int] = set()
+    for m in mappings:
+        actor_id = m.get("actor_user_id")
+        if actor_id:
+            user_ids.add(int(actor_id))
+        lib_id_raw = m.get("library_id")
+        if lib_id_raw:
+            owner_id = lib_owner_map.get(int(lib_id_raw))
+            if owner_id:
+                user_ids.add(int(owner_id))
+    users = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+    user_name_map: dict[int, str] = {
+        u.id: (u.username or u.email or f"用户{u.id}") for u in users
+    }
+
+    items: list[GlobalTrashItem] = []
+    for m in mappings:
+        item_type = str(m["type"])
+        item_id = int(m["id"])
+        lib_id = int(m["library_id"]) if m.get("library_id") is not None else None
+        actor_id = int(m["actor_user_id"]) if m.get("actor_user_id") is not None else None
+        username: Optional[str] = user_name_map.get(actor_id) if actor_id else None
+        if not username and lib_id:
+            owner_id = lib_owner_map.get(lib_id)
+            if owner_id:
+                username = user_name_map.get(owner_id)
+
+        lib_row = lib_by_id.get(lib_id) if lib_id is not None else None
+        can_manage_lib = _can_manage_personal_trash_library(lib_row, current_user, dept_leader_map)
+
+        crumb = _library_breadcrumb_from_map(lib_id, lib_tree)
+
+        if item_type == "file_version":
+            entry_id = int(m["entry_id"]) if m.get("entry_id") is not None else None
+            version_no = int(m["version_no"]) if m.get("version_no") is not None else None
+            entry = entry_map.get(entry_id) if entry_id else None
+            entry_path = entry.path if entry is not None else f"文件#{entry_id}"
+            items.append(
+                GlobalTrashItem(
+                    id=item_id,
+                    type="file_version",
+                    entry_id=entry_id,
+                    version_no=version_no,
+                    library_id=lib_id,
+                    library_name=lib_name_map.get(lib_id) if lib_id else None,
+                    library_breadcrumb=crumb,
+                    path=(
+                        f"{entry_path} (历史版本 v{version_no})" if version_no is not None else entry_path
+                    ),
+                    is_dir=False,
+                    deleted_at=m["deleted_at"],
+                    username=username,
+                    can_restore=can_manage_lib and bool(entry and entry.deleted_at is None),
+                    can_delete=can_manage_lib,
+                )
             )
-        )
-
-    # 2) 文件级回收站：
-    #    - 我拥有的库中的任意已删文件
-    #    - 或由我创建的已删文件（无论库属于谁）
-    #
-    # 为避免重复（例如「我拥有的库」里也有我创建的文件），下面用 set 去重。
-    file_rows = (
-        db.query(FileEntry, Library)
-        .join(Library, Library.id == FileEntry.library_id)
-        .filter(
-            FileEntry.deleted_at != None,  # noqa: E711
-            Library.deleted_at.is_(None),  # 库仍存在时才列出文件；库已软删的情况以库为主
-            or_(
-                Library.owner_id == user_id,
-                FileEntry.created_by_id == user_id,
-            ),
-        )
-        .all()
-    )
-
-    seen_file_ids: set[int] = set()
-    for e, lib in file_rows:
-        if e.id in seen_file_ids:
             continue
-        seen_file_ids.add(e.id)
-        # 是否允许当前用户对该文件执行恢复/删除：沿用库级回收站权限
-        can_manage = _can_manage_library_soft(lib, current_user)
+
+        if item_type == "library":
+            lib_name = lib_name_map.get(lib_id) if lib_id else None
+            items.append(
+                GlobalTrashItem(
+                    id=item_id,
+                    type="library",
+                    library_id=lib_id,
+                    library_name=lib_name,
+                    library_breadcrumb=crumb,
+                    path=lib_name or None,
+                    is_dir=True,
+                    deleted_at=m["deleted_at"],
+                    username=username,
+                    can_restore=can_manage_lib,
+                    can_delete=can_manage_lib,
+                )
+            )
+            continue
 
         items.append(
             GlobalTrashItem(
-                id=e.id,
+                id=item_id,
                 type="file",
-                library_id=e.library_id,
-                library_name=getattr(lib, "name", "") or None,
-                path=e.path,
-                is_dir=e.is_dir,
-                deleted_at=e.deleted_at,
-                username=owner_username,
-                can_restore=can_manage,
-                can_delete=can_manage,
+                library_id=lib_id,
+                library_name=lib_name_map.get(lib_id) if lib_id else None,
+                library_breadcrumb=crumb,
+                path=m["path"],
+                is_dir=bool(m["is_dir"]),
+                deleted_at=m["deleted_at"],
+                username=username,
+                can_restore=can_manage_lib,
+                can_delete=can_manage_lib,
             )
         )
 
-    # 3) 版本级回收站：
-    #    - 我拥有的库中的任意已删历史版本
-    #    - 或由我删除的历史版本（无论库属于谁）
-    version_rows = (
-        db.query(FileVersionTrash, Library)
-        .join(Library, Library.id == FileVersionTrash.library_id)
-        .filter(
-            Library.deleted_at.is_(None),
-            or_(
-                Library.owner_id == user_id,
-                FileVersionTrash.deleted_by_id == user_id,
-            ),
-        )
-        .all()
-    )
-    version_entry_ids = {row.file_entry_id for row, _ in version_rows}
-    version_entries = (
-        db.query(FileEntry).filter(FileEntry.id.in_(version_entry_ids)).all() if version_entry_ids else []
-    )
-    version_entry_map: dict[int, FileEntry] = {e.id: e for e in version_entries}
-    version_deleter_ids = {row.deleted_by_id for row, _ in version_rows if getattr(row, "deleted_by_id", None)}
-    version_deleters = (
-        db.query(User).filter(User.id.in_(version_deleter_ids)).all() if version_deleter_ids else []
-    )
-    version_deleter_name_map: dict[int, str] = {
-        u.id: (u.username or u.email or f"用户{u.id}") for u in version_deleters
-    }
-    seen_version_ids: set[int] = set()
-    for row, lib in version_rows:
-        if row.id in seen_version_ids:
-            continue
-        seen_version_ids.add(row.id)
-        can_manage = _can_manage_library_soft(lib, current_user)
-        entry = version_entry_map.get(row.file_entry_id)
-        entry_path = entry.path if entry else f"文件#{row.file_entry_id}"
-        items.append(
-            GlobalTrashItem(
-                id=row.id,
-                type="file_version",
-                entry_id=row.file_entry_id,
-                version_no=row.version_no,
-                library_id=row.library_id,
-                library_name=getattr(lib, "name", "") or None,
-                path=f"{entry_path} (历史版本 v{row.version_no})",
-                is_dir=False,
-                deleted_at=row.deleted_at,
-                username=version_deleter_name_map.get(row.deleted_by_id) if row.deleted_by_id else owner_username,
-                can_restore=can_manage and bool(entry and entry.deleted_at is None),
-                can_delete=can_manage,
-            )
-        )
-
-    # 4) 统一按删除时间倒序返回
-    items.sort(key=lambda x: x.deleted_at, reverse=True)
-    return items
+    return GlobalTrashPage(items=items, has_more=has_more, limit=limit, offset=offset)
 
 
 @router.post("/{entry_id}/restore", response_model=FileRead)
@@ -1818,24 +1971,52 @@ def permanent_delete(
     db.commit()
 
 
-@router.get("/search", response_model=List[FileRead])
+@router.get("/search", response_model=FileSearchResponse)
 def search_files(
     library_id: int,
-    keyword: str = Query(..., min_length=1, description="搜索关键词，匹配路径中的文件名"),
+    keyword: str = Query(..., min_length=1, description="搜索关键词，匹配路径中的文件名或资料库名称/描述"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """按关键词搜索文件（匹配路径）"""
+    """在当前资料库「整棵树」内搜索：子资料库中的文件、名称匹配的下级资料库。
+
+    子资料库拥有独立 storage（不同 library_id），此前仅搜当前 id 会漏掉子库文件。
+    """
     lib = _get_library_and_check(db, library_id, current_user)
     kw = keyword.strip()
     if not kw:
-        return []
+        return FileSearchResponse(files=[], libraries=[])
+    subtree_ids, _ = collect_descendant_library_ids(db, library_id)
+    accessible = set(int(x) for x in get_accessible_library_ids(db, current_user))
+    scope_ids = [i for i in subtree_ids if i in accessible]
+    if not scope_ids:
+        return FileSearchResponse(files=[], libraries=[])
+    like = f"%{kw}%"
+    lib_hits = (
+        db.query(Library)
+        .filter(
+            Library.id.in_(scope_ids),
+            Library.deleted_at.is_(None),
+            or_(Library.name.ilike(like), Library.description.ilike(like)),
+        )
+        .order_by(Library.name.asc())
+        .limit(50)
+        .all()
+    )
+    libraries_out = [
+        LibrarySearchHit(
+            id=int(row.id),
+            name=(row.name or "") or "",
+            description=row.description,
+        )
+        for row in lib_hits
+    ]
     entries = (
         db.query(FileEntry)
         .filter(
-            FileEntry.library_id == library_id,
+            FileEntry.library_id.in_(scope_ids),
             FileEntry.deleted_at.is_(None),
-            FileEntry.path.ilike(f"%{kw}%"),
+            FileEntry.path.ilike(like),
         )
         .order_by(FileEntry.path.asc())
         .limit(100)
@@ -1858,11 +2039,20 @@ def search_files(
             .all()
         )
         latest_size = {r[0]: r[1] for r in rows}
-    bulk_can_dl = can_download_in_library_list_context(db, lib, current_user)
-    result = []
+    entry_lib_ids = {int(e.library_id) for e in entries}
+    lib_by_id: dict[int, Library] = {}
+    if entry_lib_ids:
+        for row in db.query(Library).filter(Library.id.in_(entry_lib_ids)).all():
+            lib_by_id[int(row.id)] = row
+    result_files: List[FileRead] = []
     for e in entries:
-        can_dl = bulk_can_dl if not e.is_dir else None
-        result.append(
+        lib_for_entry = lib_by_id.get(int(e.library_id), lib)
+        can_dl = (
+            can_download_in_library_list_context(db, lib_for_entry, current_user)
+            if not e.is_dir
+            else None
+        )
+        result_files.append(
             FileRead(
                 id=e.id,
                 library_id=e.library_id,
@@ -1873,7 +2063,7 @@ def search_files(
                 can_download=can_dl,
             )
         )
-    return result
+    return FileSearchResponse(files=result_files, libraries=libraries_out)
 
 
 @router.get("/search-global", response_model=List[GlobalSearchFileRead])
@@ -3606,6 +3796,31 @@ def get_rendered_preview_meta(
             ptype = "unsupported"
             page_count = 1
 
+    # 一次「打开预览」记一条审计，避免按页拉取 blob 时刷爆日志
+    try:
+        detail = f"path={entry.path} version={version.version_no} type={ptype}"
+        if ptype == "pdf":
+            detail += f" page_count={page_count}"
+        elif ptype == "image":
+            detail += " preview=image"
+        elif ptype == "text":
+            detail += " preview=text"
+        else:
+            detail += " preview=unsupported"
+        log_audit(
+            db,
+            current_user.id,
+            current_user.username,
+            "preview_rendered",
+            "file",
+            entry.id,
+            detail,
+            ip_address=get_client_ip(request),
+        )
+        db.commit()
+    except Exception:
+        pass
+
     return RenderedPreviewMeta(
         entry_id=entry.id,
         version_no=version.version_no,
@@ -3662,25 +3877,6 @@ def get_rendered_preview(
         response = Response(content=txt, media_type="text/plain; charset=utf-8", headers=_cache_headers)
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该文件类型暂不支持受控预览")
-
-    # 审计日志在渲染完成后写入，不阻塞渲染耗时
-    try:
-        detail = f"path={entry.path} version={version.version_no} type={ptype}"
-        if ptype == "pdf":
-            detail += f" page={page}"
-        log_audit(
-            db,
-            current_user.id,
-            current_user.username,
-            "preview_rendered",
-            "file",
-            entry.id,
-            detail,
-            ip_address=get_client_ip(request),
-        )
-        db.commit()
-    except Exception:
-        pass
 
     return response
 

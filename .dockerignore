@@ -1,27 +1,55 @@
+# --- Git / 虚拟环境（体积大且无用）---
 .git
 .gitignore
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
+**/.git
 .venv/
 venv/
-node_modules/
-frontend/node_modules/
-frontend/dist/
-storage/
-app.db
-backups/
-*.log
+env/
 
-# 本地大文件 / 导出镜像（勿打进 backend 镜像，否则 context 可达 1GB+）
+# --- Python ---
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# --- 前端依赖与产物（镜像内会重新 npm install / build）---
+node_modules/
+**/node_modules/
+frontend/dist/
+
+# --- 运行时数据（务必排除，否则 context 数百 MB～数 GB）---
+storage/
+backups/
+app.db
+**/*.db
+*.sqlite
+*.sqlite3
+
+# --- 日志与临时 ---
+*.log
+**/*.log
+.cursor/
+.idea/
+.vscode/
+**/.DS_Store
+
+# --- 本地导出 / 数据库镜像 / 打包文件（极易漏网，导致上传极慢）---
 postgres.tar
+knowledge_platform.tar
+knowledge_platform.tar.gz
 *.tar
 *.tar.gz
 *.tgz
-knowledge_platform.tar
-knowledge_platform.tar.gz
-.cursor/
-**/.DS_Store
+**/*.tar
+**/*.tar.gz
+**/*.tgz
+
+# --- 不进镜像的文档与 CI（减小 context、加速上传）---
+.github/
+docs/
+deploy/

@@ -18,7 +18,9 @@ services:
       retries: 20
 
   app:
-    image: knowledge_platform-app:latest
+    # 本地构建：默认 knowledge_platform-app:latest
+    # 服务器拉 GHCR：在 .env 中设置 DOCKER_IMAGE_APP=ghcr.io/<小写owner>/knowledge_platform-app:latest
+    image: ${DOCKER_IMAGE_APP:-knowledge_platform-app:latest}
     container_name: kp_app
     restart: always
     depends_on:
@@ -31,6 +33,7 @@ services:
       DATABASE_URL: postgresql+psycopg2://kp_user:${POSTGRES_PASSWORD}@db:5432/knowledge_platform
       STORAGE_ROOT: /app/storage
       STORAGE_SYSTEM_TOTAL_BYTES: ${STORAGE_SYSTEM_TOTAL_BYTES:-536870912000}
+      MAX_UPLOAD_FILE_BYTES: ${MAX_UPLOAD_FILE_BYTES:-2147483648}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://192.168.150.99}
       BOOTSTRAP_DEFAULT_ADMIN: "true"
       RESET_DEFAULT_ADMIN_PASSWORD_ON_STARTUP: "false"
@@ -49,7 +52,7 @@ services:
       - "8000"
 
   nginx:
-    image: knowledge_platform-nginx:latest
+    image: ${DOCKER_IMAGE_NGINX:-knowledge_platform-nginx:latest}
     container_name: kp_nginx
     restart: always
     depends_on:

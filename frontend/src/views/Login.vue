@@ -7,6 +7,7 @@
         <div class="login-bg-overlay"></div>
       </div>
       <div class="login-brand-center">
+        <p class="brand-company">中铁建发展集团乌兰察布压缩空气储能有限公司</p>
         <h1 class="brand-title">文件共享和知识管理平台</h1>
         <p class="brand-copyright">© 2026 中铁建发展集团乌兰察布压缩空气储能有限公司</p>
       </div>
@@ -86,12 +87,18 @@ async function submit() {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  opacity: 0.45;
+  opacity: 0.66;
+  filter: brightness(1.12);
 }
 .login-bg-overlay {
   position: absolute;
   inset: 0;
-  background: linear-gradient(135deg, rgba(26,31,58,0.45) 0%, rgba(45,53,97,0.3) 50%, rgba(26,31,58,0.45) 100%);
+  background: linear-gradient(
+    135deg,
+    rgba(26, 31, 58, 0.32) 0%,
+    rgba(45, 53, 97, 0.18) 50%,
+    rgba(26, 31, 58, 0.32) 100%
+  );
 }
 .login-brand-center {
   position: relative;
@@ -103,7 +110,22 @@ async function submit() {
   justify-content: center;
   padding: 48px;
 }
-.brand-title { color: #fff; font-size: 36px; font-weight: 700; margin: 0; text-align: center; }
+.brand-company {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 24px;
+  font-weight: 500;
+  letter-spacing: 2px;
+  margin: 0 0 12px 0;
+  text-align: center;
+  line-height: 1.5;
+}
+.brand-title {
+  color: #fff;
+  font-size: 36px;
+  font-weight: 700;
+  margin: 0;
+  text-align: center;
+}
 .login-right {
   width: 520px;
   background: #f9fafb;

@@ -32,7 +32,6 @@
                 <th>类型</th>
                 <th>名称</th>
                 <th>所在库</th>
-                <th>路径</th>
                 <th>删除时间</th>
                 <th>操作</th>
               </tr>
@@ -54,21 +53,14 @@
                 <td class="trash-cell-name">
                   <div class="trash-name-wrap">
                     <Icons :name="item.type === 'library' ? 'folder' : 'file-text'" class="trash-file-icon" />
-                    <span class="trash-file-name">
-                      {{ item.type === 'library'
-                        ? (item.name || item.library_name || ('文件库 #' + item.id))
-                        : (item.name || (item.path && item.path.split('/').pop()) || '-') }}
-                    </span>
+                    <span class="trash-file-name">{{ trashEntryDisplayName(item) }}</span>
                   </div>
                 </td>
-                <td class="trash-cell-path">
-                  {{ item.library_name || (item.type === 'library' ? '-' : '未知文件库') }}
-                </td>
-                <td class="trash-cell-path">
-                  <span v-if="item.type === 'file'">
-                    {{ item.path || '-' }}
-                  </span>
-                  <span v-else>-</span>
+                <td
+                  class="trash-cell-path trash-lib-chain-cell"
+                  :title="trashLibraryLocationText(item)"
+                >
+                  {{ trashLibraryLocationText(item) }}
                 </td>
                 <td class="trash-cell-date">
                   {{ formatDate(item.deleted_at) }}
@@ -115,7 +107,38 @@
             </tbody>
           </table>
         </div>
-        <div v-else class="trash-empty-card">
+        <div
+          v-if="showPersonalTrashPaginationFooter"
+          class="audit-pagination"
+        >
+          <div class="audit-pagination-actions">
+            <button
+              type="button"
+              class="admin-btn-secondary page-icon-btn"
+              :disabled="trashPaginationOffset <= 0"
+              title="上一页"
+              @click="emit('trash-prev-page')"
+            >
+              <Icons name="arrow-left" />
+            </button>
+            <button
+              type="button"
+              class="admin-btn-secondary page-icon-btn"
+              :disabled="!trashPaginationHasNext"
+              title="下一页"
+              @click="emit('trash-next-page')"
+            >
+              <Icons name="chevron-right" />
+            </button>
+          </div>
+          <div class="audit-pagination-info">
+            第 {{ trashPageNumber }} 页，每页 {{ trashPaginationLimit }} 条
+          </div>
+        </div>
+        <div
+          v-else-if="!displayLoading && !displayList?.length"
+          class="trash-empty-card"
+        >
           <Icons name="trash" class="trash-empty-icon" />
           <p class="trash-empty-text">回收站为空</p>
           <p class="trash-empty-hint">{{ mode === 'dept' ? '本部门暂无删除记录。' : '删除的文件库和文件会显示在这里，需手动执行彻底删除。' }}</p>
@@ -136,6 +159,11 @@ const props = defineProps({
   trashLoading: Boolean,
   deptTrashList: { type: Array, default: () => [] },
   deptTrashLoading: { type: Boolean, default: false },
+  /** 个人回收站分页：与 LibraryPage 文件列表一致 */
+  personalTrashPagination: { type: Boolean, default: false },
+  trashPaginationHasNext: { type: Boolean, default: false },
+  trashPaginationOffset: { type: Number, default: 0 },
+  trashPaginationLimit: { type: Number, default: 50 },
   formatDate: Function,
   libraries: { type: Array, default: () => [] },
 })
@@ -147,7 +175,91 @@ const displayLoading = computed(() =>
   props.mode === 'dept' ? props.deptTrashLoading : props.trashLoading
 )
 
-const emit = defineEmits(['restore-item', 'perm-delete-item', 'restore-dept', 'perm-delete-dept'])
+const trashPageNumber = computed(() =>
+  props.trashPaginationLimit
+    ? Math.floor(Number(props.trashPaginationOffset || 0) / Number(props.trashPaginationLimit)) + 1
+    : 1,
+)
+
+const showPersonalTrashPaginationFooter = computed(() => {
+  if (props.mode !== 'personal' || !props.personalTrashPagination || props.trashLoading) return false
+  if (displayList.value?.length) return true
+  return Number(props.trashPaginationOffset || 0) > 0
+})
+
+/**
+ * 所在库列：文件/历史版本为「资料库链 / 库内路径」；已删除的文件库为层级链或库名。
+ */
+function trashLibraryLocationText(item) {
+  if (!item) return '-'
+  if (item.type === 'file' || item.type === 'file_version') {
+    return formatTrashFullLocationPath(item)
+  }
+  if (item.type === 'library') {
+    const crumb = (item.library_breadcrumb || item.library_name || '').trim()
+    return crumb || '-'
+  }
+  return '-'
+}
+
+/**
+ * 删除前在资料库内的相对路径（不含库名）；与列表页 path 字段语义一致。
+ * 历史版本会把尾注 ` (历史版本 vN)` 拼在 path 上，此处只取文件位置部分。
+ */
+function pathWithinLibraryRaw(pathStr) {
+  if (pathStr == null || String(pathStr).trim() === '') return ''
+  let s = String(pathStr).trim()
+  const idx = s.indexOf(' (历史版本')
+  if (idx >= 0) s = s.slice(0, idx).trim()
+  return s.replace(/\\/g, '/').replace(/^\/+/g, '')
+}
+
+/**
+ * 路径列：资料库层级（与「所在库」同源）+ 库内相对路径。
+ * 根目录文件示例：`初步设计 / 1. xxx.doc`，不再仅 `/1. xxx.doc`。
+ */
+function formatTrashFullLocationPath(item) {
+  if (!item || item.type === 'library') return '-'
+  if (item.type !== 'file' && item.type !== 'file_version') return '-'
+  const inner = pathWithinLibraryRaw(item.path)
+  const chain = (item.library_breadcrumb || item.library_name || '').trim()
+  if (!inner && !chain) return '-'
+  if (!inner) return chain || '-'
+  if (!chain) return `/${inner}`
+  return `${chain} / ${inner}`
+}
+
+/** 名称列：仅文件名；历史版本附加简短 (vN) */
+function trashEntryDisplayName(item) {
+  if (!item) return '-'
+  if (item.type === 'library') {
+    return item.name || item.library_name || `文件库 #${item.id}`
+  }
+  if (item.type !== 'file' && item.type !== 'file_version') return '-'
+  const raw = item.path
+  if (raw == null || String(raw).trim() === '') return '-'
+  let main = String(raw)
+  let versionShort = ''
+  const idx = main.indexOf(' (历史版本')
+  if (idx >= 0) {
+    const m = main.match(/历史版本 v(\d+)/)
+    if (m) versionShort = ` (v${m[1]})`
+    main = main.slice(0, idx).trim()
+  }
+  const norm = main.replace(/\\/g, '/')
+  const parts = norm.split('/').filter(Boolean)
+  const base = parts.length ? parts[parts.length - 1] : norm
+  return base + versionShort
+}
+
+const emit = defineEmits([
+  'restore-item',
+  'perm-delete-item',
+  'restore-dept',
+  'perm-delete-dept',
+  'trash-prev-page',
+  'trash-next-page',
+])
 </script>
 
 <style scoped>
@@ -297,6 +409,11 @@ const emit = defineEmits(['restore-item', 'perm-delete-item', 'restore-dept', 'p
   color: #4b5563;
 }
 
+.trash-lib-chain-cell {
+  max-width: 520px;
+  word-break: break-word;
+}
+
 .trash-cell-date {
   font-size: 13px;
   color: #4b5563;
@@ -387,6 +504,38 @@ const emit = defineEmits(['restore-item', 'perm-delete-item', 'restore-dept', 'p
   font-size: 15px;
   font-weight: 600;
   color: #374151;
+}
+
+/* 与 LibraryPage 当前库文件列表分页一致 */
+.audit-pagination {
+  margin-top: 8px;
+  padding: 10px 0 8px;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  font-size: 12px;
+  color: #6b7280;
+  position: sticky;
+  bottom: 0;
+  z-index: 8;
+  background: linear-gradient(to top, #fff 75%, rgba(255, 255, 255, 0.9) 100%);
+}
+
+.audit-pagination-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.page-icon-btn {
+  width: 34px;
+  min-width: 34px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .trash-empty-card-sm {

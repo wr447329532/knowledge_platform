@@ -2,7 +2,10 @@
   <div class="dept-node" :class="'dept-node-' + variant">
     <div
       class="dept-node-row"
-      :class="{ 'dept-node-active': activeDeptId === node.id }"
+      :class="{
+        'dept-node-active': activeDeptId === node.id,
+        'dept-node-locked': node.has_access === false,
+      }"
       :style="{ paddingLeft: (level * 12 + 8) + 'px' }"
       @click.stop="$emit('select', node)"
     >
@@ -92,7 +95,10 @@ const expanded = computed(() => Array.isArray(props.expandedIds) && props.expand
 .dept-node-sidebar .dept-node-row:hover { background: rgba(75, 85, 99, 0.5); color: #fff; }
 .dept-node-sidebar .dept-node-row.dept-node-active { background: rgba(74, 144, 226, 0.4); color: #fff; }
 .dept-node-sidebar .dept-node-row.dept-node-active:hover { background: rgba(74, 144, 226, 0.5); }
+.dept-node-sidebar .dept-node-row.dept-node-locked { opacity: 0.55; }
+.dept-node-sidebar .dept-node-row.dept-node-locked:hover { background: rgba(75, 85, 99, 0.35); }
 .dept-node-content .dept-node-row { color: var(--text); }
+.dept-node-content .dept-node-row.dept-node-locked { opacity: 0.55; color: var(--text-secondary, #6b7280); }
 .dept-node-content .dept-node-row:hover { background: #f3f4f6; color: var(--text); }
 .dept-node-toggle {
   width: 16px;

@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import or_
 
-from backend.app.api import audit, auth, departments, files, libraries, notifications
+from backend.app.api import audit, auth, departments, division_leader, file_comments, files, libraries, notifications
 from backend.app.core.config import get_settings
 from backend.app.core.security import get_password_hash
 from backend.app.db.base import Base
@@ -155,6 +155,24 @@ def _ensure_audit_logs_has_ip_address() -> None:
         conn.commit()
 
 
+def _ensure_notifications_has_resource_fields() -> None:
+    """兼容旧库：notifications 表补充评论跳转相关字段"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "notifications" not in insp.get_table_names():
+        return
+    cols = [c["name"] for c in insp.get_columns("notifications")]
+    with engine.connect() as conn:
+        if "resource_type" not in cols:
+            conn.execute(text("ALTER TABLE notifications ADD COLUMN resource_type VARCHAR(32)"))
+        if "resource_id" not in cols:
+            conn.execute(text("ALTER TABLE notifications ADD COLUMN resource_id INTEGER"))
+        if "extra_json" not in cols:
+            conn.execute(text("ALTER TABLE notifications ADD COLUMN extra_json TEXT"))
+        conn.commit()
+
+
 def _ensure_default_admin(reset_password_on_startup: bool = False) -> None:
     """启动时确保存在默认管理员。默认不重置既有账号密码。"""
     db = SessionLocal()
@@ -243,6 +261,7 @@ def create_app() -> FastAPI:
         _ensure_libraries_has_deleted_at()
         _ensure_departments_has_leader_user_id()
         _ensure_audit_logs_has_ip_address()
+        _ensure_notifications_has_resource_fields()
     if settings.BOOTSTRAP_DEFAULT_ADMIN:
         _ensure_default_admin(
             reset_password_on_startup=settings.RESET_DEFAULT_ADMIN_PASSWORD_ON_STARTUP
@@ -274,8 +293,10 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(libraries.router)
     app.include_router(files.router)
+    app.include_router(file_comments.router)
     app.include_router(audit.router)
     app.include_router(departments.router)
+    app.include_router(division_leader.router)
     app.include_router(notifications.router)
 
     return app

@@ -15,7 +15,7 @@ class User(Base):
     hashed_password = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     is_superuser = Column(Boolean, default=False, nullable=False)
-    role = Column(String(20), nullable=False, default="staff")  # staff | dept_leader | executive
+    role = Column(String(20), nullable=False, default="staff")  # staff | dept_leader | executive | division_leader
     department_id = Column(
         Integer,
         ForeignKey("departments.id", ondelete="SET NULL"),

@@ -12,6 +12,7 @@ from backend.app.core.audit import get_client_ip, log_audit
 from backend.app.core.library_access import (
     _get_accessible_department_ids,
     check_can_manage_library,
+    collect_descendant_library_ids,
     get_accessible_library_ids,
     has_library_access,
     libraries_accessible_base_query,
@@ -20,7 +21,13 @@ from backend.app.core.library_access import (
     user_can_manage_library,
     write_access_for_listed_library,
 )
-from backend.app.api.notifications import create_notification
+from backend.app.core.library_department_access import (
+    VISIBILITY_DEPARTMENTS,
+    clear_library_access_departments,
+    list_access_department_ids,
+    list_access_department_names,
+    replace_library_access_departments,
+)
 from backend.app.db.session import get_db
 from backend.app.models.department import Department
 from backend.app.models.library import Library
@@ -37,8 +44,10 @@ class LibraryCreate(BaseModel):
     # 若指定，则创建为子库（二级/三级），继承根库权限与部门/可见性/下载策略
     parent_id: int | None = None
     department_id: int | None = None  # 指定则创建为部门库
-    # 可见性：private=私有；department=部门可见；public=全员可见（仅个人库）
+    # 可见性：private=私有；department=部门可见；departments=指定部门；public=全员可见
     visibility: str = "private"
+    # 指定部门访问（visibility=departments 时必填，至少 1 个）
+    access_department_ids: list[int] | None = None
     # 是否允许非拥有者下载库中文件（拥有者/超级管理员始终可下载）
     allow_download: bool | None = None
     # 指定成员列表（无论可见性为何，均可用于补充访问权限）
@@ -62,6 +71,8 @@ class LibraryRead(BaseModel):
     root_library_id: int | None = None
     depth: int = 1  # 一级=1，二级=2，三级=3
     can_manage: bool = False  # 是否可编辑/删除资料库（含根拥有者与部门负责人）
+    access_department_ids: list[int] = Field(default_factory=list)
+    access_department_names: list[str] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
@@ -87,8 +98,12 @@ class SharedLibraryRow(BaseModel):
     name: str
     description: str | None = None
     owner_username: str | None = None
+    department_id: int | None = None
     department_name: str | None = None
     visibility: str
+    member_count: int = 0
+    access_department_ids: list[int] = Field(default_factory=list)
+    access_department_names: list[str] = Field(default_factory=list)
     share_scope: str
     can_write: bool
     created_at: datetime
@@ -99,6 +114,7 @@ class LibraryUpdate(BaseModel):
     description: str | None = None
     visibility: str | None = None
     allow_download: bool | None = None
+    access_department_ids: list[int] | None = None
 
 
 class MoveLibraryBody(BaseModel):
@@ -117,6 +133,35 @@ class LibraryMoveTarget(BaseModel):
 router = APIRouter(prefix="/libraries", tags=["libraries"])
 
 _LIB_READ_AUTO = object()
+
+_VALID_LIBRARY_VISIBILITY = frozenset({"private", "department", VISIBILITY_DEPARTMENTS, "public"})
+
+
+def _parse_access_department_ids(raw: list[int] | None) -> list[int]:
+    if not raw:
+        return []
+    return sorted(
+        {
+            int(uid)
+            for uid in raw
+            if isinstance(uid, int) and not isinstance(uid, bool)
+        }
+    )
+
+
+def _validate_access_department_ids(db: Session, dept_ids: list[int]) -> None:
+    if not dept_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="指定部门访问至少选择一个部门",
+        )
+    found = {
+        int(r[0])
+        for r in db.query(Department.id).filter(Department.id.in_(dept_ids)).all()
+    }
+    missing = [d for d in dept_ids if d not in found]
+    if missing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部分指定部门不存在")
 
 
 def _normalize_library_name(name: str) -> str:
@@ -157,29 +202,8 @@ def _library_name_taken(
 def _collect_descendant_library_ids(
     db: Session, root_node_id: int
 ) -> tuple[Set[int], dict[int, int | None]]:
-    """包含 root_node_id 及其所有下级资料库 id（未删除）。
-    同时返回全局 parent_by_id 供调用方复用，避免重复全表扫描。"""
-    rows = (
-        db.query(Library.id, Library.parent_id)
-        .filter(Library.deleted_at.is_(None))
-        .all()
-    )
-    parent_by_id: dict[int, int | None] = {
-        int(r[0]): (int(r[1]) if r[1] is not None else None) for r in rows
-    }
-    children_by_parent: dict[int, list[int]] = {}
-    for lid, pid in parent_by_id.items():
-        if pid is not None:
-            children_by_parent.setdefault(pid, []).append(lid)
-    out: Set[int] = {int(root_node_id)}
-    stack = [int(root_node_id)]
-    while stack:
-        nid = int(stack.pop())
-        for cid in children_by_parent.get(nid, []):
-            if cid not in out:
-                out.add(cid)
-                stack.append(cid)
-    return out, parent_by_id
+    """与 core.library_access.collect_descendant_library_ids 一致（本模块历史命名）。"""
+    return collect_descendant_library_ids(db, root_node_id)
 
 
 def _subtree_depth_span(
@@ -281,6 +305,8 @@ def _lib_to_read(
     can_manage = False
     if current_user_obj is not None:
         can_manage = user_can_manage_library(db, lib, current_user_obj)
+    access_dept_ids = list_access_department_ids(db, root.id)
+    access_dept_names = list_access_department_names(db, root.id) if access_dept_ids else []
     # SQLite 等驱动可能把 BOOLEAN 读成 0/1，Pydantic 对 bool 校验较严时会触发响应校验 500
     _ad = getattr(lib, "allow_download", None)
     if _ad is None:
@@ -306,6 +332,8 @@ def _lib_to_read(
         root_library_id=int(root.id),
         depth=int(depth),
         can_manage=bool(can_manage),
+        access_department_ids=access_dept_ids,
+        access_department_names=access_dept_names,
     )
 
 
@@ -361,10 +389,18 @@ def create_library(
 
     # visibility 校验（一级新建）
     if lib_in.parent_id is None:
-        if visibility not in {"private", "department", "public"}:
+        if visibility not in _VALID_LIBRARY_VISIBILITY:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="可见性取值非法")
         if visibility == "department" and dept_id is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门可见库必须指定所属部门")
+        if visibility == VISIBILITY_DEPARTMENTS:
+            access_dept_ids = _parse_access_department_ids(lib_in.access_department_ids)
+            _validate_access_department_ids(db, access_dept_ids)
+        elif lib_in.access_department_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="仅「指定部门」访问模式可设置 access_department_ids",
+            )
         if visibility == "public" and dept_id is not None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门库不支持设置为公开库")
 
@@ -429,6 +465,9 @@ def create_library(
                         role="read",
                     )
                     db.add(member)
+        if lib_in.parent_id is None and visibility == VISIBILITY_DEPARTMENTS:
+            access_dept_ids = _parse_access_department_ids(lib_in.access_department_ids)
+            replace_library_access_departments(db, lib.id, access_dept_ids)
         log_audit(
             db,
             current_user.id,
@@ -580,11 +619,19 @@ def list_libraries(
     return result
 
 
-def _describe_share_scope_for_owner(lib: Library, dept_name: str | None, member_count: int) -> str:
+def _describe_share_scope_for_owner(
+    lib: Library,
+    dept_name: str | None,
+    member_count: int,
+    access_dept_names: list[str] | None = None,
+) -> str:
     """从拥有者视角描述文件库共享范围。"""
     visibility = getattr(lib, "visibility", "private")
     if visibility == "public":
         base = "公开（所有用户）"
+    elif visibility == VISIBILITY_DEPARTMENTS:
+        names = access_dept_names or []
+        base = f"指定部门（{len(names)} 个）" if names else "指定部门"
     elif visibility == "department":
         base = f"{dept_name or '所属部门'} 部门成员"
     else:
@@ -598,6 +645,7 @@ def _describe_share_scope_for_receiver(
     lib: Library,
     dept_name: str | None,
     is_member: bool,
+    access_dept_names: list[str] | None = None,
 ) -> str:
     """从接收者视角描述为何可以访问该库。"""
     visibility = getattr(lib, "visibility", "private")
@@ -605,6 +653,11 @@ def _describe_share_scope_for_receiver(
         return "被添加为库成员"
     if visibility == "public":
         return "公开文件库"
+    if visibility == VISIBILITY_DEPARTMENTS:
+        names = access_dept_names or []
+        if names:
+            return f"指定部门：{'、'.join(names[:3])}" + (" 等" if len(names) > 3 else "")
+        return "指定部门文件库"
     if visibility == "department":
         return f"{dept_name or '所属部门'} 部门文件库"
     return "可访问的文件库"
@@ -612,6 +665,8 @@ def _describe_share_scope_for_receiver(
 
 @router.get("/shared/mine", response_model=List[SharedLibraryRow])
 def list_shared_libraries_mine(
+    limit: int = Query(20, ge=1, le=100, description="每页条数"),
+    offset: int = Query(0, ge=0, description="跳过条数"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -644,25 +699,42 @@ def list_shared_libraries_mine(
         # 仅展示实际对外共享的库
         if visibility == "private" and member_cnt == 0:
             continue
-        scope = _describe_share_scope_for_owner(lib, dept_name, member_cnt)
+        access_names = (
+            list_access_department_names(db, lib.id)
+            if visibility == VISIBILITY_DEPARTMENTS
+            else []
+        )
+        access_ids = (
+            list_access_department_ids(db, lib.id)
+            if visibility == VISIBILITY_DEPARTMENTS
+            else []
+        )
+        scope = _describe_share_scope_for_owner(lib, dept_name, member_cnt, access_names)
         result.append(
             SharedLibraryRow(
                 id=lib.id,
                 name=lib.name,
                 description=lib.description,
                 owner_username=owner_username,
+                department_id=getattr(lib, "department_id", None),
                 department_name=dept_name,
                 visibility=visibility,
+                member_count=member_cnt,
+                access_department_ids=access_ids,
+                access_department_names=access_names,
                 share_scope=scope,
                 can_write=True,
                 created_at=lib.created_at,
             )
         )
-    return result
+    slice_to = offset + limit + 1
+    return result[offset:slice_to]
 
 
 @router.get("/shared/to-me", response_model=List[SharedLibraryRow])
 def list_shared_libraries_to_me(
+    limit: int = Query(20, ge=1, le=100, description="每页条数"),
+    offset: int = Query(0, ge=0, description="跳过条数"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -709,7 +781,18 @@ def list_shared_libraries_to_me(
     for lib, owner_username, member_cnt, dept_name in rows:
         visibility = getattr(lib, "visibility", "private")
         is_member = lib.id in member_lib_ids
-        scope = _describe_share_scope_for_receiver(lib, dept_name, is_member)
+        root = resolve_root_library(db, lib)
+        access_names = (
+            list_access_department_names(db, root.id)
+            if visibility == VISIBILITY_DEPARTMENTS
+            else []
+        )
+        access_ids = (
+            list_access_department_ids(db, root.id)
+            if visibility == VISIBILITY_DEPARTMENTS
+            else []
+        )
+        scope = _describe_share_scope_for_receiver(lib, dept_name, is_member, access_names)
         # 计算写权限
         _, is_write = has_library_access(db, lib.id, current_user)
         result.append(
@@ -718,14 +801,19 @@ def list_shared_libraries_to_me(
                 name=lib.name,
                 description=lib.description,
                 owner_username=owner_username,
+                department_id=getattr(lib, "department_id", None),
                 department_name=dept_name,
                 visibility=visibility,
+                member_count=int(member_cnt or 0),
+                access_department_ids=access_ids,
+                access_department_names=access_names,
                 share_scope=scope,
                 can_write=is_write,
                 created_at=lib.created_at,
             )
         )
-    return result
+    slice_to = offset + limit + 1
+    return result[offset:slice_to]
 
 
 @router.get("/{library_id}/children", response_model=List[LibraryRead])
@@ -1054,8 +1142,13 @@ def update_library(
 ):
     lib, _ = has_library_access(db, library_id, current_user)
     check_can_manage_library(lib, current_user, db)
+    root = resolve_root_library(db, lib)
     is_child = getattr(lib, "parent_id", None) is not None
-    if is_child and (lib_in.visibility is not None or lib_in.allow_download is not None):
+    if is_child and (
+        lib_in.visibility is not None
+        or lib_in.allow_download is not None
+        or lib_in.access_department_ids is not None
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="子库的可见性与下载策略继承一级库，请在一级资料库中修改",
@@ -1092,14 +1185,32 @@ def update_library(
         lib.description = lib_in.description
     if lib_in.visibility is not None:
         new_visibility = lib_in.visibility or "private"
-        if new_visibility not in {"private", "department", "public"}:
+        if new_visibility not in _VALID_LIBRARY_VISIBILITY:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="可见性取值非法")
         # 现有库若为部门库，则不允许改成 public，始终保持 department 语义
         if lib.department_id is not None and new_visibility == "public":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门库不支持设置为公开库")
         if new_visibility == "department" and lib.department_id is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门可见库必须指定所属部门")
+        if new_visibility == VISIBILITY_DEPARTMENTS:
+            if lib_in.access_department_ids is not None:
+                access_dept_ids = _parse_access_department_ids(lib_in.access_department_ids)
+            else:
+                access_dept_ids = list_access_department_ids(db, root.id)
+            _validate_access_department_ids(db, access_dept_ids)
+            replace_library_access_departments(db, root.id, access_dept_ids)
+        elif new_visibility != getattr(lib, "visibility", "private"):
+            clear_library_access_departments(db, root.id)
         lib.visibility = new_visibility
+    elif lib_in.access_department_ids is not None:
+        if getattr(lib, "visibility", "private") != VISIBILITY_DEPARTMENTS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="当前资料库不是「指定部门」访问模式",
+            )
+        access_dept_ids = _parse_access_department_ids(lib_in.access_department_ids)
+        _validate_access_department_ids(db, access_dept_ids)
+        replace_library_access_departments(db, root.id, access_dept_ids)
     if lib_in.allow_download is not None:
         lib.allow_download = bool(lib_in.allow_download)
     db.commit()

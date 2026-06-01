@@ -77,12 +77,16 @@ export async function login(username, password, remember = true) {
   return data
 }
 
-/** 仅管理员可调用：创建新用户（平台不支持开放注册）。邮箱必填用于登录，用户名仅用于显示。role: staff | dept_leader | executive */
-export async function createUser(email, username, password, is_superuser = false, department_id = null, role = 'staff') {
+/** 仅管理员可调用：创建新用户。role: staff | dept_leader | executive | division_leader */
+export async function createUser(email, username, password, is_superuser = false, department_id = null, role = 'staff', supervised_department_ids = null) {
+  const payload = { email, username, password, is_superuser, department_id, role }
+  if (Array.isArray(supervised_department_ids)) {
+    payload.supervised_department_ids = supervised_department_ids
+  }
   const data = await api('/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, username, password, is_superuser, department_id, role }),
+    body: JSON.stringify(payload),
   })
   return data
 }
@@ -123,6 +127,11 @@ export async function getMySecurityInfo() {
   return api('/auth/security-info')
 }
 
+/** 仅管理员：用户看板计数（总数/活跃等，与列表筛选无关） */
+export async function getUserAdminStats() {
+  return api('/auth/users/stats')
+}
+
 /** 仅管理员：用户列表，可选 search（用户名/邮箱）、is_active（true/false） */
 export async function listUsers(params = {}) {
   const q = new URLSearchParams()
@@ -141,19 +150,25 @@ export async function listUsersForLibrary(search = '') {
   return api(`/auth/users/active${query ? '?' + query : ''}`)
 }
 
-/** 仅管理员：更新用户（禁用/启用、重置密码、部门、角色） */
-export async function updateUser(userId, { is_active, is_superuser, new_password, department_id, role }) {
+/** 仅管理员：更新用户（禁用/启用、重置密码、部门、角色、分管部门） */
+export async function updateUser(userId, { is_active, is_superuser, new_password, department_id, role, supervised_department_ids }) {
   const body = {}
   if (is_active !== undefined) body.is_active = is_active
   if (is_superuser !== undefined) body.is_superuser = is_superuser
   if (new_password !== undefined) body.new_password = new_password
   if (department_id !== undefined) body.department_id = department_id
   if (role !== undefined) body.role = role
+  if (supervised_department_ids !== undefined) body.supervised_department_ids = supervised_department_ids
   return api(`/auth/users/${userId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+}
+
+/** 仅管理员：读取分管领导的分管部门 id 列表 */
+export async function getSupervisedDepartments(userId) {
+  return api(`/division-leader/users/${userId}/departments`)
 }
 
 export async function listLibraries(params = {}) {
@@ -172,11 +187,12 @@ export async function getLibrary(id) {
   return api(`/libraries/${id}`)
 }
 
-export async function createLibrary(name, description = '', departmentId = null, visibility = 'private', memberUserIds = [], allowDownload = false, parentId = null) {
+export async function createLibrary(name, description = '', departmentId = null, visibility = 'private', memberUserIds = [], allowDownload = false, parentId = null, accessDepartmentIds = []) {
   const body = { name, description, visibility, allow_download: allowDownload }
   if (departmentId != null) body.department_id = departmentId
   if (parentId != null) body.parent_id = parentId
   if (Array.isArray(memberUserIds) && memberUserIds.length) body.member_user_ids = memberUserIds
+  if (Array.isArray(accessDepartmentIds) && accessDepartmentIds.length) body.access_department_ids = accessDepartmentIds
   return api('/libraries/', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -209,12 +225,13 @@ export async function moveLibrary(libraryId, parentId = null) {
   })
 }
 
-export async function updateLibrary(id, name, description, visibility, allowDownload) {
+export async function updateLibrary(id, name, description, visibility, allowDownload, accessDepartmentIds) {
   const body = {}
   if (name !== undefined) body.name = name
   if (description !== undefined) body.description = description
   if (visibility !== undefined) body.visibility = visibility
   if (allowDownload !== undefined) body.allow_download = allowDownload
+  if (accessDepartmentIds !== undefined) body.access_department_ids = accessDepartmentIds
   return api(`/libraries/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -324,14 +341,20 @@ export async function deleteDepartment(id) {
 }
 
 /** 文件分享：仅拥有者可管理（单文件） */
-export async function listMyShares() {
-  // 共享文件库：我分享的文件库
-  return api('/libraries/shared/mine')
+export async function listMyShares(params = {}) {
+  const sp = new URLSearchParams()
+  if (params.limit != null) sp.set('limit', String(params.limit))
+  if (params.offset != null) sp.set('offset', String(params.offset))
+  const qs = sp.toString()
+  return api(qs ? `/libraries/shared/mine?${qs}` : '/libraries/shared/mine')
 }
 /** 分享给我的文件列表 */
-export async function listSharesToMe() {
-  // 共享文件库：分享给我的文件库
-  return api('/libraries/shared/to-me')
+export async function listSharesToMe(params = {}) {
+  const sp = new URLSearchParams()
+  if (params.limit != null) sp.set('limit', String(params.limit))
+  if (params.offset != null) sp.set('offset', String(params.offset))
+  const qs = sp.toString()
+  return api(qs ? `/libraries/shared/to-me?${qs}` : '/libraries/shared/to-me')
 }
 export async function listFileShareAddableUsers(entryId) {
   return api(`/files/shares/addable-users?entry_id=${entryId}`)
@@ -394,13 +417,20 @@ export async function moveFileToLibrary(entryId, { target_library_id, target_dir
   })
 }
 
-/** 搜索文件（按路径关键词） */
+/** 搜索文件（按路径关键词）；含当前库及子资料库内文件，并返回名称匹配的下级资料库 */
 export async function searchFiles(libraryId, keyword) {
-  if (!keyword || !keyword.trim()) return []
-  return api(`/files/search?library_id=${libraryId}&keyword=${encodeURIComponent(keyword.trim())}`)
+  if (!keyword || !keyword.trim()) return { files: [], libraries: [] }
+  const data = await api(
+    `/files/search?library_id=${libraryId}&keyword=${encodeURIComponent(keyword.trim())}`
+  )
+  if (Array.isArray(data)) return { files: data, libraries: [] }
+  return {
+    files: Array.isArray(data.files) ? data.files : [],
+    libraries: Array.isArray(data.libraries) ? data.libraries : [],
+  }
 }
 
-/** 全局/库内搜索：libraryId 存在时库内搜索；为空时跨可访问资料库搜索 */
+/** 全局/库内搜索：libraryId 存在时库内搜索（仅返回文件列表，与历史调用方式一致）；为空时跨可访问资料库搜索 */
 export async function searchFilesGlobal(keyword, libraryId, options = {}) {
   if (!keyword || !keyword.trim()) return []
   if (libraryId == null) {
@@ -408,7 +438,8 @@ export async function searchFilesGlobal(keyword, libraryId, options = {}) {
     if (options.includeDepartment === false) q.set('include_department', 'false')
     return api(`/files/search-global?${q.toString()}`)
   }
-  return api(`/files/search?library_id=${libraryId}&keyword=${encodeURIComponent(keyword.trim())}`)
+  const { files } = await searchFiles(libraryId, keyword)
+  return files
 }
 
 /** 获取存储空间统计 */
@@ -679,14 +710,15 @@ function _getTokenForRawFetch() {
   return sessionStorage.getItem('token') || localStorage.getItem('token')
 }
 
-/** 获取受控预览图片 Blob（PDF 页图/图片水印）。page 仅对 PDF 生效 */
-export async function fetchRenderedPreviewBlob(entryId, { version_no = null, page = null } = {}) {
+/** 获取受控预览图片 Blob（PDF 页图/图片水印）。page 仅对 PDF 生效。signal：离开预览页时 Abort，释放浏览器并发槽位，避免卡住首页列表请求。 */
+export async function fetchRenderedPreviewBlob(entryId, { version_no = null, page = null, signal } = {}) {
   const q = new URLSearchParams({ entry_id: String(entryId) })
   if (version_no != null) q.set('version_no', String(version_no))
   if (page != null) q.set('page', String(page))
   const token = _getTokenForRawFetch()
   const res = await fetch(BASE + `/files/rendered-preview?${q.toString()}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
+    signal,
   })
   if (res.status === 401) {
     clearToken()
@@ -775,8 +807,9 @@ export async function permanentDeleteVersionTrash(trashId) {
   return api(`/files/version-trash/${trashId}`, { method: 'DELETE' })
 }
 
-export async function listMyTrash() {
-  return api('/files/my-trash')
+export async function listMyTrash(params = {}) {
+  const q = new URLSearchParams(params).toString()
+  return api(`/files/my-trash${q ? '?' + q : ''}`)
 }
 
 export async function listDeptTrash(deptId) {
@@ -793,16 +826,33 @@ export async function listAuditLogs(params = {}) {
   return api(`/audit/logs${q ? '?' + q : ''}`)
 }
 
+/** 与 listAuditLogs 相同筛选条件下的汇总（总条数、去重用户数、文件/库资源计数） */
+export async function getAuditLogsStats(params = {}) {
+  const q = new URLSearchParams(params).toString()
+  return api(`/audit/logs/stats${q ? '?' + q : ''}`)
+}
+
 /** 部门负责人：部门系统日志（仅本部门） */
 export async function listDepartmentAuditLogs(params = {}) {
   const q = new URLSearchParams(params).toString()
   return api(`/audit/dept-logs${q ? '?' + q : ''}`)
 }
 
+export async function getDepartmentAuditLogsStats(params = {}) {
+  const q = new URLSearchParams(params).toString()
+  return api(`/audit/dept-logs/stats${q ? '?' + q : ''}`)
+}
+
 /** 通知 */
+export async function getUnreadNotificationCount() {
+  return api('/notifications/unread-count')
+}
+
 export async function listNotifications(unreadOnly = false) {
-  const q = unreadOnly ? '?unread_only=true' : ''
-  return api(`/notifications/${q}`)
+  const q = new URLSearchParams()
+  if (unreadOnly) q.set('unread_only', 'true')
+  const query = q.toString()
+  return api(`/notifications${query ? '?' + query : ''}`)
 }
 
 export async function markNotificationRead(id) {
@@ -811,6 +861,38 @@ export async function markNotificationRead(id) {
 
 export async function markAllNotificationsRead() {
   return api('/notifications/read-all', { method: 'POST' })
+}
+
+/** 文件评论 */
+export async function getFileCommentContext(entryId) {
+  return api(`/files/${entryId}/comment-context`)
+}
+
+export async function listFileComments(entryId, params = {}) {
+  const q = new URLSearchParams()
+  if (params.limit != null) q.set('limit', String(params.limit))
+  if (params.offset != null) q.set('offset', String(params.offset))
+  const query = q.toString()
+  return api(`/files/${entryId}/comments${query ? '?' + query : ''}`)
+}
+
+export async function createFileComment(entryId, { body, parent_id = null, mention_user_ids = [] }) {
+  return api(`/files/${entryId}/comments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body, parent_id, mention_user_ids }),
+  })
+}
+
+export async function deleteFileComment(commentId) {
+  return api(`/files/comments/${commentId}`, { method: 'DELETE' })
+}
+
+export async function listFileCommentMentionCandidates(entryId, search = '') {
+  const q = new URLSearchParams()
+  if (search) q.set('search', search)
+  const query = q.toString()
+  return api(`/files/${entryId}/mention-candidates${query ? '?' + query : ''}`)
 }
 
 /** 系统管理 - 通知模板列表（管理员） */
@@ -839,10 +921,10 @@ export async function updateNotificationSettingAdmin(settingId, enabled) {
 }
 
 /** 系统管理 - 发送自定义通知（管理员） */
-export async function sendAdminNotification({ title, content, target = 'all', channels = ['system'] }) {
+export async function sendAdminNotification({ title, content, target = 'all' }) {
   return api('/notifications/admin/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, content, target, channels }),
+    body: JSON.stringify({ title, content, target }),
   })
 }

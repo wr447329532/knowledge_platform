@@ -64,7 +64,7 @@
           title="通知"
         >
           <Icons name="bell" class="notify-icon" />
-          <span v-if="notifyCount > 0" class="notify-dot">{{ notifyCount }}</span>
+          <span v-if="notifyCount > 0" class="notify-dot">{{ notifyCount > 99 ? '99+' : notifyCount }}</span>
         </button>
         <div class="user-menu-wrap" ref="userMenuWrapRef">
           <button
@@ -114,32 +114,42 @@
       </div>
     </div>
 
-    <!-- 第二行：面包屑 + 视图切换（我的文件库与部门文件共用） -->
+    <!-- 第二行：面包屑（逐段可点） + 视图切换 -->
     <div v-if="activeTab === 'lib'" class="file-toolbar file-toolbar-topbar">
-      <div class="file-toolbar-left">
-        <template v-if="activeDeptId">
-          <span class="file-breadcrumb-item">{{ activeDeptName || '部门' }}</span>
-        </template>
-        <template v-else>
-          <span class="file-breadcrumb-item">文件库</span>
-        </template>
-        <template v-if="currentLib">
-          <span class="file-breadcrumb-sep">/</span>
-          <a href="#" @click.prevent="emit('clear-lib')" class="file-breadcrumb-link">{{ currentLib?.name }}</a>
-          <template v-for="(seg, i) in breadcrumbSegments" :key="i">
-            <span class="file-breadcrumb-sep">/</span>
-            <a v-if="seg.path !== undefined" href="#" @click.prevent="emit('set-path', seg.path)" class="file-breadcrumb-link">{{ seg.label }}</a>
-            <span v-else class="file-breadcrumb-current">{{ seg.label }}</span>
-          </template>
-        </template>
-        <template v-else-if="activeDeptId">
-          <span class="file-breadcrumb-sep">/</span>
-          <span class="file-breadcrumb-current">部门文件库</span>
-        </template>
-        <template v-else>
-          <span class="file-breadcrumb-sep">/</span>
-          <span class="file-breadcrumb-current">全部文件</span>
-        </template>
+      <div class="file-toolbar-left" :title="breadcrumbTitle || undefined">
+        <span
+          v-for="(item, idx) in breadcrumbTrail"
+          :key="item.id"
+          class="file-breadcrumb-seg"
+        >
+          <span v-if="idx > 0" class="file-breadcrumb-sep">/</span>
+          <button
+            v-if="item.mode === 'lib-home' || item.mode === 'dept-home'"
+            type="button"
+            class="file-breadcrumb-crumb-btn"
+            :title="item.hint"
+            @click="onCrumbClick(item)"
+          >{{ item.label }}</button>
+          <button
+            v-else-if="item.mode === 'lib-ancestor'"
+            type="button"
+            class="file-breadcrumb-link-btn"
+            :title="item.hint"
+            @click="onCrumbClick(item)"
+          >{{ item.label }}</button>
+          <button
+            v-else-if="item.mode === 'lib-root' || item.mode === 'dir'"
+            type="button"
+            class="file-breadcrumb-link-btn"
+            :title="item.hint"
+            @click="onCrumbClick(item)"
+          >{{ item.label }}</button>
+          <span
+            v-else
+            class="file-breadcrumb-current"
+            :title="item.hint"
+          >{{ item.label }}</span>
+        </span>
       </div>
       <div class="file-toolbar-right">
         <select :value="fileSortOrder" class="file-sort-select" @change="emit('update:fileSortOrder', $event.target.value)">
@@ -164,23 +174,25 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import Icons from './Icons.vue'
+import { avatarLetter as getAvatarLetter } from '../utils/userAvatar'
 
 const props = defineProps({
   activeTab: String,
-  activeDeptId: { type: Number, default: null },
-  activeDeptName: { type: String, default: '' },
   currentLib: Object,
   searchKeyword: String,
   fileSortOrder: String,
   fileViewMode: String,
-  breadcrumbSegments: Array,
+  /** [{ id, mode, label, path?, hint }] 由 Home 组装 */
+  breadcrumbTrail: { type: Array, default: () => [] },
+  /** 整段路径悬停（容器） */
+  breadcrumbTitle: { type: String, default: '' },
   notifyCount: { type: Number, default: 0 },
   me: { type: Object, default: null },
 })
 
 const emit = defineEmits([
   'update:searchKeyword', 'update:fileSortOrder', 'update:fileViewMode',
-  'search', 'new-lib', 'new-sub-lib', 'upload', 'clear-lib', 'set-path', 'toggle-notify',
+  'search', 'new-lib', 'new-sub-lib', 'upload', 'clear-lib', 'set-path', 'open-library', 'toggle-notify',
   'go-account', 'go-admin', 'go-dept-manage', 'logout',
 ])
 
@@ -205,13 +217,7 @@ const canCreateSubLib = computed(() => {
   return Number(d) < 3
 })
 
-const avatarLetter = computed(() => {
-  const name = props.me?.username || ''
-  if (!name) return '?'
-  const first = name.trim()[0]
-  if (/[\u4e00-\u9fa5]/.test(first)) return first
-  return (first || '?').toUpperCase()
-})
+const avatarLetter = computed(() => getAvatarLetter(props.me?.username))
 
 const showDeptManage = computed(() => {
   const m = props.me
@@ -265,6 +271,23 @@ function onGoDeptManage() {
 function onLogout() {
   closeUserMenu()
   emit('logout')
+}
+
+function onCrumbClick(item) {
+  const m = item?.mode
+  if (m === 'lib-home' || m === 'dept-home') {
+    emit('clear-lib')
+    return
+  }
+  if (m === 'lib-ancestor') {
+    const id = item.libraryId
+    if (id != null) emit('open-library', Number(id))
+    return
+  }
+  if (m === 'lib-root' || m === 'dir') {
+    const prefix = item.path == null ? '' : String(item.path)
+    emit('set-path', prefix)
+  }
 }
 
 function onDocumentClick(e) {
@@ -494,19 +517,67 @@ onUnmounted(() => {
 
 .file-toolbar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
 }
 .file-toolbar-topbar { padding: 4px 0 0; border-bottom: none; }
-.file-toolbar-left { display: flex; align-items: center; gap: 6px; font-size: 14px; min-width: 0; }
+.file-toolbar-left {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 14px;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 100%;
+  line-height: 1.5;
+}
+.file-breadcrumb-seg {
+  display: inline-flex;
+  align-items: baseline;
+  max-width: none;
+}
 .file-breadcrumb-item { color: #6b7280; }
-.file-breadcrumb-sep { color: #9ca3af; user-select: none; }
-.file-breadcrumb-link { color: var(--primary); text-decoration: none; }
-.file-breadcrumb-link:hover { text-decoration: underline; }
-.file-breadcrumb-current { color: #111; font-weight: 500; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-toolbar-right { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.file-breadcrumb-crumb-btn,
+.file-breadcrumb-link-btn {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+  max-width: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.file-breadcrumb-crumb-btn {
+  color: #6b7280;
+}
+.file-breadcrumb-crumb-btn:hover {
+  color: var(--primary);
+  text-decoration: underline;
+}
+.file-breadcrumb-link-btn {
+  color: var(--primary);
+}
+.file-breadcrumb-link-btn:hover {
+  text-decoration: underline;
+}
+.file-breadcrumb-sep { color: #9ca3af; user-select: none; flex-shrink: 0; align-self: center; }
+.file-breadcrumb-current {
+  color: #111;
+  font-weight: 500;
+  max-width: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.file-toolbar-right { flex: 0 0 auto; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .file-sort-select {
   width: 180px;
   padding: 8px 12px 8px 32px;
